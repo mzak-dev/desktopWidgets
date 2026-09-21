@@ -35,7 +35,7 @@ A named producer of values that widget definitions bind to (`clock`, `shortcuts`
 _Avoid_: measure, plugin
 
 **Z-mode**:
-Where an Instance sits relative to other windows: Desktop, Bottom, Normal or Topmost.
+Where an Instance sits relative to other windows: Desktop, Bottom, Normal or Topmost. Desktop and Bottom both sit under application windows; Desktop stays visible while the desktop is shown (Win+D), Bottom is hidden by it.
 
 **Park**:
 To hide an Instance whose monitor is absent while remembering it, instead of relocating or deleting it.

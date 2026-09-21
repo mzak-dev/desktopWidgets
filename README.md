@@ -15,7 +15,7 @@ Move and resize them in real time, restyle everything, and pay nothing while the
 [![DirectX 12](https://img.shields.io/badge/DirectX_12-DirectComposition-107C10?style=for-the-badge&logo=xbox&logoColor=white)](docs/adr/0001-dx12-dcomp-presentation.md)
 
 ![Status](https://img.shields.io/badge/status-alpha-F5A623?style=flat-square)
-![Tests](https://img.shields.io/badge/unit_tests-43_passing-2EA44F?style=flat-square)
+![Tests](https://img.shields.io/badge/unit_tests-45_passing-2EA44F?style=flat-square)
 ![Idle](https://img.shields.io/badge/idle_CPU-0%25-2EA44F?style=flat-square)
 ![Layout](https://img.shields.io/badge/layout-taffy_flexbox-8A63D2?style=flat-square)
 ![Text](https://img.shields.io/badge/text-glyphon-3B82F6?style=flat-square)
@@ -237,7 +237,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 | | |
 |---|---|
 | [DirectX 12 + DirectComposition](docs/adr/0001-dx12-dcomp-presentation.md) | The only path on Windows that gives real per-pixel window alpha. A plain swapchain reports `Opaque` only, and Vulkan's support varies by driver. |
-| [Z-order by re-assertion](docs/adr/0002-z-order-by-reassertion.md) | Desktop widgets sit just above the desktop layer, the way Rainmeter does it, not reparented into the shell. |
+| [Z-order like Rainmeter](docs/adr/0002-z-order-by-reassertion.md) | Widgets sit just above the desktop layer. A hidden sentinel window tells Show Desktop from normal, and Desktop-layer widgets float over the raised desktop. Nothing is reparented into the shell. |
 | [No Wallpaper Engine integration](docs/adr/0003-no-wallpaper-engine-integration.md) | It exposes no API, so there is nothing to integrate with. |
 | [Declarative animation](docs/adr/0004-declarative-animation.md) | The engine owns the clock, so it always knows whether anything is animating, which is what makes "free when idle" possible. |
 | [Adapter and present mode](docs/adr/0005-adapter-and-present-mode.md) | `Mailbox` presentation, and the integrated GPU by default (see below). |
@@ -258,9 +258,9 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 
 **✅ Verified**
 
-- 43 unit tests (`cargo test --lib`)
+- 45 unit tests (`cargo test --lib`)
 - All four widgets and the settings window rendered offscreen
-- A 26-check scripted run of the live app, on the **software** renderer: drag, live resize, undo, saving, folder expand and z-raise, hot reload with error cards, and the settings commands
+- A 35-check scripted run of the live app, on the **software** renderer: drag, live resize, undo, saving, folder expand and z-raise, hot reload with error cards, the settings commands, and Show Desktop detection and response (against a stand-in host window)
 
 </td>
 <td width="50%" valign="top">
@@ -268,7 +268,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 **⚠️ Not verified yet**
 
 - The windowed app on a real GPU after the swapchain fix ([ADR-006](docs/adr/0006-swapchain-resize-and-gpu-loss.md))
-- Show Desktop (`Win` + `D`) behaviour
+- Show Desktop against the real Explorer (`Win` + `D`): the mechanism is Rainmeter's ([ADR-002](docs/adr/0002-z-order-by-reassertion.md)) and is tested with a stand-in host, but a real run is still to do
 - Fullscreen games, multiple monitors, mixed DPI, monitor hot-unplug
 - Vulkan and OpenGL (`WAYFINDER_BACKEND`) are for experiments only: on the development machine Vulkan reports no transparency
 
@@ -283,7 +283,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 ## 🛠️ Development
 
 ```powershell
-cargo test --lib                     # 43 unit tests, pure logic, no GPU
+cargo test --lib                     # 45 unit tests, pure logic, no GPU
 cargo run --release -- --selftest --gpu software --data $env:TEMP\wf-test
 ```
 
