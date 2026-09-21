@@ -1,0 +1,5 @@
+name = "Technical"
+[tokens]
+font-body = "Bahnschrift"
+font-display = "Bahnschrift"
+font-mono = "Cascadia Code"

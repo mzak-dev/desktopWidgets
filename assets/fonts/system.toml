@@ -1,0 +1,5 @@
+name = "System"
+[tokens]
+font-body = "Segoe UI Variable Text"
+font-display = "Segoe UI Variable Display"
+font-mono = "Cascadia Mono"

@@ -1,0 +1,81 @@
+name = "Analog Clock"
+description = "A classic round clock face that scales with its window."
+size = [220, 220]
+min_size = [96, 96]
+
+[params.ticks]
+type = "bool"
+default = true
+label = "Tick marks"
+
+[params.show_seconds]
+type = "bool"
+default = true
+label = "Second hand"
+
+[params.smooth_seconds]
+type = "bool"
+default = false
+label = "Smooth second hand"
+help = "Redraws every frame. Costs GPU time; leave off and the desktop stays idle between ticks."
+
+[params.accent]
+type = "color"
+default = "$accent"
+label = "Second hand colour"
+
+[root]
+fill = ["$surface", "$surface-2"]
+radius = "{self.w * 0.14}"
+border = 1
+shadow = { blur = 16, dy = 5 }
+
+  [[root.children]]
+  inset = "{self.w * 0.05}"
+  radius = 9999
+  fill = "$face"
+  border = 1
+
+  [[root.children]]
+  type = "ticks"
+  when = "{param.ticks}"
+  count = 60
+  major_every = 5
+  tick_inset = "{self.w * 0.075}"
+  tick_length = "{self.w * 0.022}"
+  major_length = "{self.w * 0.045}"
+  tick_width = 1.2
+  major_width = 2.4
+
+  [[root.children]]
+  type = "hand"
+  angle = "{clock.hour_angle}"
+  length = 0.5
+  tail = 0.1
+  stroke = "{max(3, self.w * 0.026)}"
+
+  [[root.children]]
+  type = "hand"
+  angle = "{clock.minute_angle}"
+  length = 0.76
+  tail = 0.1
+  stroke = "{max(2, self.w * 0.017)}"
+
+  [[root.children]]
+  type = "hand"
+  when = "{param.show_seconds}"
+  angle = "{param.smooth_seconds ? clock.second_smooth : clock.second_angle}"
+  length = 0.86
+  tail = 0.16
+  stroke = 1.7
+  color = "{param.accent}"
+
+  [[root.children]]
+  inset = 0
+  align = "center"
+  justify = "center"
+    [[root.children.children]]
+    width = 10
+    height = 10
+    radius = 5
+    fill = "{param.accent}"

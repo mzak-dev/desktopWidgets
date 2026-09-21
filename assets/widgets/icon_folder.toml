@@ -1,0 +1,172 @@
+name = "Icon Folder"
+description = "A folder of shortcuts. Click to expand it in place."
+size = [92, 112]
+min_size = [72, 88]
+
+[params.title]
+type = "string"
+default = "Folder"
+label = "Title"
+
+[params.items]
+type = "shortcuts"
+default = []
+label = "Shortcuts"
+
+[params.folder]
+type = "path"
+default = ""
+label = "Mirror a folder"
+help = "When set, the folder shows that directory's contents live."
+
+[params.columns]
+type = "number"
+default = 4
+min = 2
+max = 8
+step = 1
+label = "Columns when open"
+
+[params.icon_size]
+type = "number"
+default = 40
+min = 24
+max = 72
+step = 2
+label = "Icon size when open"
+
+[state]
+expanded = false
+scroll = 0
+
+[expand]
+when = "{state.expanded}"
+width = "{param.columns * (param.icon_size + 30) + 20}"
+height = "{66 + ceil(max(1, shortcuts.count) / param.columns) * (param.icon_size + 52) + max(0, ceil(max(1, shortcuts.count) / param.columns) - 1) * 8}"
+
+[root]
+direction = "column"
+fill = ["$surface", "$surface-2"]
+radius = "$radius-lg"
+border = 1
+shadow = { blur = 14, dy = 5 }
+clip = true
+
+  # ---- collapsed: a tile with a 2x2 preview ----
+  [[root.children]]
+  when = "{!state.expanded}"
+  grow = 1
+  direction = "column"
+  align = "center"
+  justify = "center"
+  gap = 6
+  padding = 8
+  on_click = "toggle expanded"
+  hover = { fill = "$surface-hover" }
+  transition = 140
+
+    [[root.children.children]]
+    width = "{min(self.w, self.h) * 0.62}"
+    height = "{min(self.w, self.h) * 0.62}"
+    direction = "row"
+    wrap = true
+    gap = 4
+    padding = 5
+    radius = "$radius-md"
+    fill = "$face"
+    border = 1
+
+      [[root.children.children.children]]
+      type = "repeat"
+      for = "{shortcuts.items}"
+        [[root.children.children.children.children]]
+        when = "{index < 4}"
+        type = "image"
+        src = "{item.icon_id}"
+        width = "44%"
+        aspect = 1
+
+    [[root.children.children]]
+    type = "text"
+    text = "{param.title}"
+    size = "{max(10, min(self.w * 0.14, 14))}"
+    weight = 600
+    color = "$text"
+
+  # ---- expanded: header + icon grid ----
+  [[root.children]]
+  when = "{state.expanded}"
+  grow = 1
+  direction = "column"
+  padding = 14
+  gap = 10
+
+    [[root.children.children]]
+    direction = "row"
+    align = "center"
+      [[root.children.children.children]]
+      type = "text"
+      text = "{param.title}"
+      size = 15
+      weight = 700
+      color = "$text"
+      grow = 1
+
+      [[root.children.children.children]]
+      width = 28
+      height = 28
+      radius = 14
+      align = "center"
+      justify = "center"
+      on_click = "toggle expanded"
+      hover = { fill = "$surface-hover" }
+      transition = 120
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "$glyph-close"
+        font = "$font-glyph"
+        size = 13
+        color = "$text-dim"
+
+    [[root.children.children]]
+    grow = 1
+    direction = "row"
+    wrap = true
+    gap = 8
+    align = "start"
+    scroll = "{state.scroll}"
+    hit = true
+      [[root.children.children.children]]
+      type = "text"
+      when = "{shortcuts.count == 0}"
+      text = "Empty. Add shortcuts in Settings."
+      size = 13
+      color = "$text-dim"
+
+      [[root.children.children.children]]
+      type = "repeat"
+      for = "{shortcuts.items}"
+        [[root.children.children.children.children]]
+        direction = "column"
+        align = "center"
+        gap = 4
+        padding = 6
+        width = "{param.icon_size + 22}"
+        radius = "$radius-sm"
+        on_click = "launch {item.target}"
+        hover = { fill = "$surface-hover" }
+        transition = 140
+        enter = { ms = 240, dy = 8, stagger = 24 }
+          [[root.children.children.children.children.children]]
+          type = "image"
+          src = "{item.icon_id}"
+          width = "{param.icon_size}"
+          height = "{param.icon_size}"
+
+          [[root.children.children.children.children.children]]
+          type = "text"
+          text = "{item.name}"
+          size = 11
+          color = "$text"
+          text_align = "center"
+          text_wrap = true

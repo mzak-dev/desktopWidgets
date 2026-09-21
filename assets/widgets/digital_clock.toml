@@ -1,0 +1,62 @@
+name = "Digital Clock"
+description = "Large time with the date underneath. Text scales with the window."
+size = [300, 132]
+min_size = [120, 56]
+
+[params.hour24]
+type = "bool"
+default = true
+label = "24-hour"
+
+[params.show_seconds]
+type = "bool"
+default = false
+label = "Show seconds"
+help = "Updates every second instead of every minute."
+
+[params.show_date]
+type = "bool"
+default = true
+label = "Show date"
+
+[params.accent]
+type = "color"
+default = "$accent"
+label = "AM/PM colour"
+
+[root]
+direction = "column"
+align = "center"
+justify = "center"
+gap = 2
+fill = ["$surface", "$surface-2"]
+radius = "$radius-lg"
+border = 1
+shadow = { blur = 14, dy = 5 }
+
+  [[root.children]]
+  direction = "row"
+  align = "center"
+  gap = 6
+    [[root.children.children]]
+    type = "text"
+    text = "{pad(param.hour24 ? clock.hour : clock.hour12, 2)}:{pad(clock.minute, 2)}{param.show_seconds ? ':' + pad(clock.second, 2) : ''}"
+    size = "{max(14, min(self.h * 0.42, self.w * 0.19))}"
+    weight = 300
+    color = "$text"
+
+    [[root.children.children]]
+    type = "text"
+    when = "{!param.hour24}"
+    text = "{clock.ampm}"
+    size = "{max(10, min(self.h * 0.13, self.w * 0.06))}"
+    weight = 600
+    color = "{param.accent}"
+
+  [[root.children]]
+  type = "text"
+  when = "{param.show_date && self.h > 70}"
+  text = "{clock.date}"
+  size = "{max(11, min(self.h * 0.115, self.w * 0.052))}"
+  weight = 500
+  color = "$text-dim"

@@ -1,0 +1,7 @@
+# Adapter choice and present mode, from Phase 0 measurements
+
+**Present mode is `Mailbox`.** With `Fifo`, every `Present` blocks the calling thread on vblank, so throughput was a fixed ~75 frames/s in total whether one window or twelve redrew: twelve animating windows got ~6 fps each. `Mailbox` never blocks (0.31 ms CPU per frame), so the engine owns one frame clock and only draws windows that need a frame.
+
+**`PowerPreference::HighPerformance` has a measured cost on this machine.** With the RX 9070 XT selected, two or more windows pin one CPU core at ~98% while completely idle. The spinning thread starts in `amdxc64.dll` (AMD's user-mode driver). It appears with no frames presented at all, and is unaffected by present mode, frame latency, `DxgiFromVisual` vs `DxgiFromHwnd`. One window is fine (0%). The integrated GPU idles at exactly 0.000% with 12 windows. This contradicts the zero-idle-frames goal, so the adapter is a config key (`gpu = "low" | "high" | "software"`) and the default is `low` (the integrated GPU), overriding the original request for the dedicated GPU. Measured in the real app: `high` idled at 99% of a core, `low` at 0.00% with four windows and a ticking second hand. Set `"gpu": "high"` in workspace.json (or Settings, General) to use the dedicated GPU anyway.
+
+Memory: ~2 MB private per additional window (311 MB with one, 333 MB with twelve; most of the baseline is driver/runtime).

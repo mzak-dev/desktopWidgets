@@ -1,0 +1,5 @@
+name = "Editorial"
+[tokens]
+font-body = "Georgia"
+font-display = "Georgia"
+font-mono = "Consolas"

@@ -1,0 +1,102 @@
+name = "Icon List"
+description = "A vertical list of application shortcuts. Scrolls when it overflows."
+size = [240, 320]
+min_size = [140, 96]
+
+[params.title]
+type = "string"
+default = "Shortcuts"
+label = "Title"
+
+[params.items]
+type = "shortcuts"
+default = []
+label = "Shortcuts"
+
+[params.folder]
+type = "path"
+default = ""
+label = "Mirror a folder"
+help = "When set, the list shows that folder's contents live instead of the shortcuts above."
+
+[params.icon_size]
+type = "number"
+default = 32
+min = 16
+max = 96
+step = 2
+label = "Icon size"
+
+[params.show_labels]
+type = "bool"
+default = true
+label = "Show names"
+
+[state]
+scroll = 0
+
+[root]
+direction = "column"
+fill = ["$surface", "$surface-2"]
+radius = "$radius-lg"
+border = 1
+shadow = { blur = 14, dy = 5 }
+padding = 10
+gap = 6
+clip = true
+
+  [[root.children]]
+  type = "text"
+  when = "{param.title != ''}"
+  text = "{param.title}"
+  size = 13
+  weight = 600
+  color = "$text-dim"
+  padding = [0, 6]
+
+  [[root.children]]
+  grow = 1
+  direction = "column"
+  gap = 2
+  scroll = "{state.scroll}"
+  hit = true
+
+    [[root.children.children]]
+    type = "text"
+    when = "{shortcuts.count == 0}"
+    text = "No shortcuts yet. Open Settings to add some."
+    text_wrap = true
+    size = 13
+    color = "$text-dim"
+    padding = 8
+
+    [[root.children.children]]
+    type = "repeat"
+    for = "{shortcuts.items}"
+    as = "item"
+
+      [[root.children.children.children]]
+      direction = "row"
+      align = "center"
+      gap = 10
+      padding = [6, 8]
+      radius = "$radius-sm"
+      on_click = "launch {item.target}"
+      hover = { fill = "$surface-hover" }
+      transition = 140
+      enter = { ms = 240, dy = 6, stagger = 22 }
+
+        [[root.children.children.children.children]]
+        type = "image"
+        src = "{item.icon_id}"
+        width = "{param.icon_size}"
+        height = "{param.icon_size}"
+        shrink = 0
+
+        [[root.children.children.children.children]]
+        type = "text"
+        when = "{param.show_labels}"
+        text = "{item.name}"
+        size = "{max(11, param.icon_size * 0.42)}"
+        color = "$text"
+        grow = 1
