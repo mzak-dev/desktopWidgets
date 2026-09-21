@@ -133,6 +133,7 @@ struct SelfTest {
     rect: Option<Rect>,
     collapsed: Option<Rect>,
     configures0: u32,
+    fake: Option<win32::Sentinel>,
 }
 
 struct UndoEntry {
@@ -163,7 +164,11 @@ pub struct App {
     log: Vec<String>,
     save_at: Option<Instant>,
     reload_at: Option<Instant>,
-    shell_at: Option<Instant>,
+    /// Times at which to re-check Show Desktop: a retry ladder after each shell event.
+    shell_due: Vec<Instant>,
+    sentinel: Option<win32::Sentinel>,
+    /// Tests substitute a fake icon host so Show Desktop can be exercised without Explorer.
+    test_host: Option<windows::Win32::Foundation::HWND>,
     display_at: Option<Instant>,
     desktop_shown: bool,
     started: Instant,
@@ -238,7 +243,9 @@ impl App {
             log: Vec::new(),
             save_at: None,
             reload_at: None,
-            shell_at: None,
+            shell_due: Vec::new(),
+            sentinel: None,
+            test_host: None,
             display_at: None,
             desktop_shown: false,
             started: Instant::now(),
@@ -251,7 +258,7 @@ impl App {
             families: Vec::new(),
         };
         app.families = app.text.family_names();
-        app.selftest = app.opts.selftest.then(|| SelfTest { step: 0, at: Instant::now() + Duration::from_millis(2200), checks: Vec::new(), rect: None, collapsed: None, configures0: 0 });
+        app.selftest = app.opts.selftest.then(|| SelfTest { step: 0, at: Instant::now() + Duration::from_millis(2200), checks: Vec::new(), rect: None, collapsed: None, configures0: 0, fake: None });
         if let Some(e) = ws_err {
             app.log(e);
         }
@@ -388,6 +395,7 @@ impl App {
         // winit rebuilds WS_EX_* from its own flags on every state change, so our
         // styles go on last, and again after anything that touches them
         win32::set_no_activate(&window, !self.edit);
+        self.guard_z(i);
         if self.desktop_shown {
             self.apply_show_desktop();
         }
@@ -541,30 +549,56 @@ impl App {
         }
     }
 
-    // ---- Show Desktop ------------------------------------------------------------
+    // ---- Show Desktop (ADR-002, from Rainmeter's System.cpp) -------------------------------
 
-    /// Desktop-mode widgets float above the desktop layer while it is being
-    /// shown (Win+D), otherwise they vanish behind it (ADR-002).
+    /// Re-place every widget for the current Show Desktop state:
+    /// Desktop-mode widgets float just under the taskbar while the desktop is
+    /// shown and sink back after; Bottom-mode widgets stay under the desktop
+    /// (hidden by it, by definition); Normal and Topmost are not ours to move.
     fn apply_show_desktop(&mut self) {
+        let host = self.test_host.or_else(win32::desktop_icon_host);
         for i in 0..self.wins.len() {
-            let Some(w) = self.wins[i].window.clone() else { continue };
-            let Some(h) = win32::hwnd_of(&w) else { continue };
-            let mode = ZMode::parse(&self.ws.instances[i].z).unwrap_or(ZMode::Desktop);
-            if matches!(mode, ZMode::Desktop | ZMode::Bottom) && !self.wins[i].raised {
-                win32::set_zmode(h, if self.desktop_shown { ZMode::Topmost } else { mode });
+            let Some(h) = self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w)) else { continue };
+            match (ZMode::parse(&self.ws.instances[i].z).unwrap_or(ZMode::Desktop), self.desktop_shown) {
+                (ZMode::Desktop, true) => {
+                    if let Some(host) = host {
+                        win32::float_over_desktop(h, host);
+                    }
+                }
+                (ZMode::Desktop | ZMode::Bottom, false) => win32::sink_to_desktop(h),
+                _ => {}
+            }
+        }
+        // an open folder sits above its sibling widgets; sinking undid that
+        let siblings = self.hwnds();
+        for i in 0..self.wins.len() {
+            if self.wins[i].raised {
+                if let Some(h) = self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w)) {
+                    win32::raise_above(h, &siblings);
+                }
             }
         }
     }
 
     fn check_show_desktop(&mut self) {
-        let shown = win32::desktop_shown();
+        let Some(shown) = self.sentinel.as_ref().and_then(win32::desktop_state) else { return };
         if shown != self.desktop_shown {
             self.desktop_shown = shown;
-            self.log(format!("desktop {}", if shown { "shown: widgets raised" } else { "hidden: widgets back on the desktop layer" }));
+            self.log(format!("desktop {}", if shown { "shown: Desktop-layer widgets float above it" } else { "hidden: widgets back on the desktop layer" }));
             self.apply_show_desktop();
-        } else if !shown {
-            // the shell reshuffles z-order on its own; re-assert cheaply
-            self.apply_show_desktop();
+        }
+        // Leaving Show Desktop can happen without a foreground event; keep an eye
+        // on it only while it lasts (Rainmeter polls at 100 ms in this state)
+        if self.desktop_shown && self.shell_due.is_empty() {
+            self.shell_due.push(Instant::now() + Duration::from_millis(250));
+        }
+    }
+
+    /// Foreign z-order changes are vetoed for widgets that must stay put.
+    fn guard_z(&self, i: usize) {
+        if let Some(w) = &self.wins[i].window {
+            let mode = ZMode::parse(&self.ws.instances[i].z).unwrap_or(ZMode::Desktop);
+            win32::set_z_guard(w, matches!(mode, ZMode::Desktop | ZMode::Bottom));
         }
     }
 
@@ -877,7 +911,7 @@ impl App {
                 check(&mut st, "widgets are tool + no-activate windows", hw.iter().all(|h| win32::ex_style(*h) & both == both), String::new());
                 let host = win32::desktop_icon_host().and_then(win32::z_index);
                 let z: Vec<usize> = hw.iter().filter_map(|h| win32::z_index(*h)).collect();
-                check(&mut st, "widgets sit directly above the desktop layer", host.is_some_and(|hz| z.iter().all(|zi| *zi < hz && hz - *zi <= hw.len() + 1)), format!("(z {z:?}, desktop {host:?})"));
+                check(&mut st, "widgets sit directly above the desktop layer", host.is_some_and(|hz| z.iter().all(|zi| *zi < hz && hz - *zi <= hw.len() + 2)), format!("(z {z:?}, desktop {host:?})"));
                 self.set_edit(true);
             }
             1 => {
@@ -1008,6 +1042,77 @@ impl App {
             }
             13 => {
                 check(&mut st, "the settings window closes", self.settings.is_none(), String::new());
+                // ---- Show Desktop (ADR-002), without touching the real desktop ----
+                let host = win32::desktop_icon_host();
+                check(&mut st, "the desktop-icon host is found (Progman on 24H2+)", host.is_some(), format!("({host:?})"));
+                if let Some(s) = self.sentinel.as_ref() {
+                    check(&mut st, "normal state: the sentinel sits above the icon host", win32::desktop_state(s) == Some(false), format!("({:?})", win32::desktop_state(s)));
+                    // detection against a fake host, raised and lowered around the sentinel
+                    if let Some(fake) = win32::Sentinel::new() {
+                        fake.show();
+                        let f = fake.hwnd();
+                        let (a, b) = (win32::desktop_state_with(f, s), { fake.raise(); win32::desktop_state_with(f, s) });
+                        fake.sink();
+                        let c = win32::desktop_state_with(f, s);
+                        check(&mut st, "a host raised above the sentinel reads as Show Desktop, and back", (a, b, c) == (Some(false), Some(true), Some(false)), format!("({a:?} -> {b:?} -> {c:?})"));
+                        // now play Explorer: the fake host goes to the top of the normal band, as in Show Desktop
+                        fake.raise();
+                        self.test_host = Some(f);
+                        st.fake = Some(fake);
+                    }
+                } else {
+                    check(&mut st, "the z-order sentinel exists", false, String::new());
+                }
+                self.apply(el, Cmd::Z("icon_list-1".into(), "bottom".into()));
+                self.desktop_shown = true; // force the state: Explorer is not asked to hide anything
+                self.apply_show_desktop();
+                next = 350;
+            }
+            14 => {
+                let topmost = |s: &Self, id: &str| s.idx(id).and_then(|i| s.wins[i].window.as_ref()).and_then(|w| win32::hwnd_of(w)).map(|h| win32::ex_style(h) & 0x8 != 0);
+                check(&mut st, "Desktop-layer widgets float above the desktop while it is shown", topmost(self, "icon_folder-1") == Some(true) && topmost(self, "digital_clock-1") == Some(true), String::new());
+                check(&mut st, "Bottom-layer widgets stay under it, hidden by design", topmost(self, "icon_list-1") == Some(false), String::new());
+                let order = win32::z_order();
+                let me_pid = std::process::id();
+                let me = self.idx("icon_folder-1").and_then(|i| self.wins[i].window.as_ref()).and_then(|w| win32::hwnd_of(w)).and_then(win32::z_index);
+                let fz = st.fake.as_ref().and_then(|f| win32::z_index(f.hwnd()));
+                // What the walk-up guarantees, independent of the environment: the widget is above
+                // the raised desktop, and no foreign topmost window is left between the two, so it
+                // sits directly under the backmost foreign topmost window (the taskbar layer).
+                // (The taskbar's own z-index is no yardstick: Windows demotes it below normal
+                // windows while a fullscreen app is in front.)
+                let between: Vec<String> = match (me, fz) {
+                    (Some(m), Some(f)) => order.iter().enumerate().filter(|(i, e)| *i > m && *i < f && e.topmost && e.pid != me_pid).map(|(_, e)| e.class.clone()).collect(),
+                    _ => vec![],
+                };
+                let detail = format!("(widget z {me:?}, raised desktop z {fz:?}, foreign topmost windows in between: {between:?})");
+                check(&mut st, "floating widgets sit directly under the backmost topmost window, above the raised desktop", matches!((me, fz), (Some(m), Some(f)) if m < f) && between.is_empty(), detail);
+                self.desktop_shown = false;
+                self.apply_show_desktop();
+                next = 350;
+            }
+            15 => {
+                let hosts = win32::desktop_icon_host().and_then(win32::z_index);
+                let f = self.idx("icon_folder-1").and_then(|i| self.wins[i].window.as_ref()).and_then(|w| win32::hwnd_of(w));
+                let topmost = f.map(|h| win32::ex_style(h) & 0x8 != 0);
+                let me = f.and_then(win32::z_index);
+                check(&mut st, "leaving Show Desktop sinks widgets back above the desktop layer", topmost == Some(false) && matches!((me, hosts), (Some(m), Some(h)) if m < h), format!("(widget z {me:?}, host z {hosts:?}, topmost {topmost:?})"));
+                if let Some(h) = f {
+                    let before = win32::z_index(h);
+                    win32::try_raise(h); // a foreign attempt to bring the widget to the front
+                    let after = win32::z_index(h);
+                    check(&mut st, "the z-order guard vetoes a foreign raise", before == after, format!("(z {before:?} -> {after:?})"));
+                    win32::float_over_desktop(h, win32::desktop_icon_host().unwrap_or(h));
+                    let ok = win32::ex_style(h) & 0x8 != 0;
+                    win32::sink_to_desktop(h);
+                    check(&mut st, "our own z-order calls pass the guard (NOSENDCHANGING)", ok && win32::ex_style(h) & 0x8 == 0, String::new());
+                }
+                self.apply(el, Cmd::Z("icon_list-1".into(), "desktop".into()));
+                self.test_host = None;
+                st.fake = None; // drops the fake host window
+                next = 200;
+            }
+            16 => {
                 let pass = st.checks.iter().filter(|c| c.1).count();
                 let total = st.checks.len();
                 let report: Vec<String> = st.checks.iter().map(|(n, ok)| format!("{} {n}", if *ok { "PASS" } else { "FAIL" })).collect();
@@ -1111,6 +1216,10 @@ impl App {
                         win32::set_zmode(h, ZMode::parse(&z).unwrap_or(ZMode::Desktop));
                     }
                     self.wins[i].raised = false;
+                    self.guard_z(i);
+                    if self.desktop_shown {
+                        self.apply_show_desktop();
+                    }
                     self.mark_save();
                 }
             }
@@ -1415,6 +1524,10 @@ impl ApplicationHandler<UserEvent> for App {
         for l in lines {
             self.log(l);
         }
+        self.sentinel = win32::Sentinel::new();
+        if self.sentinel.is_none() {
+            self.log("could not create the z-order sentinel window; Show Desktop handling is off");
+        }
         self.init_tray();
         self.init_hotkey();
         if self.ws.instances.is_empty() {
@@ -1454,7 +1567,11 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Hotkey => self.set_edit(!self.edit),
             UserEvent::TrayClick => self.open_settings(el),
             UserEvent::Files => self.reload_at = Some(Instant::now() + Duration::from_millis(250)),
-            UserEvent::Shell => self.shell_at = Some(Instant::now() + Duration::from_millis(120)),
+            UserEvent::Shell => {
+                // Explorer reorders a few ms after the event: check a few times, growing gaps
+                let now = Instant::now();
+                self.shell_due = [4u64, 20, 60, 140, 300, 700].iter().map(|ms| now + Duration::from_millis(*ms)).collect();
+            }
             UserEvent::Display => self.display_at = Some(Instant::now() + Duration::from_millis(500)),
         }
     }
@@ -1514,8 +1631,8 @@ impl ApplicationHandler<UserEvent> for App {
                 return;
             }
         }
-        if self.shell_at.is_some_and(|t| t <= now) {
-            self.shell_at = None;
+        while self.shell_due.first().is_some_and(|t| *t <= now) {
+            self.shell_due.remove(0);
             self.check_show_desktop();
         }
         if self.display_at.is_some_and(|t| t <= now) {
@@ -1554,7 +1671,7 @@ impl ApplicationHandler<UserEvent> for App {
             self.recover_gpu(el, "device lost callback");
         }
         let interval = Duration::from_micros(16_667);
-        let mut wake: Option<Instant> = [self.save_at, self.reload_at, self.shell_at, self.display_at, self.selftest.as_ref().map(|t| t.at), self.opts.exit_after.map(|t| self.started + Duration::from_secs_f32(t))]
+        let mut wake: Option<Instant> = [self.save_at, self.reload_at, self.shell_due.first().copied(), self.display_at, self.selftest.as_ref().map(|t| t.at), self.opts.exit_after.map(|t| self.started + Duration::from_secs_f32(t))]
             .into_iter()
             .flatten()
             .min();

@@ -376,7 +376,7 @@ impl UiState {
     fn dropdown_items(&self, ctx: &Ctx, key: &str) -> Vec<(String, String)> {
         let two = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
         if let Some(_id) = key.strip_prefix("z:") {
-            return two(&[("desktop", "On the desktop (behind windows)"), ("bottom", "Bottom of the window stack"), ("normal", "Normal window"), ("topmost", "Always on top")]);
+            return two(&[("desktop", "On the desktop (stays visible on Show Desktop)"), ("bottom", "Bottom (hidden by Show Desktop)"), ("normal", "Normal window"), ("topmost", "Always on top")]);
         }
         if key == "gpu" {
             return two(&[("low", "Integrated GPU (recommended)"), ("high", "Dedicated GPU"), ("software", "Software (CPU, slow)")]);
