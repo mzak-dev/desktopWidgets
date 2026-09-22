@@ -33,7 +33,7 @@ use crate::text::TextEngine;
 use crate::theme::{Library, Theme};
 use crate::ui::{self, Env, Frame};
 use crate::value::Value;
-use crate::widgets::{self, Def, ExpandInfo, Host, Registry, Services, View};
+use crate::widgets::{self, ActionCx, Def, ExpandInfo, Host, Registry, Services, View};
 use crate::workspace::{self, InstanceCfg, MonitorInfo, Workspace};
 
 #[derive(Debug)]
@@ -849,26 +849,28 @@ impl App {
         }
     }
 
+    /// A click action: the Widget's own first (a Rust Widget's verbs), then the engine's.
     fn run_action(&mut self, i: usize, action: &str) {
         let (verb, rest) = action.split_once(' ').unwrap_or((action, ""));
+        if let Some(Ok(w)) = self.reg.get(&self.ws.instances[i].widget).cloned() {
+            let hwnd = self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w));
+            let mut host = AppHost::new(&self.opts.dir, hwnd);
+            let mut cx = ActionCx { cfg: &self.ws.instances[i], state: &mut self.wins[i].state, host: &mut host, sources: &self.sources, redraw: false };
+            let handled = w.action(verb, rest, &mut cx);
+            let redraw = cx.redraw;
+            for l in host.into_logs() {
+                self.log(l);
+            }
+            self.wins[i].redraw |= redraw;
+            if handled {
+                return;
+            }
+        }
         match verb {
             "launch" => {
                 if !win32::open(rest.trim()) {
                     self.log(format!("could not open `{}`", rest.trim()));
                 }
-            }
-            "add_app" => {
-                let hwnd = self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w));
-                let Some(picked) = crate::dialog::pick_file(hwnd) else { return };
-                let folder = self.ws.instances[i].folder();
-                if folder.is_empty() {
-                    return self.log("this drawer has no shortcut folder");
-                }
-                if win32::create_shortcut(std::path::Path::new(&folder), &picked).is_none() {
-                    self.log(format!("could not create a shortcut to `{}`", picked.display()));
-                }
-                self.sources.invalidate(); // the folder watcher would also catch it, a moment later
-                self.wins[i].redraw = true;
             }
             "toggle" => {
                 let cur = self.wins[i].state.get(rest).map_or(false, |v| v.truthy());
@@ -1218,11 +1220,6 @@ impl App {
             for l in host.into_logs() {
                 self.log(l);
             }
-        }
-        if widget == "drawer" {
-            let dir = self.opts.dir.join("drawers").join(&cfg.id);
-            let _ = std::fs::create_dir_all(&dir);
-            cfg.set_param("folder", &Value::Str(dir.to_string_lossy().into_owned()));
         }
         self.log(format!("added {}", cfg.id));
         self.ws.instances.push(cfg);

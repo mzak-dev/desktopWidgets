@@ -5,17 +5,20 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use super::{TomlWidget, Widget};
+use super::{Drawer, TomlWidget, Widget};
 use crate::format::WidgetDef;
 
 /// `(id, source)` for every `assets/widgets/*.toml`, found by `build.rs`.
 const BUILTIN: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/builtin_widgets.rs"));
 
+/// Makes a Rust Widget around the definition it draws its tree from.
+type Wrap = fn(TomlWidget) -> Arc<dyn Widget>;
+
 /// Rust Widgets that draw their tree from the definition of the same id: they
 /// wrap it, whether it is the built-in or the user's own copy, so restyling
 /// one never loses its behaviour. A Rust Widget with no definition would go in
 /// a list of constructors of its own.
-const WRAPS: &[(&str, fn(TomlWidget) -> Arc<dyn Widget>)] = &[];
+const WRAPS: &[(&str, Wrap)] = &[("drawer", Drawer::wrap)];
 
 /// A Widget or the reason it failed to load. A broken user file replacing a
 /// built-in shows an error card; it never silently falls back (decision 14).

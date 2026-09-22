@@ -10,6 +10,7 @@
 //!   or build it with the `ui::Node` builder. Adding one is a module here and
 //!   a line in `registry.rs`.
 
+mod drawer;
 mod meta;
 mod registry;
 mod toml_widget;
@@ -30,6 +31,7 @@ use crate::ui::{self, Env, Frame, Node};
 use crate::value::Value;
 use crate::workspace::InstanceCfg;
 
+pub use drawer::Drawer;
 pub use meta::{ParamDef, ParamType, Seed, WidgetMeta};
 pub use registry::{Def, Registry};
 pub use toml_widget::TomlWidget;
