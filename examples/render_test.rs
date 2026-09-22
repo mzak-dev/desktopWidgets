@@ -23,7 +23,7 @@ fn clock(angle_h: f32, angle_m: f32, angle_s: f32) -> Node {
         .border(1.0, c("#ffffff40"))
         .fill(c("#ffffff14"));
     let mut ticks = Node::new("ticks").abs_fill();
-    ticks.kind = Kind::Ticks(TicksSpec {
+    ticks.kind = Kind::shape(TicksSpec {
         count: 60,
         major_every: 5,
         len: 5.0,
@@ -36,7 +36,7 @@ fn clock(angle_h: f32, angle_m: f32, angle_s: f32) -> Node {
     });
     let hand = |key: &str, angle, length, width, color: &str| {
         let mut n = Node::new(key).abs_fill();
-        n.kind = Kind::Hand(HandSpec { angle, length, tail: 0.12, width, color: c(color) });
+        n.kind = Kind::shape(HandSpec { angle, length, tail: 0.12, width, color: c(color) });
         n
     };
     Node::new("clock")

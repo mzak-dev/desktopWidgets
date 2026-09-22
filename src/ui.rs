@@ -2,6 +2,7 @@
 //! definition files (`format`) and the Rust-built settings window produce the
 //! same `Node` tree (decision 9): one layout path, one render path.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use taffy::prelude::*;
@@ -9,30 +10,24 @@ use taffy::prelude::*;
 use crate::anim::{Anim, Ease};
 use crate::color::Color;
 use crate::draw::*;
+use crate::elements::{Shape, ShapeCx, rgba};
 use crate::text::{TextEngine, TextSpec};
+
+pub use crate::elements::{ArcSpec, HandSpec, TicksSpec};
 
 #[derive(Clone, Debug)]
 pub enum Kind {
     Box,
     Text(TextSpec),
     Image(ImageSpec),
-    /// A clock-style hand from the centre of its rect.
-    Hand(HandSpec),
-    Ticks(TicksSpec),
-    /// A gauge: a track ring with a value arc over it, sized by the smaller side.
-    Arc(ArcSpec),
+    /// A vector element (hand, ticks, arc...): see `elements`.
+    Shape(Arc<dyn Shape>),
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct ArcSpec {
-    /// Degrees clockwise from 12 o'clock.
-    pub start: f32,
-    pub sweep: f32,
-    /// 0..=100.
-    pub value: f32,
-    pub width: f32,
-    pub color: Color,
-    pub track: Color,
+impl Kind {
+    pub fn shape(s: impl Shape + 'static) -> Kind {
+        Kind::Shape(Arc::new(s))
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -42,31 +37,6 @@ pub struct ImageSpec {
     pub w: f32,
     pub h: f32,
     pub tint: Option<Color>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct HandSpec {
-    /// Degrees clockwise from 12 o'clock.
-    pub angle: f32,
-    /// Fractions of the radius (half the smaller side).
-    pub length: f32,
-    pub tail: f32,
-    pub width: f32,
-    pub color: Color,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct TicksSpec {
-    pub count: u32,
-    pub major_every: u32,
-    pub len: f32,
-    pub major_len: f32,
-    pub width: f32,
-    pub major_width: f32,
-    pub color: Color,
-    pub major_color: Color,
-    /// Distance from the rim, px.
-    pub inset: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -480,11 +450,6 @@ pub fn layout(root: &Node, size: (f32, f32), env: &mut Env) -> Frame {
     frame
 }
 
-fn rgba(c: Color, op: f32) -> [f32; 4] {
-    let [r, g, b, a] = c.0;
-    [r, g, b, a * op]
-}
-
 #[allow(clippy::too_many_arguments)]
 fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, origin: (f32, f32), ctx: &Ctx, env: &mut Env, out: &mut Frame) {
     let id = ids[*next];
@@ -606,64 +571,7 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                     },
                 });
             }
-            Kind::Hand(hd) => {
-                let rad = (w.min(h) / 2.0) * s;
-                let a = hd.angle.to_radians();
-                let dir = [a.sin(), -a.cos()];
-                let (p0, p1) = (
-                    [cx - dir[0] * rad * hd.tail, cy - dir[1] * rad * hd.tail],
-                    [cx + dir[0] * rad * hd.length, cy + dir[1] * rad * hd.length],
-                );
-                list.shapes.push(Inst {
-                    a: p0,
-                    b: p1,
-                    radius: hd.width * s / 2.0,
-                    kind: KIND_CAPSULE,
-                    fill_top: rgba(hd.color, op),
-                    fill_bot: rgba(hd.color, op),
-                    clip,
-                    ..Default::default()
-                });
-            }
-            Kind::Arc(ar) => {
-                let radius = (w.min(h) - ar.width) / 2.0 * s;
-                let mut push = |sweep: f32, col: Color| {
-                    list.shapes.push(Inst {
-                        a: [cx, cy],
-                        b: [ar.start.to_radians(), sweep.to_radians()],
-                        radius,
-                        border: ar.width * s / 2.0,
-                        kind: KIND_ARC,
-                        fill_top: rgba(col, op),
-                        fill_bot: rgba(col, op),
-                        clip,
-                        ..Default::default()
-                    });
-                };
-                push(ar.sweep, ar.track);
-                if ar.value > 0.0 {
-                    push(ar.sweep * ar.value.min(100.0) / 100.0, ar.color);
-                }
-            }
-            Kind::Ticks(tk) => {
-                let rad = (w.min(h) / 2.0 - tk.inset) * s;
-                for i in 0..tk.count {
-                    let major = tk.major_every > 0 && i % tk.major_every == 0;
-                    let (len, wd, col) = if major { (tk.major_len, tk.major_width, tk.major_color) } else { (tk.len, tk.width, tk.color) };
-                    let a = (i as f32 / tk.count as f32) * std::f32::consts::TAU;
-                    let dir = [a.sin(), -a.cos()];
-                    list.shapes.push(Inst {
-                        a: [cx + dir[0] * rad, cy + dir[1] * rad],
-                        b: [cx + dir[0] * (rad - len * s), cy + dir[1] * (rad - len * s)],
-                        radius: wd * s / 2.0,
-                        kind: KIND_CAPSULE,
-                        fill_top: rgba(col, op),
-                        fill_bot: rgba(col, op),
-                        clip,
-                        ..Default::default()
-                    });
-                }
-            }
+            Kind::Shape(shape) => shape.emit(&ShapeCx { center: [cx, cy], size: (w, h), scale: s, opacity: op, clip }, &mut list.shapes),
         }
     }
 

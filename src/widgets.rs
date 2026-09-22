@@ -189,7 +189,7 @@ mod tests {
             assert!(b.warnings.is_empty(), "{:?}", b.warnings);
             assert!(b.deps.contains("sys.gauges"));
             fn count(n: &crate::ui::Node) -> usize {
-                usize::from(matches!(n.kind, crate::ui::Kind::Arc(_))) + n.children.iter().map(count).sum::<usize>()
+                usize::from(matches!(&n.kind, crate::ui::Kind::Shape(s) if s.name() == "arc")) + n.children.iter().map(count).sum::<usize>()
             }
             count(&b.root)
         };

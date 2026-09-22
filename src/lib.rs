@@ -8,6 +8,7 @@ pub mod data;
 pub mod dialog;
 pub mod draw;
 pub mod edit;
+pub mod elements;
 pub mod expr;
 pub mod format;
 pub mod gfx;

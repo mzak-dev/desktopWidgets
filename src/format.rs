@@ -8,8 +8,8 @@ use taffy::prelude::*;
 
 use crate::anim::Ease;
 use crate::color::{Color, MAGENTA};
+use crate::elements;
 use crate::expr::{Scope, Template};
-use crate::text::{TextAlign, TextSpec};
 use crate::theme::Theme;
 use crate::ui::*;
 use crate::value::Value;
@@ -48,13 +48,13 @@ const COMMON: &[&str] = &[
     "justify", "align_self", "gap", "padding", "margin", "position", "inset", "left", "top", "right", "bottom", "aspect", "fill", "fill_alpha", "border",
     "border_color", "radius", "opacity", "shadow", "clip", "on_click", "hover", "transition", "enter", "scroll", "overlay", "hit",
 ];
-const TEXT: &[&str] = &["text", "size", "color", "font", "weight", "text_align", "text_wrap", "line_height"];
-const IMAGE: &[&str] = &["src", "tint"];
-const HAND: &[&str] = &["angle", "length", "tail", "stroke", "color"];
-const TICKS: &[&str] = &["count", "major_every", "tick_length", "major_length", "tick_width", "major_width", "color", "major_color", "tick_inset"];
-const ARC: &[&str] = &["value", "start", "sweep", "stroke", "color", "track"];
+/// `repeat` is structural (one copy of its children per list item), not an element kind.
 const REPEAT: &[&str] = &["for", "as", "index"];
-const TYPES: &[&str] = &["box", "text", "image", "hand", "ticks", "arc", "repeat"];
+
+/// Every `type` name: the element kinds, then `repeat`.
+fn types() -> Vec<&'static str> {
+    elements::KINDS.iter().map(|k| k.name).chain(["repeat"]).collect()
+}
 
 fn lev(a: &str, b: &str) -> usize {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
@@ -89,17 +89,13 @@ pub struct Elem {
 
 fn parse_elem(t: &toml::Table, path: &str) -> Result<Elem, String> {
     let ty = t.get("type").and_then(|v| v.as_str()).unwrap_or("box").to_string();
-    if !TYPES.contains(&ty.as_str()) {
-        return Err(format!("{path}: unknown type `{ty}`{} (expected one of {})", suggest(&ty, &[TYPES]), TYPES.join(", ")));
-    }
-    let specific: &[&str] = match ty.as_str() {
-        "text" => TEXT,
-        "image" => IMAGE,
-        "hand" => HAND,
-        "ticks" => TICKS,
-        "arc" => ARC,
-        "repeat" => REPEAT,
-        _ => &[],
+    let specific: &[&str] = match elements::find(&ty) {
+        Some(k) => k.attrs,
+        None if ty == "repeat" => REPEAT,
+        None => {
+            let types = types();
+            return Err(format!("{path}: unknown type `{ty}`{} (expected one of {})", suggest(&ty, &[&types]), types.join(", ")));
+        }
     };
     let (mut attrs, mut children, mut when) = (BTreeMap::new(), Vec::new(), None);
     for (k, v) in t {
@@ -343,6 +339,46 @@ pub fn error_card(msg: &str, size: (f32, f32), theme: &Theme) -> Node {
     card
 }
 
+/// How an element kind's `build` reads its own attributes (see `elements`):
+/// tokens resolved, bindings evaluated, bad values reported as warnings.
+pub struct Attrs<'r, 'a> {
+    b: &'r mut B<'a>,
+    e: &'r Elem,
+    path: &'r str,
+}
+
+impl<'a> Attrs<'_, 'a> {
+    pub fn theme(&self) -> &'a Theme {
+        self.b.theme
+    }
+
+    pub fn value(&mut self, k: &str) -> Result<Option<Value>, String> {
+        self.b.get(self.e, k, self.path)
+    }
+
+    pub fn num(&mut self, k: &str) -> Result<Option<f32>, String> {
+        self.b.f(self.e, k, self.path)
+    }
+
+    pub fn flag(&mut self, k: &str) -> Result<Option<bool>, String> {
+        self.b.flag(self.e, k, self.path)
+    }
+
+    pub fn text(&mut self, k: &str) -> Result<Option<String>, String> {
+        self.b.text(self.e, k, self.path)
+    }
+
+    pub fn color(&mut self, k: &str) -> Result<Option<Color>, String> {
+        self.b.col(self.e, k, self.path)
+    }
+
+    /// Ask for image `id` to be uploaded; its intrinsic size once known (32x32 until then).
+    pub fn image(&mut self, id: &str) -> (f32, f32) {
+        self.b.images.insert(id.to_string());
+        (self.b.image_size)(id).unwrap_or((32.0, 32.0))
+    }
+}
+
 impl B<'_> {
     fn warn(&mut self, m: String) {
         if !self.warns.contains(&m) {
@@ -536,7 +572,8 @@ impl B<'_> {
         }
         let abs = self.text(e, "position", path)?.as_deref() == Some("absolute");
         let has_inset = ["inset", "left", "top", "right", "bottom"].iter().any(|k| e.attrs.contains_key(*k));
-        let implicit_fill = matches!(e.ty.as_str(), "hand" | "ticks" | "arc") && !e.attrs.contains_key("width") && !e.attrs.contains_key("height");
+        let fills_parent = elements::find(&e.ty).is_some_and(|k| k.fills_parent);
+        let implicit_fill = fills_parent && !e.attrs.contains_key("width") && !e.attrs.contains_key("height");
         if abs || has_inset || implicit_fill {
             st.position = Position::Absolute;
             let mut ins = [auto(), auto(), auto(), auto()]; // l t r b
@@ -652,22 +689,6 @@ impl B<'_> {
         self.scope.peek(name).and_then(|v| v.as_f64()).unwrap_or(0.0)
     }
 
-    fn weight(v: &Value) -> u16 {
-        match v {
-            Value::Num(n) => *n as u16,
-            Value::Str(s) => match s.as_str() {
-                "thin" => 100,
-                "light" => 300,
-                "medium" => 500,
-                "semibold" => 600,
-                "bold" => 700,
-                "black" => 900,
-                _ => 400,
-            },
-            _ => 400,
-        }
-    }
-
     fn build_elem(&mut self, e: &Elem, key: &str) -> Result<Vec<Node>, String> {
         let path = key.to_string();
         if let Some(w) = &e.when {
@@ -683,75 +704,8 @@ impl B<'_> {
         self.look(e, &mut n, &path)?;
         self.interact(e, &mut n, &path)?;
 
-        match e.ty.as_str() {
-            "text" => {
-                let theme = self.theme;
-                let mut spec = TextSpec { size: theme.num("font-size-md"), color: theme.color("text"), family: theme.str("font-body"), ..Default::default() };
-                spec.text = self.text(e, "text", &path)?.unwrap_or_default();
-                if let Some(s) = self.f(e, "size", &path)? {
-                    spec.size = s.max(1.0);
-                }
-                if let Some(c) = self.col(e, "color", &path)? {
-                    spec.color = c;
-                }
-                if let Some(f) = self.text(e, "font", &path)? {
-                    spec.family = f;
-                }
-                if let Some(w) = self.get(e, "weight", &path)? {
-                    spec.weight = Self::weight(&w);
-                }
-                if let Some(a) = self.text(e, "text_align", &path)? {
-                    spec.align = TextAlign::parse(&a);
-                }
-                spec.wrap = self.flag(e, "text_wrap", &path)?.unwrap_or(false);
-                if let Some(l) = self.f(e, "line_height", &path)? {
-                    spec.line_height = l;
-                }
-                n.kind = Kind::Text(spec);
-            }
-            "image" => {
-                let id = self.text(e, "src", &path)?.unwrap_or_default();
-                self.images.insert(id.clone());
-                let (w, h) = (self.image_size)(&id).unwrap_or((32.0, 32.0));
-                n.kind = Kind::Image(ImageSpec { id, w, h, tint: self.col(e, "tint", &path)? });
-            }
-            "hand" => {
-                let text = self.theme.color("hand");
-                n.kind = Kind::Hand(HandSpec {
-                    angle: self.f(e, "angle", &path)?.unwrap_or(0.0),
-                    length: self.f(e, "length", &path)?.unwrap_or(0.8),
-                    tail: self.f(e, "tail", &path)?.unwrap_or(0.1),
-                    width: self.f(e, "stroke", &path)?.unwrap_or(2.0),
-                    color: self.col(e, "color", &path)?.unwrap_or(text),
-                });
-            }
-            "arc" => {
-                n.kind = Kind::Arc(ArcSpec {
-                    start: self.f(e, "start", &path)?.unwrap_or(225.0),
-                    sweep: self.f(e, "sweep", &path)?.unwrap_or(270.0).clamp(1.0, 360.0),
-                    value: self.f(e, "value", &path)?.unwrap_or(0.0).clamp(0.0, 100.0),
-                    width: self.f(e, "stroke", &path)?.unwrap_or(6.0).max(1.0),
-                    color: self.col(e, "color", &path)?.unwrap_or_else(|| self.theme.color("accent")),
-                    track: self.col(e, "track", &path)?.unwrap_or_else(|| self.theme.color("track")),
-                });
-            }
-            "ticks" => {
-                let tick = self.theme.color("tick");
-                let hand = self.theme.color("hand");
-                n.kind = Kind::Ticks(TicksSpec {
-                    count: self.f(e, "count", &path)?.unwrap_or(60.0).max(1.0) as u32,
-                    major_every: self.f(e, "major_every", &path)?.unwrap_or(5.0) as u32,
-                    len: self.f(e, "tick_length", &path)?.unwrap_or(5.0),
-                    major_len: self.f(e, "major_length", &path)?.unwrap_or(10.0),
-                    width: self.f(e, "tick_width", &path)?.unwrap_or(1.2),
-                    major_width: self.f(e, "major_width", &path)?.unwrap_or(2.4),
-                    color: self.col(e, "color", &path)?.unwrap_or(tick),
-                    major_color: self.col(e, "major_color", &path)?.unwrap_or(hand),
-                    inset: self.f(e, "tick_inset", &path)?.unwrap_or(8.0),
-                });
-            }
-            _ => {}
-        }
+        let kind = elements::find(&e.ty).ok_or_else(|| format!("{path}: unknown type `{}`", e.ty))?;
+        n.kind = (kind.build)(&mut Attrs { b: self, e, path: &path })?;
         for (i, c) in e.children.iter().enumerate() {
             let kids = self.build_elem(c, &format!("{key}/{i}"))?;
             n.children.extend(kids);
@@ -826,6 +780,18 @@ mod tests {
         let e = WidgetDef::parse("t", "nmae='x'\n[root]").unwrap_err();
         assert!(e.contains("did you mean `name`"), "{e}");
         assert!(WidgetDef::parse("t", "[root]\ntext='{1 +}'\ntype='text'").is_err()); // bad expression caught at parse time
+    }
+
+    #[test]
+    fn element_kinds_come_from_the_table_and_keep_their_own_attributes() {
+        for k in elements::KINDS {
+            assert!(k.attrs.iter().all(|a| !COMMON.contains(a)), "`{}` redeclares a common attribute", k.name);
+        }
+        let e = WidgetDef::parse("t", "[root]\ntype='nope'").unwrap_err();
+        assert!(e.contains("box, text, image, hand, ticks, arc, repeat"), "{e}");
+        assert!(WidgetDef::parse("t", "[root]\ntype='arc'\nsweep=90\nvalue=50").is_ok());
+        let e = WidgetDef::parse("t", "[root]\ntype='arc'\nangle=90").unwrap_err();
+        assert!(e.contains("unknown attribute `angle` on `arc`"), "an attribute of another kind is rejected: {e}");
     }
 
     #[test]
