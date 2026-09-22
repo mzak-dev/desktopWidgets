@@ -1,7 +1,7 @@
-//! Element tree -> taffy layout -> draw list + hit regions. Both widget
-//! definition files (`format`) and the Rust-built settings window produce the
-//! same `Node` tree (decision 9): one layout path, one render path.
+//! Node tree -> taffy layout -> draw list + hit regions, shared by widgets and
+//! the settings window (decision 9).
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use taffy::prelude::*;
@@ -9,64 +9,32 @@ use taffy::prelude::*;
 use crate::anim::{Anim, Ease};
 use crate::color::Color;
 use crate::draw::*;
+use crate::elements::{Shape, ShapeCx, rgba_with_opacity};
 use crate::text::{TextEngine, TextSpec};
+
+pub use crate::elements::{ArcSpec, HandSpec, TicksSpec};
 
 #[derive(Clone, Debug)]
 pub enum Kind {
     Box,
     Text(TextSpec),
     Image(ImageSpec),
-    /// A clock-style hand from the centre of its rect.
-    Hand(HandSpec),
-    Ticks(TicksSpec),
-    /// A gauge: a track ring with a value arc over it, sized by the smaller side.
-    Arc(ArcSpec),
+    Shape(Arc<dyn Shape>),
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct ArcSpec {
-    /// Degrees clockwise from 12 o'clock.
-    pub start: f32,
-    pub sweep: f32,
-    /// 0..=100.
-    pub value: f32,
-    pub width: f32,
-    pub color: Color,
-    pub track: Color,
+impl Kind {
+    pub fn shape(s: impl Shape + 'static) -> Kind {
+        Kind::Shape(Arc::new(s))
+    }
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct ImageSpec {
     pub id: String,
-    /// Intrinsic size, used when the style gives none.
+    /// Intrinsic size, used when the style sets none.
     pub w: f32,
     pub h: f32,
     pub tint: Option<Color>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct HandSpec {
-    /// Degrees clockwise from 12 o'clock.
-    pub angle: f32,
-    /// Fractions of the radius (half the smaller side).
-    pub length: f32,
-    pub tail: f32,
-    pub width: f32,
-    pub color: Color,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct TicksSpec {
-    pub count: u32,
-    pub major_every: u32,
-    pub len: f32,
-    pub major_len: f32,
-    pub width: f32,
-    pub major_width: f32,
-    pub color: Color,
-    pub major_color: Color,
-    /// Distance from the rim, px.
-    pub inset: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -79,8 +47,7 @@ pub struct Shadow {
 #[derive(Clone, Copy, Debug)]
 pub struct Look {
     pub fill: Color,
-    /// Bottom colour for a vertical gradient.
-    pub fill2: Option<Color>,
+    pub gradient_bottom: Option<Color>,
     pub border: f32,
     pub border_color: Color,
     pub radius: f32,
@@ -90,7 +57,7 @@ pub struct Look {
 
 impl Default for Look {
     fn default() -> Self {
-        Self { fill: Color::default(), fill2: None, border: 0.0, border_color: Color::default(), radius: 0.0, opacity: 1.0, shadow: None }
+        Self { fill: Color::default(), gradient_bottom: None, border: 0.0, border_color: Color::default(), radius: 0.0, opacity: 1.0, shadow: None }
     }
 }
 
@@ -123,7 +90,7 @@ pub struct Enter {
 
 #[derive(Clone, Debug)]
 pub struct Node {
-    /// Hierarchical identity ("0/2/1"): keys hover, animation and text state.
+    /// Hierarchical ("0/2/1"); keys hover, animation and text state.
     pub key: String,
     pub style: Style,
     pub kind: Kind,
@@ -132,14 +99,11 @@ pub struct Node {
     pub action: Option<String>,
     pub transition: Transition,
     pub enter: Option<Enter>,
-    /// `Some(offset)` makes this a clipping, vertically scrolling container.
-    pub scroll: Option<f32>,
+    /// Makes it a clipping, vertically scrolling container.
+    pub scroll_offset: Option<f32>,
     pub clip: bool,
-    /// Draw this subtree on the overlay layer.
     pub overlay: bool,
-    /// Take part in hit-testing even without an action.
-    pub hit: bool,
-    /// Translate this node and its subtree; tweened by `transition` when set.
+    pub hit_testable: bool,
     pub offset: Option<(f32, f32)>,
     pub children: Vec<Node>,
 }
@@ -155,16 +119,15 @@ impl Node {
             action: None,
             transition: Transition::default(),
             enter: None,
-            scroll: None,
+            scroll_offset: None,
             clip: false,
             overlay: false,
-            hit: false,
+            hit_testable: false,
             offset: None,
             children: Vec::new(),
         }
     }
 
-    // ---- fluent builders (used by the Rust-built settings window) ----------
     pub fn row(mut self) -> Self {
         self.style.flex_direction = FlexDirection::Row;
         self
@@ -288,11 +251,11 @@ impl Node {
         self
     }
     pub fn hit(mut self) -> Self {
-        self.hit = true;
+        self.hit_testable = true;
         self
     }
     pub fn scroll(mut self, off: f32) -> Self {
-        self.scroll = Some(off);
+        self.scroll_offset = Some(off);
         self
     }
     pub fn clip(mut self) -> Self {
@@ -332,9 +295,7 @@ impl Node {
     }
 }
 
-// ---- layout output ---------------------------------------------------------
-
-/// A hit region, in logical px.
+/// Logical px.
 #[derive(Clone, Debug)]
 pub struct Hit {
     pub rect: [f32; 4],
@@ -354,19 +315,16 @@ pub struct ScrollInfo {
 pub struct Frame {
     pub list: DrawList,
     pub hits: Vec<Hit>,
-    /// Overlay-layer hits; appended after `hits` so popups are on top.
-    ov_hits: Vec<Hit>,
+    /// Appended after `hits` so popups are on top.
+    overlay_hits: Vec<Hit>,
     pub scrolls: Vec<ScrollInfo>,
-    /// Laid-out rect (x,y,w,h, logical) per key, for controllers that need it.
+    /// (x, y, w, h) in logical px, per key.
     pub rects: Vec<(String, [f32; 4])>,
-    /// True while any transition is still running: keeps the redraw clock alive.
     pub animating: bool,
-    /// Size the root asked for (its content), logical.
-    pub content: (f32, f32),
+    pub content_size: (f32, f32),
 }
 
 impl Frame {
-    /// Topmost hit region under a logical point.
     pub fn hit_at(&self, x: f32, y: f32) -> Option<&Hit> {
         self.hits.iter().rev().find(|h| {
             let [rx, ry, rw, rh] = h.rect;
@@ -406,7 +364,7 @@ fn build<'a>(tree: &mut TaffyTree<usize>, n: &'a Node, nodes: &mut Vec<&'a Node>
     if in_scroll {
         style.flex_shrink = 0.0;
     }
-    if n.scroll.is_some() {
+    if n.scroll_offset.is_some() {
         style.overflow = taffy::Point { x: taffy::Overflow::Visible, y: taffy::Overflow::Scroll };
     }
     let id = if n.children.is_empty() {
@@ -416,14 +374,13 @@ fn build<'a>(tree: &mut TaffyTree<usize>, n: &'a Node, nodes: &mut Vec<&'a Node>
         }
         .expect("leaf")
     } else {
-        let kids: Vec<NodeId> = n.children.iter().map(|c| build(tree, c, nodes, ids, n.scroll.is_some())).collect();
+        let kids: Vec<NodeId> = n.children.iter().map(|c| build(tree, c, nodes, ids, n.scroll_offset.is_some())).collect();
         tree.new_with_children(style, &kids).expect("node")
     };
     ids[idx] = id;
     id
 }
 
-/// Lay `root` out inside `size` (logical px) and produce draw + hit data.
 pub fn layout(root: &Node, size: (f32, f32), env: &mut Env) -> Frame {
     let mut tree: TaffyTree<usize> = TaffyTree::new();
     let (mut nodes, mut ids) = (Vec::new(), Vec::new());
@@ -471,18 +428,13 @@ pub fn layout(root: &Node, size: (f32, f32), env: &mut Env) -> Frame {
     let ctx = Ctx { clip: NO_CLIP, opacity: 1.0, layer: 0 };
     emit(root, &ids, &mut next, &tree, (0.0, 0.0), &ctx, env, &mut frame);
     let l = tree.layout(rid).expect("root");
-    frame.content = (l.size.width, l.size.height);
-    let ov = std::mem::take(&mut frame.ov_hits);
+    frame.content_size = (l.size.width, l.size.height);
+    let ov = std::mem::take(&mut frame.overlay_hits);
     frame.hits.extend(ov);
     env.text.end_frame();
     env.anim.end_frame();
     frame.animating = env.anim.animating(env.now);
     frame
-}
-
-fn rgba(c: Color, op: f32) -> [f32; 4] {
-    let [r, g, b, a] = c.0;
-    [r, g, b, a * op]
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -517,7 +469,7 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
     let bc_t = if hov { n.hover.border_color.unwrap_or(n.look.border_color) } else { n.look.border_color };
     let op_t = if hov { n.hover.opacity.unwrap_or(n.look.opacity) } else { n.look.opacity };
     let fill = Color(animate("fill", fill_t.0));
-    let fill2 = n.look.fill2.map(|f2| {
+    let fill2 = n.look.gradient_bottom.map(|f2| {
         // keep a gradient's bottom stop in step with a hover-shifted top stop
         let d = [fill.0[0] - n.look.fill.0[0], fill.0[1] - n.look.fill.0[1], fill.0[2] - n.look.fill.0[2]];
         Color([(f2.0[0] + d[0]).clamp(0.0, 1.0), (f2.0[1] + d[1]).clamp(0.0, 1.0), (f2.0[2] + d[2]).clamp(0.0, 1.0), f2.0[3] * fill.0[3] / n.look.fill.0[3].max(1e-4)])
@@ -542,7 +494,7 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                 radius: r,
                 kind: KIND_SHADOW,
                 soft: sh.blur * s,
-                fill_top: rgba(sh.color, op),
+                fill_top: rgba_with_opacity(sh.color, op),
                 clip,
                 ..Default::default()
             });
@@ -554,9 +506,9 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                 radius: r,
                 border: n.look.border * s,
                 kind: KIND_RECT,
-                fill_top: rgba(fill, op),
-                fill_bot: rgba(fill2.unwrap_or(fill), op),
-                border_color: rgba(border_color, op),
+                fill_top: rgba_with_opacity(fill, op),
+                fill_bot: rgba_with_opacity(fill2.unwrap_or(fill), op),
+                border_color: rgba_with_opacity(border_color, op),
                 clip,
                 ..Default::default()
             });
@@ -582,8 +534,8 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                         b: [cxp, (y + h) * s - 1.0 * s],
                         radius: 0.75 * s,
                         kind: KIND_CAPSULE,
-                        fill_top: rgba(color, op),
-                        fill_bot: rgba(color, op),
+                        fill_top: rgba_with_opacity(color, op),
+                        fill_bot: rgba_with_opacity(color, op),
                         clip,
                         ..Default::default()
                     });
@@ -606,76 +558,19 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                     },
                 });
             }
-            Kind::Hand(hd) => {
-                let rad = (w.min(h) / 2.0) * s;
-                let a = hd.angle.to_radians();
-                let dir = [a.sin(), -a.cos()];
-                let (p0, p1) = (
-                    [cx - dir[0] * rad * hd.tail, cy - dir[1] * rad * hd.tail],
-                    [cx + dir[0] * rad * hd.length, cy + dir[1] * rad * hd.length],
-                );
-                list.shapes.push(Inst {
-                    a: p0,
-                    b: p1,
-                    radius: hd.width * s / 2.0,
-                    kind: KIND_CAPSULE,
-                    fill_top: rgba(hd.color, op),
-                    fill_bot: rgba(hd.color, op),
-                    clip,
-                    ..Default::default()
-                });
-            }
-            Kind::Arc(ar) => {
-                let radius = (w.min(h) - ar.width) / 2.0 * s;
-                let mut push = |sweep: f32, col: Color| {
-                    list.shapes.push(Inst {
-                        a: [cx, cy],
-                        b: [ar.start.to_radians(), sweep.to_radians()],
-                        radius,
-                        border: ar.width * s / 2.0,
-                        kind: KIND_ARC,
-                        fill_top: rgba(col, op),
-                        fill_bot: rgba(col, op),
-                        clip,
-                        ..Default::default()
-                    });
-                };
-                push(ar.sweep, ar.track);
-                if ar.value > 0.0 {
-                    push(ar.sweep * ar.value.min(100.0) / 100.0, ar.color);
-                }
-            }
-            Kind::Ticks(tk) => {
-                let rad = (w.min(h) / 2.0 - tk.inset) * s;
-                for i in 0..tk.count {
-                    let major = tk.major_every > 0 && i % tk.major_every == 0;
-                    let (len, wd, col) = if major { (tk.major_len, tk.major_width, tk.major_color) } else { (tk.len, tk.width, tk.color) };
-                    let a = (i as f32 / tk.count as f32) * std::f32::consts::TAU;
-                    let dir = [a.sin(), -a.cos()];
-                    list.shapes.push(Inst {
-                        a: [cx + dir[0] * rad, cy + dir[1] * rad],
-                        b: [cx + dir[0] * (rad - len * s), cy + dir[1] * (rad - len * s)],
-                        radius: wd * s / 2.0,
-                        kind: KIND_CAPSULE,
-                        fill_top: rgba(col, op),
-                        fill_bot: rgba(col, op),
-                        clip,
-                        ..Default::default()
-                    });
-                }
-            }
+            Kind::Shape(shape) => shape.emit(&ShapeCx { center_px: [cx, cy], logical_size: (w, h), scale: s, inherited_opacity: op, clip_px: clip }, &mut list.shapes),
         }
     }
 
-    if n.hit || n.action.is_some() || n.hover.any() {
+    if n.hit_testable || n.action.is_some() || n.hover.any() {
         let h = Hit { rect, clip: [clip[0] / s, clip[1] / s, clip[2] / s, clip[3] / s], key: key.to_string(), action: n.action.clone() };
-        if layer == 1 { out.ov_hits.push(h) } else { out.hits.push(h) }
+        if layer == 1 { out.overlay_hits.push(h) } else { out.hits.push(h) }
     }
     out.rects.push((key.to_string(), rect));
 
     let mut child_ctx = Ctx { clip, opacity: op, layer };
     let mut child_origin = (x, y);
-    if let Some(off) = n.scroll {
+    if let Some(off) = n.scroll_offset {
         child_ctx.clip = intersect(clip, [x * s, y * s, (x + w) * s, (y + h) * s]);
         child_origin.1 -= off;
         out.scrolls.push(ScrollInfo { key: key.to_string(), view_h: h, content_h: l.scrollable_overflow_rect.bottom.max(h) });

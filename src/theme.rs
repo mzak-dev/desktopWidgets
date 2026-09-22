@@ -1,7 +1,5 @@
-//! Design tokens (decision 19). A Theme is three independently swappable axes,
-//! palette / font set / glyph set, layered over built-in base defaults, with
-//! per-Instance overrides on top. A token nobody defines resolves to loud
-//! magenta (decision 14), never a plausible default.
+//! Design tokens (decision 19): palette, font set and glyph set over built-in
+//! defaults, overrides on top. An undefined token is loud magenta (decision 14).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

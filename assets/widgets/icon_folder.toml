@@ -11,6 +11,7 @@ label = "Title"
 [params.items]
 type = "shortcuts"
 default = []
+seed = "starter-apps"   # a new one starts with a few apps
 label = "Shortcuts"
 
 [params.folder]

@@ -1,10 +1,8 @@
-//! Binding expressions (decision 11): arithmetic, comparison, booleans,
-//! ternary, `{expr|fmt}` interpolation. Total by construction: no loops, no
-//! user functions, no side effects, bounded depth and length, so evaluating
-//! one can never hang a redraw.
+//! Binding expressions (decision 11). Total by construction: no loops, no user
+//! functions, no side effects, bounded depth, so one can never hang a redraw.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::value::Value;
 
@@ -42,17 +40,23 @@ enum Op {
 #[derive(Clone, Debug)]
 pub struct Expr(Node);
 
-/// Names visible to expressions, plus a record of which dotted paths an
-/// evaluation actually read (the redraw scheduler's dependency set).
+/// Records every dotted path read: the scheduler's dependency set. Unset names
+/// fall through to the provider, asked at most once per name.
 #[derive(Default)]
-pub struct Scope {
+pub struct Scope<'a> {
     vars: Vec<(String, Value)>,
     deps: RefCell<BTreeSet<String>>,
+    provider: Option<&'a dyn Fn(&str) -> Option<Value>>,
+    provided: RefCell<BTreeMap<String, Value>>,
 }
 
-impl Scope {
+impl<'a> Scope<'a> {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_provider(provider: &'a dyn Fn(&str) -> Option<Value>) -> Self {
+        Scope { provider: Some(provider), ..Self::default() }
     }
 
     pub fn set(&mut self, name: &str, v: Value) {
@@ -71,29 +75,41 @@ impl Scope {
         self.deps.borrow_mut().clear();
     }
 
-    /// Read a top-level name without recording a dependency.
-    pub fn peek(&self, name: &str) -> Option<&Value> {
+    /// How Rust Widgets read Data Sources and record the dependency.
+    pub fn read(&self, path: &str) -> Result<Value, String> {
+        let parts: Vec<String> = path.split('.').map(String::from).collect();
+        self.lookup(&parts)
+    }
+
+    pub fn peek_untracked(&self, name: &str) -> Option<&Value> {
         self.vars.iter().rev().find(|(n, _)| n == name).map(|(_, v)| v)
     }
 
     fn lookup(&self, path: &[String]) -> Result<Value, String> {
-        let root = self
-            .vars
-            .iter()
-            .rev()
-            .find(|(n, _)| *n == path[0])
-            .map(|(_, v)| v)
-            .ok_or_else(|| format!("undefined name `{}`", path[0]))?;
-        let mut cur = root;
-        for seg in &path[1..] {
-            cur = cur.get(seg).ok_or_else(|| format!("undefined `{}`", path.join(".")))?;
-        }
+        let walk = |root: &Value| -> Result<Value, String> {
+            let mut cur = root;
+            for seg in &path[1..] {
+                cur = cur.get(seg).ok_or_else(|| format!("undefined `{}`", path.join(".")))?;
+            }
+            Ok(cur.clone())
+        };
+        let undefined = || format!("undefined name `{}`", path[0]);
+        let v = match self.vars.iter().rev().find(|(n, _)| *n == path[0]) {
+            Some((_, root)) => walk(root)?,
+            None => {
+                let mut provided = self.provided.borrow_mut();
+                if !provided.contains_key(&path[0]) {
+                    let v = self.provider.and_then(|p| p(&path[0])).ok_or_else(undefined)?;
+                    provided.insert(path[0].clone(), v);
+                }
+                walk(&provided[&path[0]])?
+            }
+        };
         self.deps.borrow_mut().insert(path.join("."));
-        Ok(cur.clone())
+        Ok(v)
     }
 }
 
-// ---- lexer -----------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
 enum Tok {
@@ -154,7 +170,6 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
     Ok(out)
 }
 
-// ---- parser (Pratt) --------------------------------------------------------
 
 struct Parser {
     toks: Vec<Tok>,
@@ -315,9 +330,8 @@ fn num(v: &Value, what: &str) -> Result<f64, String> {
     v.as_f64().ok_or_else(|| format!("`{what}` needs a number, got `{v}`"))
 }
 
-// Not code execution: this walks our own parsed `Node` tree over `Value`s. The
-// grammar has no loops, assignments, imports or host calls (see `call`'s fixed
-// whitelist), so it cannot run anything the user typed, only compute a value.
+// Walks our own parsed tree over `Value`s: no loops, assignments or host calls
+// (`call` is a fixed whitelist), so nothing the user typed can run.
 fn eval(n: &Node, sc: &Scope) -> Result<Value, String> {
     Ok(match n {
         Node::Lit(v) => v.clone(),
@@ -419,7 +433,6 @@ fn call(name: &str, a: &[Value]) -> Result<Value, String> {
     })
 }
 
-// ---- templates: "{clock.hour|02}:{clock.minute|02}" ------------------------
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Fmt {
@@ -526,7 +539,6 @@ impl Template {
         Ok(Template(parts))
     }
 
-    /// True when there is no `{}` at all: a plain literal.
     pub fn is_literal(&self) -> bool {
         self.0.iter().all(|p| matches!(p, Part::Lit(_)))
     }
@@ -587,6 +599,22 @@ mod tests {
         // `||` inside an interpolation is logical-or, not a format separator
         assert_eq!(Template::parse("{0 || 4}").unwrap().eval(&sc).unwrap(), Value::Num(4.0));
         assert!(Template::parse("plain").unwrap().is_literal());
+    }
+
+    #[test]
+    fn provided_names_are_asked_for_once_and_only_when_read() {
+        let asked = RefCell::new(Vec::new());
+        let provider = |n: &str| {
+            asked.borrow_mut().push(n.to_string());
+            (n == "clock").then(|| Value::obj([("minute", 5.into())]))
+        };
+        let mut sc = Scope::with_provider(&provider);
+        sc.set("param", Value::obj([("x", 1.into())]));
+        let t = Template::parse("{clock.minute + clock.minute + param.x}").unwrap();
+        assert_eq!(t.eval(&sc).unwrap(), Value::Num(11.0));
+        assert_eq!(*asked.borrow(), ["clock"], "one ask per name, none for names set on the scope");
+        assert!(sc.deps().contains("clock.minute"), "provided reads are dependencies too");
+        assert!(Template::parse("{sys.cpu}").unwrap().eval(&sc).is_err(), "a name nobody provides is still undefined");
     }
 
     #[test]

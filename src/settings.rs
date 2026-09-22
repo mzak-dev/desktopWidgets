@@ -1,10 +1,6 @@
-//! The settings window, built on the same renderer as the widgets (decision 6)
-//! from the Rust builder API (decision 9). `UiState` holds all the logic with
-//! no window or GPU, so it is unit-testable; `SettingsWin` is the thin shell.
-//!
-//! Every interactive node carries an action string (`nav:widgets`,
-//! `tog:clock-1|ticks`, ...). `UiState::act` turns an action into `Cmd`s that
-//! the app applies; the window never mutates app state directly.
+//! The settings window, on the widgets' renderer (decisions 6, 9). Nodes carry
+//! action strings (`tog:clock-1|ticks`) that `UiState::act` turns into `Cmd`s
+//! for the app, with no window or GPU, so it is unit-testable.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,17 +17,15 @@ use crate::anim::{Anim, Ease};
 use crate::color::Color;
 use crate::data::Shortcut;
 use crate::dialog;
-use crate::format::{ParamDef, ParamType, WidgetDef};
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
 use crate::text::TextEngine;
 use crate::theme::{Library, Selection, Theme};
 use crate::ui::{self, Env, Frame, Kind, Node};
 use crate::value::Value;
-use crate::widgets::Registry;
-use crate::workspace::Workspace;
+use crate::widgets::{ParamDef, ParamType, Registry, WidgetMeta};
+use crate::workspace::{Flag, Workspace};
 
-/// Everything the settings window may read.
 pub struct Ctx<'a> {
     pub ws: &'a Workspace,
     pub reg: &'a Registry,
@@ -58,8 +52,7 @@ pub enum Cmd {
     Gpu(String),
     Autostart(bool),
     Grid(f32),
-    /// A global on/off style option: `blur`, `outlines` or `header_drag`.
-    Flag(String, bool),
+    Flag(Flag, bool),
     Edit(bool),
     Reload,
     OpenFolder,
@@ -127,8 +120,6 @@ enum Open {
     Color(String),
 }
 
-// ---- sizes -----------------------------------------------------------------------
-
 const GUTTER: f32 = 24.0;
 const WIN: (f32, f32) = (960.0, 680.0);
 const NAV_W: f32 = 196.0;
@@ -137,9 +128,6 @@ const CONTROL_W: f32 = 250.0;
 const SV_N: usize = 14;
 const HUE_N: usize = 28;
 
-// ---- pure helpers -------------------------------------------------------------------
-
-/// Map a 0..1 fraction to a value snapped to `step` within `[min, max]`.
 pub fn slider_value(frac: f32, min: f64, max: f64, step: f64) -> f64 {
     let raw = min + (max - min) * frac.clamp(0.0, 1.0) as f64;
     let v = if step > 0.0 { (raw / step).round() * step } else { raw };
@@ -163,8 +151,6 @@ fn prev_boundary(s: &str, i: usize) -> usize {
 fn next_boundary(s: &str, i: usize) -> usize {
     s[i.min(s.len())..].chars().next().map_or(s.len(), |c| i + c.len_utf8())
 }
-
-// ---- controls kit -----------------------------------------------------------------------
 
 struct Kit<'a> {
     t: &'a Theme,
@@ -280,7 +266,6 @@ impl Kit<'_> {
         n
     }
 
-    /// A labelled settings row: label + help on the left, the control on the right.
     fn row(&self, key: &str, label: &str, help: &str, control: Node) -> Node {
         let mut left = Node::new(format!("{key}/l")).col().w(LABEL_W).gap(2.0).no_shrink().child(self.txt(format!("{key}/lt"), label, 13.0, self.c("text")).wrap_text());
         if !help.is_empty() {
@@ -299,6 +284,10 @@ impl Kit<'_> {
     }
 }
 
+fn flag_row(k: &Kit, ctx: &Ctx, key: &str, f: Flag) -> Node {
+    k.row(key, f.label(), f.help(), k.toggle(&format!("tg:{}", f.id()), ctx.ws.flag(f), format!("flag:{}", f.id())))
+}
+
 trait TextExt {
     fn grow_text(self) -> Self;
     fn wrap_text(self) -> Self;
@@ -312,8 +301,6 @@ impl TextExt for Node {
     }
 }
 
-// ---- UI state -------------------------------------------------------------------------------
-
 pub struct UiState {
     pub page: Page,
     pub selected: Option<String>,
@@ -325,13 +312,12 @@ pub struct UiState {
     pub caret_on: bool,
     pub caret_at: Instant,
     pub mods: ModifiersState,
-    /// Last-layout rects of popup anchors, so a popup can position itself.
-    pub anchors: HashMap<String, (f32, f32, f32, f32)>,
+    pub popup_anchor_rects: HashMap<String, (f32, f32, f32, f32)>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
-        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), anchors: HashMap::new() }
+        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), popup_anchor_rects: HashMap::new() }
     }
 }
 
@@ -357,8 +343,8 @@ impl UiState {
         ctx.ws.instances.iter().find(|c| c.id == id)
     }
 
-    fn def_of<'a>(&self, ctx: &'a Ctx, widget: &str) -> Option<&'a Arc<WidgetDef>> {
-        ctx.reg.get(widget).and_then(|d| d.as_ref().ok())
+    fn def_of<'a>(&self, ctx: &'a Ctx, widget: &str) -> Option<&'a WidgetMeta> {
+        ctx.reg.get(widget).and_then(|d| d.as_ref().ok()).map(|w| w.meta())
     }
 
     fn param_value(cfg: &crate::workspace::InstanceCfg, p: &ParamDef) -> Value {
@@ -372,8 +358,6 @@ impl UiState {
             None => Color::parse(&s).unwrap_or(crate::color::MAGENTA),
         }
     }
-
-    // -- data for popups and value-bearing controls, keyed by control key --
 
     fn dropdown_items(&self, ctx: &Ctx, key: &str) -> Vec<(String, String)> {
         let two = |v: &[(&str, &str)]| v.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
@@ -505,7 +489,6 @@ impl UiState {
         String::new()
     }
 
-    /// Turn edited text into the command that stores it.
     fn commit_text(&self, ctx: &Ctx, key: &str, text: &str) -> Vec<Cmd> {
         if let Some(t) = key.strip_prefix("hx:") {
             let s = if text.starts_with('#') { text.to_string() } else { format!("#{text}") };
@@ -529,20 +512,17 @@ impl UiState {
         vec![]
     }
 
-    // -- the tree --
-
     fn scroll_of(&self, key: &str) -> f32 {
         self.scroll.get(key).copied().unwrap_or(0.0)
     }
 
-    /// The whole window as a node tree, plus the image ids it needs uploaded.
+    /// Also returns the image ids to upload.
     pub fn build(&self, ctx: &Ctx, size: (f32, f32)) -> (Node, Vec<String>) {
         let k = Kit { t: ctx.theme };
         let mut images = Vec::new();
         let card_size = (size.0 - 2.0 * GUTTER, size.1 - 2.0 * GUTTER);
         let idx = Page::ALL.iter().position(|p| *p == self.page).unwrap_or(0);
 
-        // sidebar
         let mut nav = Node::new("s/nav").col().w(NAV_W).no_shrink().pad(14.0).gap(4.0).fill(Color([0.0, 0.0, 0.0, 0.16]));
         nav = nav.child(
             Node::new("s/brand")
@@ -572,7 +552,6 @@ impl UiState {
                     .child(k.txt(format!("s/nav/{}/t", p.id()), p.title(), 14.0, if sel { k.c("text") } else { k.c("text-dim") }).with_text(|t| t.weight = if sel { 600 } else { 400 })),
             );
         }
-        // a pill that slides to the selected page
         list = list.child(Node::new("s/nav/ind").wh(3.0, 20.0).radius(2.0).fill(k.c("accent")).abs(Some(0.0), Some(8.0 + 10.0), None, None).offset(0.0, idx as f32 * 44.0).transition(300, Ease::Back));
         nav = nav.child(list).child(Node::new("s/nav/sp").grow(1.0));
         nav = nav
@@ -580,7 +559,6 @@ impl UiState {
             .child(Node::new("s/nav/gap").h(6.0))
             .child(k.button("s/quit", "Quit Wayfinder", "quit".into(), false).with_danger(&k));
 
-        // title bar (drag region) + page
         let titlebar = Node::new("s/title")
             .row()
             .h(64.0)
@@ -599,7 +577,7 @@ impl UiState {
             Page::General => self.page_general(&k, ctx),
             Page::Log => self.page_log(&k, ctx),
         };
-        // the whole page fades and slides in when the page changes (new key => enter replays)
+        // a new key per page replays the enter animation
         let page_root = Node::new(format!("s/page/{}", self.page.id())).col().grow(1.0).enter(240, 10.0, 0).child(body);
         let content = Node::new("s/content").col().grow(1.0).child(titlebar).child(page_root);
 
@@ -642,18 +620,15 @@ impl UiState {
         Node::new(key).col().grow(1.0).scroll(self.scroll_of(key)).hit().child(content)
     }
 
-    // -- pages --
-
     fn page_widgets(&self, k: &Kit, ctx: &Ctx, images: &mut Vec<String>) -> Node {
         let sel = self.selected_cfg(ctx);
-        // left: instance list + add
         let mut list = Node::new("w/list").col().gap(4.0);
         if ctx.ws.instances.is_empty() {
             list = list.child(k.txt("w/empty".into(), "No widgets yet. Add one below.", 12.5, k.c("text-dim")).wrap_text());
         }
         for (i, c) in ctx.ws.instances.iter().enumerate() {
             let on = sel.is_some_and(|s| s.id == c.id);
-            let name = ctx.reg.get(&c.widget).and_then(|d| d.as_ref().ok()).map_or(c.widget.clone(), |d| d.name.clone());
+            let name = self.def_of(ctx, &c.widget).map_or(c.widget.clone(), |d| d.name.clone());
             let parked = ctx.parked.contains(&c.id);
             list = list.child(
                 Node::new(format!("w/i/{}", c.id))
@@ -674,7 +649,7 @@ impl UiState {
         let mut add = Node::new("w/add").col().gap(6.0).child(k.section("w/add/h", "Add a widget"));
         let mut chips = Node::new("w/add/chips").row().wrap().gap(6.0);
         for id in ctx.reg.ids() {
-            let label = ctx.reg.get(&id).and_then(|d| d.as_ref().ok()).map_or(id.clone(), |d| d.name.clone());
+            let label = self.def_of(ctx, &id).map_or(id.clone(), |d| d.name.clone());
             chips = chips.child(
                 Node::new(format!("w/add/{id}"))
                     .row()
@@ -881,8 +856,8 @@ impl UiState {
             .child(k.row("ap/glyphs-row", "Glyph set", "Icons for buttons and chrome", Node::new("ap/glyphs/c").col().gap(8.0).child(k.dropdown("th:glyphs", &ctx.ws.theme.glyphs, CONTROL_W, f("th:glyphs"))).child(gl)))
             .child(k.row("ap/pack", "Icon pack", "Replaces app icons; drop PNGs named like the app into Wayfinder/iconpacks/<name>/", k.dropdown("th:pack", &ctx.ws.theme.icon_pack, CONTROL_W, f("th:pack"))))
             .child(k.section("ap/s3", "Tweaks"))
-            .child(k.row("ap/blur", "Blur behind", "Blurs the desktop behind every widget. Drops shadows and rounds corners to the Windows 11 default.", k.toggle("tg:blur", ctx.ws.blur, "flag:blur".into())))
-            .child(k.row("ap/outlines", "Outlines", "Draw a thin border around widgets and their parts", k.toggle("tg:outlines", ctx.ws.outlines, "flag:outlines".into())))
+            .child(flag_row(k, ctx, "ap/blur", Flag::Blur))
+            .child(flag_row(k, ctx, "ap/outlines", Flag::Outlines))
             .child(k.row(
                 "ap/accent",
                 "Accent colour",
@@ -920,7 +895,7 @@ impl UiState {
             .child(k.section("gn/s2", "Behaviour"))
             .child(k.row("gn/auto", "Start with Windows", "Launch quietly into the tray at sign-in", k.toggle("tg:autostart", ws.autostart, "autostart:toggle".into())))
             .child(k.row("gn/grid", "Snap grid", "Edit layout snaps to this many pixels (0 = off). Hold Shift to ignore snapping.", Node::new("gn/grid/c").row().align(taffy::AlignItems::CENTER).gap(12.0).child(k.slider("sl:grid", (grid.3 / grid.1) as f32, 178.0, "sl:grid".into())).child(k.txt("gn/grid/v".into(), &fmt_num(grid.3), 12.5, k.c("text-dim")))))
-            .child(k.row("gn/hd", "Move by header", "Drag the top strip of any widget to move it, without Edit layout", k.toggle("tg:header_drag", ctx.ws.header_drag, "flag:header_drag".into())))
+            .child(flag_row(k, ctx, "gn/hd", Flag::HeaderDrag))
             .child(k.row("gn/hk", "Edit hotkey", "Toggles Edit layout from anywhere", k.txt("gn/hk/t".into(), "Ctrl + Alt + E", 13.0, k.c("text")).with_text(|t| t.weight = 600)))
             .child(k.section("gn/s3", "Files"))
             .child(k.row("gn/files", "Your widgets", "Drop .toml widget definitions here; they reload as you save", Node::new("gn/files/c").row().gap(8.0).child(k.button("gn/open", "Open folder", "openfolder".into(), false)).child(k.button("gn/reload", "Reload all", "reload".into(), false))))
@@ -947,8 +922,6 @@ impl UiState {
         self.scrolling("lg/scroll", body.child(Node::new("lg/pad").h(24.0)))
     }
 
-    // -- popups --
-
     fn popup(&self, k: &Kit, ctx: &Ctx, open: &Open, size: (f32, f32)) -> Node {
         let scrim = Node::new("s/ov/scrim").abs_fill().overlay().on("popup-close");
         let mut root = Node::new("s/ov").abs_fill().overlay().child(scrim);
@@ -956,7 +929,7 @@ impl UiState {
             Open::Dropdown(key) => {
                 let items = self.dropdown_items(ctx, key);
                 let cur = self.dropdown_current(ctx, key);
-                let (ax, ay, aw, ah) = self.anchors.get(key).copied().unwrap_or((size.0 / 2.0 - 120.0, size.1 / 2.0, 240.0, 32.0));
+                let (ax, ay, aw, ah) = self.popup_anchor_rects.get(key).copied().unwrap_or((size.0 / 2.0 - 120.0, size.1 / 2.0, 240.0, 32.0));
                 let n = items.len().max(1);
                 let h = (n as f32 * 34.0 + 12.0).min(280.0);
                 let below = ay + ah + 6.0 + h <= size.1 - 8.0;
@@ -999,7 +972,7 @@ impl UiState {
                 );
             }
             Open::Color(target) => {
-                let (ax, ay, aw, ah) = self.anchors.get(&format!("cp:{target}")).copied().unwrap_or((size.0 / 2.0 - 130.0, size.1 / 2.0 - 100.0, 26.0, 26.0));
+                let (ax, ay, aw, ah) = self.popup_anchor_rects.get(&format!("cp:{target}")).copied().unwrap_or((size.0 / 2.0 - 130.0, size.1 / 2.0 - 100.0, 26.0, 26.0));
                 let pw = 252.0;
                 let ph = 330.0;
                 let x = (ax + aw / 2.0 - pw / 2.0).clamp(8.0, size.0 - pw - 8.0);
@@ -1021,7 +994,6 @@ impl UiState {
                 for i in 0..HUE_N {
                     hue = hue.child(Node::new(format!("cp/hue/{i}")).wh(224.0 / HUE_N as f32, 16.0).fill(Color::from_hsv((i as f32 + 0.5) / HUE_N as f32, 1.0, 1.0)).on(format!("cph:{i}")));
                 }
-                // markers
                 let mx = 14.0 + s * 223.0;
                 let my = 14.0 + (1.0 - v) * 223.0;
                 let sv_wrap = Node::new("cp/svw").w(224.0).h(224.0).child(grid).child(Node::new("cp/svm").wh(14.0, 14.0).radius(7.0).border(2.0, Color([1.0, 1.0, 1.0, 1.0])).abs(Some(mx - 21.0), Some(my - 21.0), None, None));
@@ -1077,14 +1049,11 @@ impl DangerExt for Node {
     }
 }
 
-// ---- actions, editing and input --------------------------------------------------------------
-
 impl UiState {
     fn instance<'a>(ctx: &'a Ctx, id: &str) -> Option<&'a crate::workspace::InstanceCfg> {
         ctx.ws.instances.iter().find(|c| c.id == id)
     }
 
-    /// Record where the open popup's anchor control is, from the last layout.
     pub fn record_anchors(&mut self, frame: &Frame) {
         let key = match &self.open {
             Some(Open::Dropdown(k)) => k.clone(),
@@ -1098,7 +1067,7 @@ impl UiState {
             frame.rect_of(&key)
         };
         if let Some([x, y, w, h]) = rect {
-            self.anchors.insert(key, (x, y, w, h));
+            self.popup_anchor_rects.insert(key, (x, y, w, h));
         }
     }
 
@@ -1145,7 +1114,7 @@ impl UiState {
         vec![]
     }
 
-    /// Handle one action string. `hwnd` parents native dialogs.
+    /// `hwnd` parents native dialogs.
     pub fn act(&mut self, a: &str, ctx: &Ctx, hwnd: Option<windows::Win32::Foundation::HWND>) -> Vec<Cmd> {
         let (verb, rest) = a.split_once(':').unwrap_or((a, ""));
         if verb != "del" {
@@ -1191,15 +1160,7 @@ impl UiState {
             "reset" => vec![Cmd::ResetPos(rest.into())],
             "edit" => vec![Cmd::Edit(!ctx.edit)],
             "autostart" => vec![Cmd::Autostart(!ctx.ws.autostart)],
-            "flag" => {
-                let cur = match rest {
-                    "blur" => ctx.ws.blur,
-                    "outlines" => ctx.ws.outlines,
-                    "header_drag" => ctx.ws.header_drag,
-                    _ => return vec![],
-                };
-                vec![Cmd::Flag(rest.into(), !cur)]
-            }
+            "flag" => Flag::parse(rest).map(|f| vec![Cmd::Flag(f, !ctx.ws.flag(f))]).unwrap_or_default(),
             "dd" => {
                 self.open = if matches!(&self.open, Some(Open::Dropdown(k)) if k == rest) { None } else { Some(Open::Dropdown(rest.into())) };
                 vec![]
@@ -1288,7 +1249,7 @@ impl UiState {
         }
     }
 
-    /// Drag a slider so its wrapper rect maps `x` (window logical px) to a value.
+    /// `x` in window logical px.
     pub fn slide(&mut self, key: &str, x: f32, frame: &Frame, ctx: &Ctx) -> Vec<Cmd> {
         let Some([rx, _, rw, _]) = frame.rect_of(key) else { return vec![] };
         let target = key.strip_prefix("sl:").unwrap_or(key);
@@ -1300,7 +1261,6 @@ impl UiState {
         Self::slider_cmd(target, v).into_iter().collect()
     }
 
-    /// A key press. `text` is the printable text the key produced, if any.
     pub fn on_key(&mut self, key: &Key, text: Option<&str>, ctx: &Ctx) -> Vec<Cmd> {
         let ctrl = self.mods.control_key();
         let Some(f) = self.focus.as_mut() else {
@@ -1371,7 +1331,6 @@ impl UiState {
         self.commit_text(ctx, &k, &t)
     }
 
-    /// Mouse-wheel scrolling of whichever scroll region is under the pointer.
     pub fn wheel(&mut self, dy: f32, mouse: (f32, f32), frame: &Frame) {
         let region = frame.scrolls.iter().rev().find(|s| frame.rect_of(&s.key).is_some_and(|[x, y, w, h]| mouse.0 >= x && mouse.0 < x + w && mouse.1 >= y && mouse.1 < y + h));
         // a popup list takes the wheel while a popup is open
@@ -1383,8 +1342,6 @@ impl UiState {
         }
     }
 }
-
-// ---- the window ----------------------------------------------------------------------------------
 
 pub struct SettingsWin {
     pub window: Arc<Window>,
@@ -1580,12 +1537,11 @@ impl SettingsWin {
         self.animating = frame.animating;
         self.ui.record_anchors(&frame);
         // an open popup needs its anchor rect to position itself; one more frame settles it
-        self.redraw = self.ui.has_popup() && !self.ui.anchors.contains_key(&self.ui.anchor_key());
+        self.redraw = self.ui.has_popup() && !self.ui.popup_anchor_rects.contains_key(&self.ui.anchor_key());
         self.frame = Some(frame);
         self.last = now;
     }
 
-    /// When this window next needs a frame (None = idle).
     pub fn next_frame(&self, now: Instant) -> Option<Instant> {
         if self.redraw {
             return Some(now);

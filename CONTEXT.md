@@ -5,12 +5,32 @@ A desktop widget engine for Windows: transparent, GPU-composited widgets that li
 ## Language
 
 **Widget**:
-A *kind* of thing that can be placed — Clock, DigitalClock, IconFolder, IconList. Authored as a definition file and shareable.
+A *kind* of thing that can be placed — Clock, DigitalClock, IconFolder, IconList, Drawer. Either a TOML Widget or a Rust Widget.
 _Avoid_: gadget, skin, plugin
+
+**TOML Widget**:
+A Widget authored as a definition file: shareable, hot-reloaded, for simple Widgets whose behaviour the format can declare.
+_Avoid_: skin, template
+
+**Rust Widget**:
+A Widget implemented in code, for behaviour a definition file cannot declare. It may still draw its tree from a definition file of the same id (the Drawer does), so restyling it stays a file edit.
+_Avoid_: native widget, plugin
+
+**Element**:
+A building block of a definition file's tree: box, text, image, hand, ticks, arc, and the structural repeat.
+_Avoid_: node (the engine's laid-out tree), component
+
+**Seed**:
+A param value written once when an Instance is added (starter apps for a shortcut list). Unlike a default, it is saved and shows in Settings.
+_Avoid_: default, preset
 
 **Instance**:
 One configured, positioned, sized copy of a Widget on a desktop. What the user drags and resizes. Owns one OS window.
 _Avoid_: widget (when you mean the placed copy)
+
+**Card**:
+The visible body of an Instance inside its window. The window adds a transparent shadow gutter around the card, except while the desktop behind it is blurred.
+_Avoid_: frame, body, panel
 
 **Workspace**:
 The saved arrangement of Instances.
@@ -31,7 +51,7 @@ _Avoid_: theme, glyph set
 The global state in which Instances show handles and can be dragged and resized.
 
 **Data Source**:
-A named producer of values that widget definitions bind to (`clock`, `shortcuts`).
+A named producer of values that widget definitions bind to (`clock`, `sys`, `shortcuts`). It declares how often each of its fields can change, which is what lets an idle desktop cost nothing.
 _Avoid_: measure, plugin
 
 **Z-mode**:
@@ -43,6 +63,8 @@ To hide an Instance whose monitor is absent while remembering it, instead of rel
 ## Relationships
 
 - A **Widget** is instantiated as zero or more **Instances**; a **Workspace** is the set of all Instances.
+- A **TOML Widget** is a tree of **Elements**; a **Rust Widget** builds its tree in code or wraps a TOML Widget's.
+- An **Instance** shows one **Card**; its params may be **Seeded** when it is added.
 - A **Widget** binds to one or more **Data Sources**; its appearance resolves through the active **Theme**.
 - An **Instance** has exactly one **Z-mode** and is anchored to one monitor; if that monitor is absent it is **Parked**.
 

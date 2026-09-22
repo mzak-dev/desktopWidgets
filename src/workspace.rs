@@ -1,8 +1,5 @@
-//! The Workspace: the saved arrangement of Instances (decision 24). App-written
-//! JSON at `%APPDATA%\Wayfinder\workspace.json`; widget definitions are
-//! read-only TOML the app never writes. Positions are anchored to a monitor
-//! and stored relative to its work area (decision 14), never as virtual-desktop
-//! pixels; a missing monitor parks its Instances instead of relocating them.
+//! `workspace.json` (decision 24). Positions are relative to a monitor's work
+//! area (decision 14); a missing monitor parks its Instances instead of moving them.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -73,8 +70,12 @@ impl InstanceCfg {
     }
 
     pub fn set_items(&mut self, items: &[Shortcut]) {
+        self.set_shortcuts("items", items);
+    }
+
+    pub fn set_shortcuts(&mut self, name: &str, items: &[Shortcut]) {
         let list = items.iter().map(|s| serde_json::Value::from(&s.to_value())).collect();
-        self.params.insert("items".into(), serde_json::Value::Array(list));
+        self.params.insert(name.into(), serde_json::Value::Array(list));
     }
 
     pub fn folder(&self) -> String {
@@ -86,19 +87,16 @@ impl InstanceCfg {
 #[serde(default)]
 pub struct Workspace {
     pub version: u32,
-    /// "low" (default) | "high": see ADR-005. `high` selects the dedicated GPU but pins a CPU core on some AMD drivers.
+    /// "low" (default) | "high" | "software": ADR-005.
     pub gpu: String,
     pub theme: Selection,
-    /// Token overrides applied over the whole theme.
+    /// Theme token overrides.
     pub overrides: BTreeMap<String, String>,
     /// Snap grid in logical px (0 = off).
     pub grid: f32,
     pub autostart: bool,
-    /// Blur the desktop behind every widget.
     pub blur: bool,
-    /// Draw widget borders (off = flat, outline-free look).
     pub outlines: bool,
-    /// Drag the top strip of a widget to move it, outside Edit Mode.
     pub header_drag: bool,
     pub instances: Vec<InstanceCfg>,
 }
@@ -106,6 +104,46 @@ pub struct Workspace {
 impl Default for Workspace {
     fn default() -> Self {
         Self { version: 1, gpu: "low".into(), theme: Selection::default(), overrides: BTreeMap::new(), grid: 8.0, autostart: false, blur: false, outlines: true, header_drag: false, instances: Vec::new() }
+    }
+}
+
+/// Adding one: a variant, its `Workspace` field and a `settings::flag_row`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flag {
+    Blur,
+    Outlines,
+    HeaderDrag,
+}
+
+impl Flag {
+    pub const ALL: [Flag; 3] = [Flag::Blur, Flag::Outlines, Flag::HeaderDrag];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Flag::Blur => "blur",
+            Flag::Outlines => "outlines",
+            Flag::HeaderDrag => "header_drag",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Flag> {
+        Flag::ALL.into_iter().find(|f| f.id() == s)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Flag::Blur => "Blur behind",
+            Flag::Outlines => "Outlines",
+            Flag::HeaderDrag => "Move by header",
+        }
+    }
+
+    pub fn help(self) -> &'static str {
+        match self {
+            Flag::Blur => "Blurs the desktop behind every widget. Drops shadows and rounds corners to the Windows 11 default.",
+            Flag::Outlines => "Draw a thin border around widgets and their parts",
+            Flag::HeaderDrag => "Drag the top strip of any widget to move it, without Edit layout",
+        }
     }
 }
 
@@ -133,7 +171,7 @@ impl Workspace {
         }
     }
 
-    /// Write atomically: a crash mid-save never leaves half a file.
+    /// Atomic: a crash mid-save never leaves half a file.
     pub fn save(&self, dir: &Path) -> Result<(), String> {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         let p = Self::path(dir);
@@ -143,12 +181,27 @@ impl Workspace {
         std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
     }
 
+    pub fn flag(&self, f: Flag) -> bool {
+        match f {
+            Flag::Blur => self.blur,
+            Flag::Outlines => self.outlines,
+            Flag::HeaderDrag => self.header_drag,
+        }
+    }
+
+    pub fn set_flag(&mut self, f: Flag, on: bool) {
+        match f {
+            Flag::Blur => self.blur = on,
+            Flag::Outlines => self.outlines = on,
+            Flag::HeaderDrag => self.header_drag = on,
+        }
+    }
+
     pub fn next_id(&self, widget: &str) -> String {
         (1..).map(|n| format!("{widget}-{n}")).find(|id| !self.instances.iter().any(|i| &i.id == id)).unwrap()
     }
 }
 
-// ---- monitors and anchoring ---------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MonitorInfo {
@@ -169,13 +222,13 @@ impl MonitorInfo {
     }
 }
 
-/// Physical top-left for an Instance, or `None` when its monitor is absent (park it).
+/// Physical top-left, or `None` when the monitor is absent (park it).
 pub fn resolve(cfg: &InstanceCfg, monitors: &[MonitorInfo]) -> Option<(i32, i32)> {
     let m = monitors.iter().find(|m| m.name == cfg.monitor.name)?;
     Some((m.work.0 + (cfg.x as f64 * m.scale).round() as i32, m.work.1 + (cfg.y as f64 * m.scale).round() as i32))
 }
 
-/// The inverse: given where a window really is, what to store.
+/// The inverse of `resolve`.
 pub fn anchor(pos: (i32, i32), size: (u32, u32), monitors: &[MonitorInfo]) -> Option<(MonitorRef, f32, f32)> {
     let centre = (pos.0 + size.0 as i32 / 2, pos.1 + size.1 as i32 / 2);
     let dist = |m: &MonitorInfo| {
@@ -251,5 +304,17 @@ mod tests {
         let w: Workspace = serde_json::from_str(r#"{"instances":[{"id":"a","widget":"clock","future_field":1}],"other":true}"#).unwrap();
         assert_eq!((w.instances[0].w, w.gpu.as_str()), (200.0, "low"));
         assert_eq!(Workspace::default().next_id("clock"), "clock-1");
+    }
+
+    #[test]
+    fn flags_read_and_write_the_saved_fields() {
+        let mut w = Workspace::default();
+        for f in Flag::ALL {
+            assert_eq!(Flag::parse(f.id()), Some(f));
+            w.set_flag(f, !w.flag(f));
+        }
+        assert_eq!((w.blur, w.outlines, w.header_drag), (true, false, true));
+        let json = serde_json::to_value(&w).unwrap();
+        assert_eq!((json["blur"].as_bool(), json["outlines"].as_bool(), json["header_drag"].as_bool()), (Some(true), Some(false), Some(true)));
     }
 }

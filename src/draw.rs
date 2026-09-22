@@ -1,6 +1,5 @@
-//! The renderer's only input (the `gfx` seam): a flat, physical-pixel draw list.
-//! Nothing above this module sees a wgpu type, so swapping the renderer later
-//! (Vello, say) touches only `gfx`.
+//! The renderer's only input: a flat, physical-pixel draw list. Nothing above
+//! this sees a wgpu type, so swapping the renderer touches only `gfx`.
 
 use bytemuck::{Pod, Zeroable};
 

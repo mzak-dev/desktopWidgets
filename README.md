@@ -201,6 +201,8 @@ justify = "center"
 
 Unknown attributes are rejected with a suggestion, for example ``unknown attribute `colour` on `text` (did you mean `color`?)``.
 
+**Seeds:** `seed = "starter-apps"` on a `shortcuts` param gives each new Instance a few apps to start from. Unlike `default`, a seed is written once and then edited like any other value.
+
 </details>
 
 <br>
@@ -223,10 +225,14 @@ The settings window is built from the same element tree in Rust, so widgets and 
 
 | | |
 |---|---|
+| `src/widgets/` | the Widget seam: TOML and Rust Widgets, the registry, the build pipeline |
 | `src/format.rs` `expr.rs` | TOML widget format and the total expression language |
+| `src/elements/` | one file per element kind: its attributes, build and drawing |
+| `src/data/` | one file per Data Source (`clock`, `sys`, `shortcuts`) and how often it changes |
+| `src/card.rs` | the card inside each window: shadow gutter, blur, outlines |
 | `src/ui.rs` `text.rs` `anim.rs` | element tree, taffy layout, text shaping (glyphon), declarative transitions |
 | `src/gfx.rs` `draw.rs` `shader.wgsl` | wgpu renderer, SDF shapes, premultiplied alpha |
-| `src/app.rs` `edit.rs` `workspace.rs` | windows, scheduling, Edit Mode, persistence and monitor anchoring |
+| `src/app/` `edit.rs` `workspace.rs` | windows, scheduling, input, Edit Mode, Show Desktop, persistence and monitor anchoring |
 | `src/settings.rs` | the animated settings window |
 | `src/platform/win32.rs` | window styles, z-order, Show Desktop, monitors |
 
@@ -276,7 +282,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 </tr>
 </table>
 
-**Ideas, not promises:** custom components in Lua or Rust (the seam is designed: a component supplies data and element trees, never draws), shader widgets, more data sources (CPU, network, media), an installer.
+**Ideas, not promises:** scripted widgets in Lua (the Widget seam is in place: a Widget supplies an element tree and never draws), shader widgets, more data sources (network, media), an installer.
 
 <br>
 
@@ -293,6 +299,18 @@ Offscreen renders, on the software adapter by default:
 cargo run --release --example render_widgets  -- docs\img\widgets.png
 cargo run --release --example render_settings -- docs\img
 ```
+
+### Extend it
+
+Each kind of extension is one file plus one line of registration:
+
+| To add | Write | Register |
+|---|---|---|
+| a built-in TOML widget | `assets/widgets/<id>.toml` | nothing: `build.rs` finds it |
+| a Rust widget | `src/widgets/<id>.rs` implementing `Widget` (the Drawer is the example) | `registry.rs` |
+| a data source | `src/data/<name>.rs` implementing `DataSource`, with the cadence of each field | `DataSources::builtin` |
+| an element kind | `src/elements/<name>.rs` with a `KIND` and, if it draws, a `Shape` | `elements::KINDS` |
+| a Workspace-wide style switch | a `Flag` variant and its `Workspace` field | a `flag_row` in Settings |
 
 > [!WARNING]
 > `examples/phase0_spike.rs` is kept only as the record of the early measurements. **Do not run it**: it stress-tests multi-window swapchains and, together with the bug fixed in ADR-006, crashed an AMD driver during development.
