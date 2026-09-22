@@ -45,3 +45,9 @@ To hide an Instance whose monitor is absent while remembering it, instead of rel
 - A **Widget** is instantiated as zero or more **Instances**; a **Workspace** is the set of all Instances.
 - A **Widget** binds to one or more **Data Sources**; its appearance resolves through the active **Theme**.
 - An **Instance** has exactly one **Z-mode** and is anchored to one monitor; if that monitor is absent it is **Parked**.
+
+## Commit messages
+
+Conventional Commits, Angular style: `type(scope): short summary`, imperative, lower case, no trailing period, under ~50 characters. Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`. Keep the body to a line or two, only when the why isn't obvious.
+
+Example: `feat(drawer): add blur and tint options`

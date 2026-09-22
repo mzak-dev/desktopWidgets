@@ -22,6 +22,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("digital_clock", include_str!("../assets/widgets/digital_clock.toml")),
     ("icon_list", include_str!("../assets/widgets/icon_list.toml")),
     ("icon_folder", include_str!("../assets/widgets/icon_folder.toml")),
+    ("drawer", include_str!("../assets/widgets/drawer.toml")),
 ];
 
 /// A definition or the reason it failed to load. A broken user file replacing a
@@ -154,7 +155,7 @@ mod tests {
     #[test]
     fn all_builtin_widgets_parse() {
         let r = Registry::load(Path::new("no-such-dir"));
-        assert_eq!(r.ids().len(), 4);
+        assert_eq!(r.ids().len(), 5);
         assert!(r.errors().is_empty(), "built-in widget failed to parse: {:?}", r.errors());
     }
 

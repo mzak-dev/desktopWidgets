@@ -311,3 +311,9 @@ Inspired by [Rainmeter](https://www.rainmeter.net) and the Windows Vista and 7 s
 <br>
 <sub>No license has been chosen yet. Until one is added, all rights are reserved.</sub>
 </div>
+
+## Commit messages
+
+Conventional Commits, Angular style: `type(scope): short summary`, imperative, lower case, no trailing period, under ~50 characters. Types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`. Keep the body to a line or two, only when the why isn't obvious.
+
+Example: `feat(drawer): add blur and tint options`

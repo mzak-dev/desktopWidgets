@@ -45,7 +45,7 @@ fn parse_attr(v: &toml::Value, path: &str) -> Result<Attr, String> {
 
 const COMMON: &[&str] = &[
     "id", "width", "height", "min_width", "min_height", "max_width", "max_height", "grow", "shrink", "basis", "direction", "wrap", "align",
-    "justify", "align_self", "gap", "padding", "margin", "position", "inset", "left", "top", "right", "bottom", "aspect", "fill", "border",
+    "justify", "align_self", "gap", "padding", "margin", "position", "inset", "left", "top", "right", "bottom", "aspect", "fill", "fill_alpha", "border",
     "border_color", "radius", "opacity", "shadow", "clip", "on_click", "hover", "transition", "enter", "scroll", "overlay", "hit",
 ];
 const TEXT: &[&str] = &["text", "size", "color", "font", "weight", "text_align", "text_wrap", "line_height"];
@@ -307,8 +307,14 @@ pub fn gutter(theme: &Theme) -> f32 {
     theme.num("gutter").max(0.0)
 }
 
+/// The gutter an Instance actually uses: none when it blurs the desktop behind
+/// it, because the blur fills the whole window and must not spill past the card.
+pub fn gutter_for(theme: &Theme, blur: bool) -> f32 {
+    if blur { 0.0 } else { gutter(theme) }
+}
+
 pub fn build(def: &WidgetDef, inp: &Inputs, theme: &Theme, image_size: &dyn Fn(&str) -> Option<(f32, f32)>) -> Result<Built, String> {
-    let g = gutter(theme);
+    let g = gutter_for(theme, inp.params.get("blur").is_some_and(|v| v.truthy()));
     let card = ((inp.size.0 - 2.0 * g).max(1.0), (inp.size.1 - 2.0 * g).max(1.0));
     let mut scope = Scope::new();
     let obj = |m: &BTreeMap<String, Value>| Value::Obj(m.clone());
@@ -573,6 +579,12 @@ impl B<'_> {
             Some(v) => n.look.fill = self.color_of(&v, &format!("{path}.fill")),
             None => {}
         }
+        // absolute alpha for the fill only, so a see-through card keeps opaque children
+        // (negative = keep the theme's own alpha)
+        if let Some(a) = self.f(e, "fill_alpha", path)?.filter(|a| *a >= 0.0) {
+            n.look.fill = n.look.fill.with_alpha(a.clamp(0.0, 1.0));
+            n.look.fill2 = n.look.fill2.map(|c| c.with_alpha(a.clamp(0.0, 1.0)));
+        }
         if let Some(w) = self.f(e, "border", path)? {
             n.look.border = w;
             n.look.border_color = self.col(e, "border_color", path)?.unwrap_or_else(|| self.theme.color("border"));
@@ -835,6 +847,22 @@ mod tests {
         assert_eq!(b.root.children[0].style.size.width, length(60.0));
         let Kind::Text(t) = &b.root.children[0].kind else { panic!("card is not text") };
         assert_eq!(t.text, "Hi World 07");
+    }
+
+    #[test]
+    fn fill_alpha_replaces_only_the_fill_alpha_and_a_param_can_pick_the_tint() {
+        let src = "[params.tint]
+type='bool'
+default=true
+[root]
+type='box'
+fill=[\"{param.tint ? '$accent' : '#000000'}\", '$accent']
+fill_alpha=0.5";
+        let b = build_src(src, &[]).unwrap();
+        let l = &b.root.children[0].look;
+        assert_eq!((l.fill.to_hex().as_str(), l.fill.0[3], l.fill2.unwrap().0[3]), ("#6ea8ff80", 0.5, 0.5));
+        let b = build_src(src, &[("tint", false.into())]).unwrap();
+        assert_eq!(b.root.children[0].look.fill.to_hex(), "#00000080");
     }
 
     #[test]
