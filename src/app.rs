@@ -24,7 +24,8 @@ use crate::anim::{Anim, Ease};
 use crate::data::{self, Shortcut};
 use crate::draw::DrawList;
 use crate::edit::{self, Handle, Rect, Snap};
-use crate::format::{self, ExpandInfo};
+use crate::card::Card;
+use crate::format::ExpandInfo;
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
 use crate::platform::win32::{self, ZMode};
@@ -320,17 +321,14 @@ impl App {
         self.save_at = Some(Instant::now() + Duration::from_millis(400));
     }
 
-    fn gutter(&self) -> f32 {
-        format::gutter(&self.theme)
+    /// Instance `i`'s card within its window, under the current style.
+    fn card(&self, i: usize) -> Card {
+        Card::of(&self.ws, &self.ws.instances[i], &self.theme)
     }
 
-    fn blurs(&self, i: usize) -> bool {
-        self.ws.blur || self.ws.instances[i].params.get("blur").and_then(|v| v.as_bool()).unwrap_or(false)
-    }
-
-    /// This Instance's own gutter (zero while it blurs the desktop behind it).
-    fn gutter_of(&self, i: usize) -> f32 {
-        format::gutter_for(&self.theme, self.blurs(i))
+    /// The card a newly added Instance gets.
+    fn new_card(&self) -> Card {
+        Card::of(&self.ws, &InstanceCfg::default(), &self.theme)
     }
 
     // ---- windows -------------------------------------------------------------
@@ -440,7 +438,7 @@ impl App {
 
     fn render(&mut self, i: usize) {
         let now = Instant::now();
-        let gutter = self.gutter_of(i);
+        let card = self.card(i);
         let App { gpu, text, icons, theme, reg, ws, wins, edit, .. } = self;
         let (Some(gpu), Some(iw)) = (gpu.as_mut(), wins.get_mut(i)) else { return };
         let (Some(window), Some(target)) = (iw.window.clone(), iw.target.as_mut()) else { return };
@@ -463,9 +461,7 @@ impl App {
             gpu.fit(target, phys.width, phys.height);
         }
         let scale = window.scale_factor() as f32;
-        // any widget with a `blur` param gets blur-behind under its card
-        // any widget with a `blur` param blurs the desktop behind its window
-        let blur = ws.blur || cfg.params.get("blur").and_then(|v| v.as_bool()).unwrap_or(false);
+        let blur = card.blur;
         if blur != iw.blur {
             if let Some(h) = win32::hwnd_of(&window) {
                 win32::set_blur(h, blur);
@@ -477,13 +473,14 @@ impl App {
         let def = reg.get(&cfg.widget).unwrap_or(&missing);
         let tm = data::now_local();
         let pack = ws.theme.icon_pack.clone();
-        let v = View { cfg, state: &iw.state, items: &iw.items, size, theme, pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, blur: ws.blur, outlines: ws.outlines };
+        let v = View { cfg, state: &iw.state, items: &iw.items, size, theme, pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };
         let mut sv = Services { gpu, icons, text, anim: &mut iw.anim };
         let mut p = widgets::prepare(def, &v, &mut sv);
 
         if *edit {
-            let label = format!("{}, {}   {}x{}", cfg.x as i32, cfg.y as i32, (size.0 - 2.0 * gutter) as i32, (size.1 - 2.0 * gutter) as i32);
-            let ov = edit::overlay(&cfg.id, size, gutter, &label, theme, iw.drag.as_ref().map(|d| d.handle));
+            let (cw, ch) = card.card_size(size);
+            let label = format!("{}, {}   {}x{}", cfg.x as i32, cfg.y as i32, cw as i32, ch as i32);
+            let ov = edit::overlay(&cfg.id, size, card.gutter, &label, theme, iw.drag.as_ref().map(|d| d.handle));
             let mut env = Env { text, anim: &mut iw.ov_anim, hover: None, now, scale };
             let of = ui::layout(&ov, size, &mut env);
             let [l0, _] = of.list.layers;
@@ -663,16 +660,13 @@ impl App {
             origin = (m.work.0, m.work.1);
         }
         for (j, other) in self.wins.iter().enumerate() {
-            let g = self.gutter_of(j) * scale as f32;
             if j == i {
                 continue;
             }
-            if let Some(w) = &other.window {
-                if let (Ok(p), s) = (w.outer_position(), w.outer_size()) {
-                    // snap card edges (window minus gutter), not the transparent margin
-                    xs.extend([p.x + g as i32, p.x + s.width as i32 - g as i32]);
-                    ys.extend([p.y + g as i32, p.y + s.height as i32 - g as i32]);
-                }
+            // snap card edges (window minus gutter), not the transparent margin
+            if let Some(c) = other.window.as_ref().and_then(|w| Self::outer_rect(w)).map(|r| self.card(j).card_of_window(r, scale)) {
+                xs.extend([c.x, c.right()]);
+                ys.extend([c.y, c.bottom()]);
             }
         }
         Snap { xs, ys, threshold: (8.0 * scale) as i32, grid: (self.ws.grid * scale as f32) as i32, origin }
@@ -711,24 +705,23 @@ impl App {
     }
 
     /// The window grows or shrinks by the shadow gutter when blur turns off or
-    /// on, so the visible card stays exactly where it was.
-    fn regutter(&mut self, i: usize) {
+    /// on (`was` is the card before the change), so the visible card stays
+    /// exactly where it was.
+    fn regutter(&mut self, i: usize, was: Card) {
         let Some(r) = self.wins[i].window.as_ref().and_then(|w| Self::outer_rect(w)) else { return };
-        let g = (self.gutter() * self.scale_of(i) as f32).round() as i32;
-        let k = if self.blurs(i) { 1 } else { -1 };
-        self.set_window_rect(i, Rect { x: r.x + k * g, y: r.y + k * g, w: r.w - k * 2 * g, h: r.h - k * 2 * g });
+        let s = self.scale_of(i);
+        let now = self.card(i).window_of_card(was.card_of_window(r, s), s);
+        self.set_window_rect(i, now);
         self.commit_rect(i);
     }
 
     fn min_size_phys(&self, i: usize) -> (i32, i32) {
         let cfg = &self.ws.instances[i];
-        let s = self.scale_of(i);
-        let g = 2.0 * self.gutter_of(i) as f64;
-        let (mw, mh) = match self.reg.get(&cfg.widget) {
+        let min = match self.reg.get(&cfg.widget) {
             Some(Ok(d)) => d.min_size,
             _ => (48.0, 48.0),
         };
-        (((mw as f64 + g) * s) as i32, ((mh as f64 + g) * s) as i32)
+        self.card(i).min_window_px(min, self.scale_of(i))
     }
 
     // ---- input -----------------------------------------------------------------------
@@ -787,11 +780,10 @@ impl App {
         // shift+drag disables snapping
         let snap = if self.mods.shift_key() { Snap { threshold: 0, grid: 0, ..snap } } else { snap };
         // snap the visible card, not the transparent shadow margin around it
-        let g = (self.gutter_of(i) * self.scale_of(i) as f32).round() as i32;
-        let card0 = Rect { x: rect0.x + g, y: rect0.y + g, w: rect0.w - 2 * g, h: rect0.h - 2 * g };
-        let c = edit::apply(handle, card0, cursor.0 - cursor0.0, cursor.1 - cursor0.1, (min.0 - 2 * g, min.1 - 2 * g), &snap);
-        let r = Rect { x: c.x - g, y: c.y - g, w: c.w + 2 * g, h: c.h + 2 * g };
-        self.set_window_rect(i, r);
+        let (card, s) = (self.card(i), self.scale_of(i));
+        let g = card.gutter_px(s);
+        let c = edit::apply(handle, card.card_of_window(rect0, s), cursor.0 - cursor0.0, cursor.1 - cursor0.1, (min.0 - 2 * g, min.1 - 2 * g), &snap);
+        self.set_window_rect(i, card.window_of_card(c, s));
         self.wins[i].tween = None;
     }
 
@@ -807,11 +799,10 @@ impl App {
     }
 
     fn card_rect(&self, i: usize) -> [f32; 4] {
-        let g = self.gutter_of(i);
         let Some(w) = &self.wins[i].window else { return [0.0; 4] };
         let s = w.scale_factor() as f32;
         let size = w.inner_size();
-        [g, g, size.width as f32 / s - 2.0 * g, size.height as f32 / s - 2.0 * g]
+        self.card(i).rect_in((size.width as f32 / s, size.height as f32 / s))
     }
 
     fn on_mouse(&mut self, i: usize, state: ElementState, button: MouseButton) {
@@ -1206,16 +1197,16 @@ impl App {
 
     // ---- commands from the settings window ---------------------------------------------
 
-    fn default_size(&self, widget: &str) -> (f32, f32) {
-        let g = 2.0 * self.gutter();
-        match self.reg.get(widget) {
-            Some(Ok(d)) => (d.size.0 + g, d.size.1 + g),
-            _ => (200.0 + g, 120.0 + g),
-        }
+    /// A Widget's default window size for an Instance with this card.
+    fn default_size(&self, widget: &str, card: Card) -> (f32, f32) {
+        card.window_size(match self.reg.get(widget) {
+            Some(Ok(d)) => d.size,
+            _ => (200.0, 120.0),
+        })
     }
 
     fn add_instance(&mut self, el: &ActiveEventLoop, widget: &str) {
-        let (w, h) = self.default_size(widget);
+        let (w, h) = self.default_size(widget, self.new_card());
         let mon = self.monitors.first().cloned();
         let n = self.ws.instances.len() as f32;
         let mut cfg = InstanceCfg {
@@ -1258,10 +1249,10 @@ impl App {
             }
             Cmd::Param(id, name, v) => {
                 if let Some(i) = find(self, &id) {
-                    let was = self.blurs(i);
+                    let was = self.card(i);
                     self.ws.instances[i].set_param(&name, &v);
-                    if name == "blur" && self.blurs(i) != was {
-                        self.regutter(i);
+                    if self.card(i).blur != was.blur {
+                        self.regutter(i, was);
                     }
                     if name == "folder" {
                         self.sync_watchers();
@@ -1305,7 +1296,7 @@ impl App {
             }
             Cmd::ResetPos(id) => {
                 if let Some(i) = find(self, &id) {
-                    let (w, h) = self.default_size(&self.ws.instances[i].widget.clone());
+                    let (w, h) = self.default_size(&self.ws.instances[i].widget, self.card(i));
                     let cfg = &mut self.ws.instances[i];
                     (cfg.x, cfg.y, cfg.w, cfg.h) = (60.0, 60.0, w, h);
                     if let Some(m) = self.monitors.first() {
@@ -1350,17 +1341,12 @@ impl App {
                 }
                 self.mark_save();
             }
-            Cmd::Flag(name, on) => {
-                let was: Vec<bool> = (0..self.wins.len()).map(|i| self.blurs(i)).collect();
-                match name.as_str() {
-                    "blur" => self.ws.blur = on,
-                    "outlines" => self.ws.outlines = on,
-                    "header_drag" => self.ws.header_drag = on,
-                    _ => {}
-                }
+            Cmd::Flag(flag, on) => {
+                let was: Vec<Card> = (0..self.wins.len()).map(|i| self.card(i)).collect();
+                self.ws.set_flag(flag, on);
                 for (i, w) in was.into_iter().enumerate() {
-                    if self.blurs(i) != w {
-                        self.regutter(i);
+                    if self.card(i).blur != w.blur {
+                        self.regutter(i, w);
                     }
                     self.wins[i].redraw = true;
                 }
@@ -1573,11 +1559,11 @@ fn set_autostart(on: bool) -> Result<(), String> {
 }
 
 /// First-run arrangement: right-hand side of the primary monitor, clear of the desktop icons.
-fn default_instances(monitors: &[MonitorInfo], reg: &Registry, gutter: f32) -> Vec<InstanceCfg> {
+fn default_instances(monitors: &[MonitorInfo], reg: &Registry, card: Card) -> Vec<InstanceCfg> {
     let Some(m) = monitors.iter().find(|m| m.x == 0 && m.y == 0).or(monitors.first()) else { return vec![] };
     let logical_w = m.work.2 as f32 / m.scale as f32;
     let size = |id: &str| match reg.get(id) {
-        Some(Ok(d)) => (d.size.0 + 2.0 * gutter, d.size.1 + 2.0 * gutter),
+        Some(Ok(d)) => card.window_size(d.size),
         _ => (240.0, 160.0),
     };
     let mut out = Vec::new();
@@ -1617,7 +1603,7 @@ impl ApplicationHandler<UserEvent> for App {
         self.init_tray();
         self.init_hotkey();
         if self.ws.instances.is_empty() {
-            self.ws.instances = default_instances(&self.monitors, &self.reg, self.gutter());
+            self.ws.instances = default_instances(&self.monitors, &self.reg, self.new_card());
             self.mark_save();
             self.log("first run: created the default widgets");
         }

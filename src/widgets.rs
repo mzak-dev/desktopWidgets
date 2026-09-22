@@ -7,6 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::anim::Anim;
+use crate::card::Card;
 use crate::data::{self, Shortcut, Tm};
 use crate::format::{self, ExpandInfo, Inputs, WidgetDef};
 use crate::gfx::Gpu;
@@ -100,12 +101,12 @@ pub struct View<'a> {
     pub hover: Option<&'a str>,
     pub scale: f32,
     pub now: Instant,
-    /// Global style switches from the Workspace.
-    pub blur: bool,
-    pub outlines: bool,
+    /// This Instance's card within its window (gutter, blur, outlines).
+    pub card: Card,
 }
 
 pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
+    let card_size = v.card.card_size(v.size);
     let mut uploaded = false;
     let mut result = None;
     for _ in 0..2 {
@@ -113,15 +114,15 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
             Err(e) => Err(format!("{}: {e}", v.cfg.widget)),
             Ok(d) => {
                 let mut params = v.cfg.params_map();
-                if v.blur {
-                    params.entry("blur".into()).or_insert(true.into());
+                if v.card.blur {
+                    // a widget that styles blur itself sees the effective switch
+                    params.insert("blur".into(), true.into());
                 }
                 let inp = Inputs {
                     params: &params,
                     state: v.state,
-                    size: v.size,
+                    size: card_size,
                     key: &v.cfg.id,
-                    outlines: v.outlines,
                     clock: data::clock_value(&v.tm),
                     sys: data::sys_value(),
                     shortcuts: data::shortcuts_value(v.items, v.pack),
@@ -149,7 +150,11 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
         }
     }
     let (root, deps, warnings, expand, error) = match result.expect("at least one build ran") {
-        Ok(b) => (b.root, b.deps, b.warnings, b.expand, None),
+        Ok(b) => {
+            let styles_blur = matches!(def, Ok(d) if d.params.iter().any(|p| p.name == "blur"));
+            let root = v.card.dress(&v.cfg.id, v.size, b.root, styles_blur);
+            (root, b.deps, b.warnings, b.expand.map(|e| v.card.expand_window(e)), None)
+        }
         Err(e) => (format::error_card(&e, v.size, v.theme), BTreeSet::new(), vec![], None, Some(e)),
     };
     let mut env = Env { text: sv.text, anim: sv.anim, hover: v.hover, now: v.now, scale: v.scale };
@@ -175,7 +180,7 @@ mod tests {
         let theme = Theme::compose(&crate::theme::Library::load(Path::new("nope")), &crate::theme::Selection::default(), &BTreeMap::new());
         let arcs = |params: BTreeMap<String, Value>| {
             let st = BTreeMap::new();
-            let inp = Inputs { params: &params, state: &st, size: (340.0, 190.0), key: "t", outlines: true, clock: Value::default(), sys: data::sys_value(), shortcuts: Value::default() };
+            let inp = Inputs { params: &params, state: &st, size: (300.0, 150.0), key: "t", clock: Value::default(), sys: data::sys_value(), shortcuts: Value::default() };
             let b = format::build(&def, &inp, &theme, &|_| None).unwrap();
             assert!(b.warnings.is_empty(), "{:?}", b.warnings);
             assert!(b.deps.contains("sys.gauges"));

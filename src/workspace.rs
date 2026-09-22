@@ -109,6 +109,51 @@ impl Default for Workspace {
     }
 }
 
+/// A Workspace-wide on/off style switch. Adding one: a variant here, its
+/// field on `Workspace`, and a row in Settings (`settings::flag_row`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Flag {
+    /// Blur the desktop behind every widget.
+    Blur,
+    /// Draw widget borders.
+    Outlines,
+    /// Drag the top strip of a widget to move it, outside Edit Mode.
+    HeaderDrag,
+}
+
+impl Flag {
+    pub const ALL: [Flag; 3] = [Flag::Blur, Flag::Outlines, Flag::HeaderDrag];
+
+    /// The key in `workspace.json` and in settings actions.
+    pub fn id(self) -> &'static str {
+        match self {
+            Flag::Blur => "blur",
+            Flag::Outlines => "outlines",
+            Flag::HeaderDrag => "header_drag",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Flag> {
+        Flag::ALL.into_iter().find(|f| f.id() == s)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Flag::Blur => "Blur behind",
+            Flag::Outlines => "Outlines",
+            Flag::HeaderDrag => "Move by header",
+        }
+    }
+
+    pub fn help(self) -> &'static str {
+        match self {
+            Flag::Blur => "Blurs the desktop behind every widget. Drops shadows and rounds corners to the Windows 11 default.",
+            Flag::Outlines => "Draw a thin border around widgets and their parts",
+            Flag::HeaderDrag => "Drag the top strip of any widget to move it, without Edit layout",
+        }
+    }
+}
+
 pub fn data_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     base.join("Wayfinder")
@@ -141,6 +186,22 @@ impl Workspace {
         let text = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
         std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
         std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+    }
+
+    pub fn flag(&self, f: Flag) -> bool {
+        match f {
+            Flag::Blur => self.blur,
+            Flag::Outlines => self.outlines,
+            Flag::HeaderDrag => self.header_drag,
+        }
+    }
+
+    pub fn set_flag(&mut self, f: Flag, on: bool) {
+        match f {
+            Flag::Blur => self.blur = on,
+            Flag::Outlines => self.outlines = on,
+            Flag::HeaderDrag => self.header_drag = on,
+        }
     }
 
     pub fn next_id(&self, widget: &str) -> String {
@@ -251,5 +312,17 @@ mod tests {
         let w: Workspace = serde_json::from_str(r#"{"instances":[{"id":"a","widget":"clock","future_field":1}],"other":true}"#).unwrap();
         assert_eq!((w.instances[0].w, w.gpu.as_str()), (200.0, "low"));
         assert_eq!(Workspace::default().next_id("clock"), "clock-1");
+    }
+
+    #[test]
+    fn flags_read_and_write_the_saved_fields() {
+        let mut w = Workspace::default();
+        for f in Flag::ALL {
+            assert_eq!(Flag::parse(f.id()), Some(f));
+            w.set_flag(f, !w.flag(f));
+        }
+        assert_eq!((w.blur, w.outlines, w.header_drag), (true, false, true));
+        let json = serde_json::to_value(&w).unwrap();
+        assert_eq!((json["blur"].as_bool(), json["outlines"].as_bool(), json["header_drag"].as_bool()), (Some(true), Some(false), Some(true)));
     }
 }

@@ -269,11 +269,10 @@ impl WidgetDef {
 pub struct Inputs<'a> {
     pub params: &'a BTreeMap<String, Value>,
     pub state: &'a BTreeMap<String, Value>,
-    /// Instance size, logical px.
+    /// Card size, logical px (the window minus its gutter: see `card`).
     pub size: (f32, f32),
     /// Unique per Instance: prefixes every node key so text, hover and animation state never collide.
     pub key: &'a str,
-    pub outlines: bool,
     pub clock: Value,
     pub sys: Value,
     pub shortcuts: Value,
@@ -305,21 +304,10 @@ struct B<'a> {
     image_size: &'a dyn Fn(&str) -> Option<(f32, f32)>,
 }
 
-/// Transparent margin kept around every card so its shadow is not clipped by
-/// the window edge. `inp.size` is the whole window; widgets see the card.
-pub fn gutter(theme: &Theme) -> f32 {
-    theme.num("gutter").max(0.0)
-}
-
-/// The gutter an Instance actually uses: none when it blurs the desktop behind
-/// it, because the blur fills the whole window and must not spill past the card.
-pub fn gutter_for(theme: &Theme, blur: bool) -> f32 {
-    if blur { 0.0 } else { gutter(theme) }
-}
-
+/// Build the card tree of one Instance. The window around it (gutter, blur
+/// look, outline switch) is added by `card::Card::dress`.
 pub fn build(def: &WidgetDef, inp: &Inputs, theme: &Theme, image_size: &dyn Fn(&str) -> Option<(f32, f32)>) -> Result<Built, String> {
-    let g = gutter_for(theme, inp.params.get("blur").is_some_and(|v| v.truthy()));
-    let card = ((inp.size.0 - 2.0 * g).max(1.0), (inp.size.1 - 2.0 * g).max(1.0));
+    let card = inp.size;
     let mut scope = Scope::new();
     let obj = |m: &BTreeMap<String, Value>| Value::Obj(m.clone());
     scope.set("param", obj(&def.effective_params(inp.params)));
@@ -334,22 +322,6 @@ pub fn build(def: &WidgetDef, inp: &Inputs, theme: &Theme, image_size: &dyn Fn(&
     let mut nodes = b.build_elem(&def.root, inp.key)?;
     let mut root = nodes.pop().ok_or("root produced no node")?;
     root.style.size = Size { width: length(card.0), height: length(card.1) };
-    if inp.params.get("blur").is_some_and(|v| v.truthy()) && !def.params.iter().any(|p| p.name == "blur") {
-        // global blur: Windows rounds the blur region itself (8px), so match it and let it show through
-        root.look.radius = 8.0;
-        root.look.fill = root.look.fill.with_alpha(root.look.fill.0[3].min(0.6));
-        root.look.fill2 = root.look.fill2.map(|c| c.with_alpha(c.0[3].min(0.6)));
-    }
-    if !inp.outlines {
-        fn flat(n: &mut Node) {
-            n.look.border = 0.0;
-            n.children.iter_mut().for_each(flat);
-        }
-        flat(&mut root);
-    }
-    let mut window = Node::new(format!("{}~", inp.key)).wh(inp.size.0, inp.size.1).pad(g);
-    window.children.push(root);
-    let root = window;
     let expand = match &def.expand {
         None => None,
         Some(e) => {
@@ -357,8 +329,8 @@ pub fn build(def: &WidgetDef, inp: &Inputs, theme: &Theme, image_size: &dyn Fn(&
             let dim = |t: &Option<Template>, b: &B| -> Result<Option<f32>, String> {
                 t.as_ref().map(|t| t.eval(&b.scope).map_err(|x| format!("expand: {x}")).map(|v| v.as_f64().unwrap_or(0.0) as f32)).transpose()
             };
-            // widget files size the card; the window adds the gutter back
-            Some(ExpandInfo { active, width: dim(&e.width, &b)?.map(|v| v + 2.0 * g), height: dim(&e.height, &b)?.map(|v| v + 2.0 * g) })
+            // in card units, like the widget file; the window adds its gutter
+            Some(ExpandInfo { active, width: dim(&e.width, &b)?, height: dim(&e.height, &b)? })
         }
     };
     Ok(Built { root, deps: b.scope.deps(), images: b.images, warnings: b.warns, expand })
@@ -840,7 +812,6 @@ mod tests {
             state: &st,
             size: (100.0, 60.0),
             key: "t",
-            outlines: true,
             clock: Value::obj([("minute", 7.into()), ("second", 3.into())]),
             sys: Value::default(),
             shortcuts: crate::data::shortcuts_value(&[], "Default"),
@@ -866,17 +837,14 @@ mod tests {
             &[],
         )
         .unwrap();
-        let Kind::Text(t) = &b.root.children[0].kind else { panic!("not text") };
+        let Kind::Text(t) = &b.root.kind else { panic!("not text") };
         assert_eq!(t.text, "Hi World 07");
         assert_eq!(t.size, 18.0);
         assert_eq!(t.color.to_hex(), "#6ea8ff");
         assert!(b.deps.contains("clock.minute") && b.deps.contains("param.who"), "{:?}", b.deps);
         assert!(!b.deps.contains("clock.second"));
-        // window = card + gutter on every side; the card is the only child
+        // the build is the card alone, sized to the card; `card::Card::dress` adds the window
         assert_eq!((b.root.style.size.width, b.root.style.size.height), (length(100.0), length(60.0)));
-        assert_eq!(b.root.children[0].style.size.width, length(60.0));
-        let Kind::Text(t) = &b.root.children[0].kind else { panic!("card is not text") };
-        assert_eq!(t.text, "Hi World 07");
     }
 
     #[test]
@@ -889,36 +857,25 @@ type='box'
 fill=[\"{param.tint ? '$accent' : '#000000'}\", '$accent']
 fill_alpha=0.5";
         let b = build_src(src, &[]).unwrap();
-        let l = &b.root.children[0].look;
+        let l = &b.root.look;
         assert_eq!((l.fill.to_hex().as_str(), l.fill.0[3], l.fill2.unwrap().0[3]), ("#6ea8ff80", 0.5, 0.5));
         let b = build_src(src, &[("tint", false.into())]).unwrap();
-        assert_eq!(b.root.children[0].look.fill.to_hex(), "#00000080");
-    }
-
-    #[test]
-    fn outlines_off_removes_every_border() {
-        let src = "[root]\ntype='box'\nborder=1\n[[root.children]]\ntype='box'\nborder=2";
-        let theme = theme();
-        let def = WidgetDef::parse("t", src).unwrap();
-        let p = BTreeMap::new();
-        let inp = Inputs { params: &p, state: &p, size: (100.0, 60.0), key: "t", outlines: false, clock: Value::default(), sys: Value::default(), shortcuts: Value::default() };
-        let b = build(&def, &inp, &theme, &|_| None).unwrap();
-        assert_eq!((b.root.children[0].look.border, b.root.children[0].children[0].look.border), (0.0, 0.0));
+        assert_eq!(b.root.look.fill.to_hex(), "#00000080");
     }
 
     #[test]
     fn undefined_token_is_magenta_and_reported_not_defaulted() {
         let b = build_src("[root]\ntype='box'\nfill='$nope'", &[]).unwrap();
-        assert_eq!(b.root.children[0].look.fill, MAGENTA);
+        assert_eq!(b.root.look.fill, MAGENTA);
         assert!(b.warnings.iter().any(|w| w.contains("undefined token $nope")), "{:?}", b.warnings);
     }
 
     #[test]
     fn a_param_can_carry_a_token_reference() {
         let b = build_src("[params.c]\ntype='color'\ndefault='$accent'\n[root]\ntype='box'\nfill='{param.c}'", &[]).unwrap();
-        assert_eq!(b.root.children[0].look.fill.to_hex(), "#6ea8ff");
+        assert_eq!(b.root.look.fill.to_hex(), "#6ea8ff");
         let b = build_src("[params.c]\ntype='color'\ndefault='$accent'\n[root]\ntype='box'\nfill='{param.c}'", &[("c", "#00ff00".into())]).unwrap();
-        assert_eq!(b.root.children[0].look.fill.to_hex(), "#00ff00");
+        assert_eq!(b.root.look.fill.to_hex(), "#00ff00");
     }
 
     #[test]
@@ -929,7 +886,7 @@ fill_alpha=0.5";
 
         let src = "[root]\ntype='box'\n[[root.children]]\ntype='text'\ntext='shown'\nwhen='{clock.minute > 5}'\n[[root.children]]\ntype='text'\ntext='hidden'\nwhen='{clock.minute > 50}'";
         let b = build_src(src, &[]).unwrap();
-        assert_eq!(b.root.children[0].children.len(), 1);
+        assert_eq!(b.root.children.len(), 1);
 
         let e = build_src("[root]\ntype='text'\ntext='{nope.x}'", &[]).unwrap_err();
         assert!(e.contains("undefined name `nope`"), "{e}");
