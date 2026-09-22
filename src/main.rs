@@ -36,8 +36,8 @@ fn main() {
     }
     let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("event loop");
     let proxy = event_loop.create_proxy();
-    let exit_after = arg("--exit-after").and_then(|s| s.parse().ok());
-    let mut app = App::new(proxy, Options { dir, exit_after, selftest: std::env::args().any(|a| a == "--selftest"), gpu: arg("--gpu") });
+    let exit_after_secs = arg("--exit-after").and_then(|s| s.parse().ok());
+    let mut app = App::new(proxy, Options { dir, exit_after_secs, selftest: std::env::args().any(|a| a == "--selftest"), gpu_override: arg("--gpu") });
     if std::env::args().any(|a| a == "--edit") {
         app.request_edit_on_start();
     }

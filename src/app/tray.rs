@@ -1,6 +1,3 @@
-//! How Wayfinder hooks into Windows outside its widgets: the tray icon and
-//! menu, the Edit Mode hotkey, and starting with Windows.
-
 use super::*;
 
 fn tray_icon_image() -> tray_icon::Icon {
@@ -28,7 +25,6 @@ fn tray_icon_image() -> tray_icon::Icon {
     tray_icon::Icon::from_rgba(px, n, n).expect("tray icon")
 }
 
-/// Start with Windows (HKCU Run key).
 pub(super) fn set_autostart(on: bool) -> Result<(), String> {
     use windows::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW};
     use windows::core::w;

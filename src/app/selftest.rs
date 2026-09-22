@@ -1,5 +1,4 @@
-//! `--selftest`: a scripted end-to-end run of the interactive paths with
-//! synthetic input (never the real mouse). Results go to the log and `selftest.txt`.
+//! `--selftest`: drives the interactive paths with synthetic input, never the real mouse.
 
 use super::*;
 
@@ -32,8 +31,6 @@ impl App {
         self.wins[i].window.as_ref().and_then(|w| Self::outer_rect(w))
     }
 
-    /// Scripted end-to-end check of the interactive paths, using synthetic
-    /// input (never the real mouse). Results go to the log and `selftest.txt`.
     pub(super) fn selftest_tick(&mut self, el: &ActiveEventLoop, now: Instant) {
         let Some(mut st) = self.selftest.take() else { return };
         if now < st.at {
@@ -105,7 +102,7 @@ impl App {
                 check(&mut st, "leaving edit mode restores no-activate", hw.iter().all(|h| win32::ex_style(*h) & both == both), String::new());
                 let Some(i) = folder else { return self.selftest_abort(el, st, "no icon_folder-1 instance") };
                 st.collapsed = self.rect_now(i);
-                st.configures0 = self.gpu.as_ref().map_or(0, |g| g.configures.get());
+                st.configures0 = self.gpu.as_ref().map_or(0, |g| g.reconfigure_count.get());
                 match self.first_hit_with(i, "toggle expanded") {
                     Some(p) => self.click_at(i, p),
                     None => check(&mut st, "folder tile is clickable", false, "(no toggle hit region)".into()),
@@ -117,7 +114,7 @@ impl App {
                 let c = st.collapsed.unwrap();
                 let r = self.rect_now(i).unwrap();
                 check(&mut st, "clicking the folder expands its window in place", r.w > c.w + 100 && r.h > c.h + 40, format!("({}x{} -> {}x{})", c.w, c.h, r.w, r.h));
-                let n = self.gpu.as_ref().map_or(0, |g| g.configures.get()) - st.configures0;
+                let n = self.gpu.as_ref().map_or(0, |g| g.reconfigure_count.get()) - st.configures0;
                 check(&mut st, "the expand animation reconfigures the swapchain at most once", n <= 1, format!("({n} reconfigures over ~12 frames)"));
                 let m = self.monitor_of(&self.ws.instances[i]).unwrap().work;
                 check(&mut st, "expanded window stays inside the work area", r.x >= m.0 && r.y >= m.1 && r.right() <= m.0 + m.2 as i32 && r.bottom() <= m.1 + m.3 as i32, format!("({r:?} in {m:?})"));
@@ -180,7 +177,7 @@ impl App {
                 next = 700;
             }
             12 => {
-                check(&mut st, "the settings window survives rendering frames", self.settings.is_some() && self.gpu_lost.is_none(), String::new());
+                check(&mut st, "the settings window survives rendering frames", self.settings.is_some() && self.gpu_lost_reason.is_none(), String::new());
                 self.apply(el, Cmd::Close);
                 next = 300;
             }
@@ -201,7 +198,7 @@ impl App {
                         check(&mut st, "a host raised above the sentinel reads as Show Desktop, and back", (a, b, c) == (Some(false), Some(true), Some(false)), format!("({a:?} -> {b:?} -> {c:?})"));
                         // now play Explorer: the fake host goes to the top of the normal band, as in Show Desktop
                         fake.raise();
-                        self.test_host = Some(f);
+                        self.fake_icon_host = Some(f);
                         st.fake = Some(fake);
                     }
                 } else {
@@ -252,7 +249,7 @@ impl App {
                     check(&mut st, "our own z-order calls pass the guard (NOSENDCHANGING)", ok && win32::ex_style(h) & 0x8 == 0, String::new());
                 }
                 self.apply(el, Cmd::Z("icon_list-1".into(), "desktop".into()));
-                self.test_host = None;
+                self.fake_icon_host = None;
                 st.fake = None; // drops the fake host window
                 next = 200;
             }

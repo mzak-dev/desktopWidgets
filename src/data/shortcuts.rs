@@ -1,6 +1,4 @@
-//! The `shortcuts` Data Source: an Instance's app shortcuts, either the
-//! explicit list in its `items` param or the contents of the folder in its
-//! `folder` param, mirrored live.
+//! An Instance's `items` param, or the live contents of its `folder` param.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -14,7 +12,7 @@ use crate::workspace::InstanceCfg;
 pub struct Shortcut {
     pub name: String,
     pub target: String,
-    /// Optional explicit icon image path.
+    /// Overrides the target's own icon when not empty.
     pub icon: String,
 }
 
@@ -39,7 +37,6 @@ pub fn file_stem(target: &str) -> String {
     Path::new(t).file_stem().and_then(|s| s.to_str()).unwrap_or(t).to_string()
 }
 
-/// Entries of a folder as shortcuts (`.lnk`, `.exe`, `.url`, files), capped.
 pub fn folder_items(dir: &str, cap: usize) -> Vec<Shortcut> {
     let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut v: Vec<Shortcut> = rd
@@ -55,7 +52,6 @@ pub fn folder_items(dir: &str, cap: usize) -> Vec<Shortcut> {
     v
 }
 
-/// A few apps every Windows machine has, for a new list to start from.
 pub fn starter_apps() -> Vec<Shortcut> {
     let win = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
     [("Notepad", format!("{win}\\notepad.exe")), ("Calculator", format!("{win}\\System32\\calc.exe")), ("Explorer", format!("{win}\\explorer.exe")), ("Terminal", format!("{win}\\System32\\cmd.exe"))]
@@ -64,15 +60,13 @@ pub fn starter_apps() -> Vec<Shortcut> {
         .collect()
 }
 
-/// Separates the parts of an image id; not a legal path character.
+/// Not a legal path character.
 pub const ID_SEP: char = '\u{1f}';
 
-/// `icon:<pack>SEP<target>SEP<explicit icon path>`: what the icon service resolves.
 pub fn icon_id(pack: &str, s: &Shortcut) -> String {
     format!("icon:{pack}{ID_SEP}{}{ID_SEP}{}", s.target, s.icon)
 }
 
-/// The `shortcuts` value for a list of shortcuts.
 pub fn shortcuts_value(items: &[Shortcut], pack: &str) -> Value {
     let list = items
         .iter()
@@ -85,24 +79,21 @@ pub fn shortcuts_value(items: &[Shortcut], pack: &str) -> Value {
     Value::obj([("items", Value::List(list)), ("count", (items.len() as i32).into())])
 }
 
-/// Most entries a mirrored folder shows.
-const FOLDER_CAP: usize = 96;
+const MAX_FOLDER_ENTRIES: usize = 96;
 
 #[derive(Default)]
 pub struct Shortcuts {
-    /// Listings of mirrored folders, until a watched folder changes.
-    folders: Mutex<HashMap<String, Vec<Shortcut>>>,
+    folder_listings: Mutex<HashMap<String, Vec<Shortcut>>>,
 }
 
 impl Shortcuts {
-    /// The shortcuts an Instance shows: its mirrored folder, or else its own list.
     pub fn items_of(&self, cfg: &InstanceCfg) -> Vec<Shortcut> {
         let folder = cfg.folder();
         if folder.is_empty() {
             return cfg.items();
         }
-        let mut cache = self.folders.lock().unwrap_or_else(|e| e.into_inner());
-        cache.entry(folder).or_insert_with_key(|f| folder_items(f, FOLDER_CAP)).clone()
+        let mut cache = self.folder_listings.lock().unwrap_or_else(|e| e.into_inner());
+        cache.entry(folder).or_insert_with_key(|f| folder_items(f, MAX_FOLDER_ENTRIES)).clone()
     }
 }
 
@@ -115,18 +106,17 @@ impl DataSource for Shortcuts {
         shortcuts_value(&self.items_of(cx.cfg), cx.icon_pack)
     }
 
-    /// Changes only on events (a param edit, a watched folder), never with time.
     fn cadence(&self, _field: &str) -> Option<Cadence> {
         None
     }
 
-    fn watch(&self, cfg: &InstanceCfg) -> Vec<PathBuf> {
+    fn watched_paths(&self, cfg: &InstanceCfg) -> Vec<PathBuf> {
         let folder = cfg.folder();
         if folder.is_empty() { vec![] } else { vec![PathBuf::from(folder)] }
     }
 
     fn invalidate(&self) {
-        self.folders.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.folder_listings.lock().unwrap_or_else(|e| e.into_inner()).clear();
     }
 }
 
@@ -151,11 +141,11 @@ mod tests {
         let mut cfg = InstanceCfg::default();
         cfg.set_items(&starter_apps());
         assert_eq!(src.items_of(&cfg).len(), 4, "no folder: the explicit list");
-        assert!(src.watch(&cfg).is_empty());
+        assert!(src.watched_paths(&cfg).is_empty());
 
         cfg.params.insert("folder".into(), serde_json::Value::String(dir.to_string_lossy().into_owned()));
         assert_eq!(src.items_of(&cfg).iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["b"]);
-        assert_eq!(src.watch(&cfg), vec![dir.clone()]);
+        assert_eq!(src.watched_paths(&cfg), vec![dir.clone()]);
         std::fs::write(dir.join("a.txt"), "").unwrap();
         assert_eq!(src.items_of(&cfg).len(), 1, "cached until the watcher says otherwise");
         src.invalidate();

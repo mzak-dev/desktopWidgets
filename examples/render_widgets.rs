@@ -86,14 +86,14 @@ fn main() {
         // and capture the frame after they have settled.
         let base = Instant::now();
         {
-            let v = View { cfg: &cfg, state: &state, size, theme: &theme, pack: "Default", tm, hover: None, scale, now: base, card };
+            let v = View { cfg: &cfg, state: &state, window_size: size, theme: &theme, icon_pack: "Default", tm, hover: None, scale, now: base, card };
             let mut sv = Services { gpu: &mut gpu, icons: &mut icons, text: &mut text, anim: &mut anim, sources: &sources };
             let _ = prepare(def, &v, &mut sv);
         }
         // two passes: the first learns the expand size, the second lays out at it
         for pass in 0..2 {
             let now = base + Duration::from_millis(2000);
-            let v = View { cfg: &cfg, state: &state, size, theme: &theme, pack: "Default", tm, hover: None, scale, now, card };
+            let v = View { cfg: &cfg, state: &state, window_size: size, theme: &theme, icon_pack: "Default", tm, hover: None, scale, now, card };
             let mut sv = Services { gpu: &mut gpu, icons: &mut icons, text: &mut text, anim: &mut anim, sources: &sources };
             let p = prepare(def, &v, &mut sv);
             if let Some(e) = &p.error {

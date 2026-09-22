@@ -1,13 +1,10 @@
-//! `text`: a run of shaped text. Laid out, measured and drawn by the engine
-//! (`ui`, `text`); this module owns its attributes and how they are read.
-
 use super::ElementKind;
 use crate::format::Attrs;
 use crate::text::{TextAlign, TextSpec};
 use crate::ui::Kind;
 use crate::value::Value;
 
-pub const KIND: ElementKind = ElementKind { name: "text", attrs: &["text", "size", "color", "font", "weight", "text_align", "text_wrap", "line_height"], fills_parent: false, build };
+pub const KIND: ElementKind = ElementKind { name: "text", own_attrs: &["text", "size", "color", "font", "weight", "text_align", "text_wrap", "line_height"], fills_parent_when_unsized: false, build };
 
 fn weight(v: &Value) -> u16 {
     match v {

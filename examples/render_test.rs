@@ -76,7 +76,7 @@ trait LookExt {
 impl LookExt for Node {
     fn look_gradient(mut self, a: Color, b: Color) -> Self {
         self.look.fill = a;
-        self.look.fill2 = Some(b);
+        self.look.gradient_bottom = Some(b);
         self
     }
 }
@@ -103,7 +103,7 @@ fn main() {
     let frame = layout(&root, (lw, lh), &mut env);
     println!(
         "content {:?}, shapes {}, texts {}, hits {}",
-        frame.content,
+        frame.content_size,
         frame.list.layers[0].shapes.len(),
         frame.list.layers[0].texts.len(),
         frame.hits.len()

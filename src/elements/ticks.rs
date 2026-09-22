@@ -1,6 +1,4 @@
-//! `ticks`: the marks around a clock face.
-
-use super::{ElementKind, Shape, ShapeCx, rgba};
+use super::{ElementKind, Shape, ShapeCx, rgba_with_opacity};
 use crate::color::Color;
 use crate::draw::{Inst, KIND_CAPSULE};
 use crate::format::Attrs;
@@ -8,8 +6,8 @@ use crate::ui::Kind;
 
 pub const KIND: ElementKind = ElementKind {
     name: "ticks",
-    attrs: &["count", "major_every", "tick_length", "major_length", "tick_width", "major_width", "color", "major_color", "tick_inset"],
-    fills_parent: true,
+    own_attrs: &["count", "major_every", "tick_length", "major_length", "tick_width", "major_width", "color", "major_color", "tick_inset"],
+    fills_parent_when_unsized: true,
     build,
 };
 
@@ -48,7 +46,7 @@ impl Shape for TicksSpec {
     }
 
     fn emit(&self, cx: &ShapeCx, out: &mut Vec<Inst>) {
-        let ((w, h), s, [x, y]) = (cx.size, cx.scale, cx.center);
+        let ((w, h), s, [x, y]) = (cx.logical_size, cx.scale, cx.center_px);
         let rad = (w.min(h) / 2.0 - self.inset) * s;
         for i in 0..self.count {
             let major = self.major_every > 0 && i % self.major_every == 0;
@@ -60,9 +58,9 @@ impl Shape for TicksSpec {
                 b: [x + dir[0] * (rad - len * s), y + dir[1] * (rad - len * s)],
                 radius: wd * s / 2.0,
                 kind: KIND_CAPSULE,
-                fill_top: rgba(col, cx.opacity),
-                fill_bot: rgba(col, cx.opacity),
-                clip: cx.clip,
+                fill_top: rgba_with_opacity(col, cx.inherited_opacity),
+                fill_bot: rgba_with_opacity(col, cx.inherited_opacity),
+                clip: cx.clip_px,
                 ..Default::default()
             });
         }
@@ -78,7 +76,7 @@ mod tests {
     fn one_capsule_per_tick() {
         let t = TicksSpec { count: 60, major_every: 5, len: 5.0, major_len: 10.0, width: 1.0, major_width: 2.0, color: Color([1.0; 4]), major_color: Color([1.0; 4]), inset: 8.0 };
         let mut out = Vec::new();
-        t.emit(&ShapeCx { center: [100.0, 100.0], size: (200.0, 200.0), scale: 1.0, opacity: 1.0, clip: NO_CLIP }, &mut out);
+        t.emit(&ShapeCx { center_px: [100.0, 100.0], logical_size: (200.0, 200.0), scale: 1.0, inherited_opacity: 1.0, clip_px: NO_CLIP }, &mut out);
         assert_eq!(out.len(), 60);
         assert_eq!((out[0].radius, out[1].radius), (1.0, 0.5), "every fifth tick is major");
     }

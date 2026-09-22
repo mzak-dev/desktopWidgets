@@ -1,6 +1,3 @@
-//! Every Widget by id: the built-in definitions, the user's definition files
-//! (which replace a built-in of the same id), and the Rust Widgets.
-
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -8,20 +5,14 @@ use std::sync::Arc;
 use super::{Drawer, TomlWidget, Widget};
 use crate::format::WidgetDef;
 
-/// `(id, source)` for every `assets/widgets/*.toml`, found by `build.rs`.
 const BUILTIN: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/builtin_widgets.rs"));
 
-/// Makes a Rust Widget around the definition it draws its tree from.
-type Wrap = fn(TomlWidget) -> Arc<dyn Widget>;
+type WrapDefinition = fn(TomlWidget) -> Arc<dyn Widget>;
 
-/// Rust Widgets that draw their tree from the definition of the same id: they
-/// wrap it, whether it is the built-in or the user's own copy, so restyling
-/// one never loses its behaviour. A Rust Widget with no definition would go in
-/// a list of constructors of its own.
-const WRAPS: &[(&str, Wrap)] = &[("drawer", Drawer::wrap)];
+/// Wrapping whichever definition loaded (built-in or user copy) keeps the behaviour when a user restyles it.
+const RUST_WIDGETS_ON_DEFINITIONS: &[(&str, WrapDefinition)] = &[("drawer", Drawer::wrap)];
 
-/// A Widget or the reason it failed to load. A broken user file replacing a
-/// built-in shows an error card; it never silently falls back (decision 14).
+/// A broken user file is an error card, never a fallback to the built-in (decision 14).
 pub type Def = Result<Arc<dyn Widget>, String>;
 
 #[derive(Default, Clone)]
@@ -31,7 +22,7 @@ pub struct Registry {
 
 fn adapt(id: &str, def: WidgetDef) -> Arc<dyn Widget> {
     let toml = TomlWidget::new(def);
-    match WRAPS.iter().find(|(w, _)| *w == id) {
+    match RUST_WIDGETS_ON_DEFINITIONS.iter().find(|(w, _)| *w == id) {
         Some((_, wrap)) => wrap(toml),
         None => Arc::new(toml),
     }
@@ -59,7 +50,6 @@ impl Registry {
         Registry { defs }
     }
 
-    /// Add (or replace) a Widget by its own id.
     pub fn register(&mut self, w: Arc<dyn Widget>) {
         self.defs.insert(w.meta().id.clone(), Ok(w));
     }
@@ -103,7 +93,7 @@ mod tests {
             let st = BTreeMap::new();
             let sys = Sys::default();
             let read = |n: &str| (n == "sys").then(|| sys.sample());
-            let inp = Inputs { params: &params, state: &st, size: (300.0, 150.0), key: "t", sources: &read };
+            let inp = Inputs { params: &params, state: &st, card_size: (300.0, 150.0), key_prefix: "t", read_source: &read };
             let b = w.build(&inp, &theme, &|_| None).unwrap();
             assert!(b.warnings.is_empty(), "{:?}", b.warnings);
             assert!(b.deps.contains("sys.gauges"));

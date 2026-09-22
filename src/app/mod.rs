@@ -1,10 +1,5 @@
-//! The running application: one OS window per Instance, event-driven
-//! scheduling (a window redraws only on a changed binding, an in-flight
-//! animation or input; decision 16), Edit Mode, tray and hotkey.
-//!
-//! `App` owns the Workspace and routes winit events; each concern lives in a
-//! submodule as its own `impl App` block, and one Instance's runtime state in
-//! `instance`.
+//! One OS window per Instance, redrawn only on a changed binding, an
+//! animation or input (decision 16). Each concern is an `impl App` in a submodule.
 
 mod commands;
 mod desktop;
@@ -54,7 +49,7 @@ use crate::workspace::{self, InstanceCfg, MonitorInfo, Workspace};
 use self::edit_mode::UndoEntry;
 use self::first_run::default_instances;
 use self::host::AppHost;
-use self::instance::{Drag, Instance, Outcome, SizeTween, engine_action, expand_target, scroll_to};
+use self::instance::{Drag, Instance, VerbOutcome, SizeTween, engine_action, expand_target, scrolled_offset};
 use self::selftest::SelfTest;
 
 #[derive(Debug)]
@@ -62,21 +57,16 @@ pub enum UserEvent {
     Menu(String),
     Hotkey,
     TrayClick,
-    /// Something on disk changed (debounced).
-    Files,
-    /// Foreground window or minimise state changed: re-check Show Desktop.
-    Shell,
-    Display,
+    FilesChanged,
+    ForegroundChanged,
+    DisplaysChanged,
 }
 
 pub struct Options {
     pub dir: PathBuf,
-    /// Drive the app with synthetic input and report pass/fail (see `selftest_tick`).
     pub selftest: bool,
-    /// `--gpu high|low|software`: overrides the workspace setting for this run.
-    pub gpu: Option<String>,
-    /// Exit by itself after this many seconds (automated runs).
-    pub exit_after: Option<f32>,
+    pub gpu_override: Option<String>,
+    pub exit_after_secs: Option<f32>,
 }
 
 pub struct App {
@@ -99,27 +89,22 @@ pub struct App {
     tray: Option<TrayIcon>,
     _hotkeys: Option<GlobalHotKeyManager>,
     watchers: Vec<RecommendedWatcher>,
-    /// Paths the Data Sources watch, per Instance id (one watcher each).
-    watched: Vec<(String, PathBuf)>,
+    watched_paths: Vec<(String, PathBuf)>,
     log: Vec<String>,
     save_at: Option<Instant>,
     reload_at: Option<Instant>,
-    /// Times at which to re-check Show Desktop: a retry ladder after each shell event.
-    shell_due: Vec<Instant>,
+    show_desktop_checks: Vec<Instant>,
     sentinel: Option<win32::Sentinel>,
-    /// Tests substitute a fake icon host so Show Desktop can be exercised without Explorer.
-    test_host: Option<windows::Win32::Foundation::HWND>,
+    fake_icon_host: Option<windows::Win32::Foundation::HWND>,
     display_at: Option<Instant>,
     desktop_shown: bool,
     started: Instant,
     booted: bool,
     start_edit: bool,
     selftest: Option<SelfTest>,
-    /// Set by `render` when the surface could not be recovered; handled in `about_to_wait`.
-    gpu_lost: Option<String>,
+    gpu_lost_reason: Option<String>,
     gpu_recoveries: Vec<Instant>,
-    /// After repeated GPU losses: run on the software renderer for the rest of the session.
-    degraded: bool,
+    forced_software: bool,
     families: Vec<String>,
 }
 
@@ -155,22 +140,22 @@ impl App {
             tray: None,
             _hotkeys: None,
             watchers: Vec::new(),
-            watched: Vec::new(),
+            watched_paths: Vec::new(),
             log: Vec::new(),
             save_at: None,
             reload_at: None,
-            shell_due: Vec::new(),
+            show_desktop_checks: Vec::new(),
             sentinel: None,
-            test_host: None,
+            fake_icon_host: None,
             display_at: None,
             desktop_shown: false,
             started: Instant::now(),
             booted: false,
             start_edit: false,
             selftest: None,
-            gpu_lost: None,
+            gpu_lost_reason: None,
             gpu_recoveries: Vec::new(),
-            degraded: false,
+            forced_software: false,
             families: Vec::new(),
         };
         app.families = app.text.family_names();
@@ -188,10 +173,10 @@ impl App {
     }
 
     fn power(&self) -> Power {
-        if self.degraded {
+        if self.forced_software {
             return Power::Software;
         }
-        Power::parse(self.opts.gpu.as_deref().unwrap_or(&self.ws.gpu))
+        Power::parse(self.opts.gpu_override.as_deref().unwrap_or(&self.ws.gpu))
     }
 
     pub fn request_edit_on_start(&mut self) {
@@ -230,17 +215,13 @@ impl App {
         self.save_at = Some(Instant::now() + Duration::from_millis(400));
     }
 
-    /// Instance `i`'s card within its window, under the current style.
     fn card(&self, i: usize) -> Card {
         Card::of(&self.ws, &self.ws.instances[i], &self.theme)
     }
 
-    /// The card a newly added Instance gets.
     fn new_card(&self) -> Card {
         Card::of(&self.ws, &InstanceCfg::default(), &self.theme)
     }
-
-    // ---- windows -------------------------------------------------------------
 
     fn monitor_of(&self, cfg: &InstanceCfg) -> Option<&MonitorInfo> {
         self.monitors.iter().find(|m| m.name == cfg.monitor.name)
@@ -316,7 +297,7 @@ impl App {
         // winit rebuilds WS_EX_* from its own flags on every state change, so our
         // styles go on last, and again after anything that touches them
         win32::set_no_activate(&window, !self.edit);
-        self.guard_z(i);
+        self.update_z_guard(i);
         if self.desktop_shown {
             self.apply_show_desktop();
         }
@@ -336,15 +317,13 @@ impl App {
         self.monitor_of(cfg).map(|m| m.scale).or_else(|| self.wins[i].window.as_ref().map(|w| w.scale_factor())).unwrap_or(1.0)
     }
 
-    /// The driver reset (or a surface could not be recovered): rebuild the
-    /// device and every window's target. Repeated losses degrade to the
-    /// software renderer for this session rather than looping.
+    /// Three losses in 90 s switch to the software renderer instead of looping (ADR-006).
     fn recover_gpu(&mut self, el: &ActiveEventLoop, why: &str) {
         let now = Instant::now();
         self.gpu_recoveries.retain(|t| now.duration_since(*t) < Duration::from_secs(90));
         self.gpu_recoveries.push(now);
-        if self.gpu_recoveries.len() >= 3 && !self.degraded {
-            self.degraded = true;
+        if self.gpu_recoveries.len() >= 3 && !self.forced_software {
+            self.forced_software = true;
             self.log("the GPU was lost 3 times in 90 s: switching to the software renderer for this session");
         }
         self.log(format!("GPU lost ({why}): rebuilding"));
@@ -388,11 +367,7 @@ impl App {
         self.log("reloaded widget definitions, themes and folders");
     }
 
-    // ---- file watching -------------------------------------------------------------------
-
-    /// `only_assets`: the data-dir watcher reacts to definition/theme/font/icon
-    /// files only. Anything else in there (our own log, workspace.json and its
-    /// temp file) must never count, or saving would trigger a reload forever.
+    /// With `only_assets`, our own log and workspace.json don't count, or saving would reload forever.
     fn watcher(&self, only_assets: bool) -> Option<RecommendedWatcher> {
         let proxy = self.proxy.clone();
         notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -404,15 +379,13 @@ impl App {
                 !only_assets || p.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "toml" | "png" | "ttf" | "otf" | "ttc"))
             });
             if relevant {
-                let _ = proxy.send_event(UserEvent::Files);
+                let _ = proxy.send_event(UserEvent::FilesChanged);
             }
         })
         .ok()
     }
 
     fn sync_watchers(&mut self) {
-        // one recursive watch on the data dir (widgets, themes, icon packs) plus
-        // one per path a Data Source watches (a mirrored folder)
         if self.watchers.is_empty() {
             let _ = std::fs::create_dir_all(&self.opts.dir);
             if let Some(mut w) = self.watcher(true) {
@@ -421,10 +394,10 @@ impl App {
                 }
             }
         }
-        let want: Vec<(String, PathBuf)> = self.ws.instances.iter().flat_map(|c| self.sources.watch(c).into_iter().map(|p| (c.id.clone(), p))).collect();
-        if want != self.watched {
+        let want: Vec<(String, PathBuf)> = self.ws.instances.iter().flat_map(|c| self.sources.watched_paths(c).into_iter().map(|p| (c.id.clone(), p))).collect();
+        if want != self.watched_paths {
             self.watchers.truncate(1);
-            self.watched = want.clone();
+            self.watched_paths = want.clone();
             for (_, dir) in want {
                 if let Some(mut w) = self.watcher(false) {
                     if w.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
@@ -480,11 +453,11 @@ impl ApplicationHandler<UserEvent> for App {
         let (p1, p2, p3) = (self.proxy.clone(), self.proxy.clone(), self.proxy.clone());
         let _ = p3;
         win32::watch_shell_events(move || {
-            let _ = p1.send_event(UserEvent::Shell);
+            let _ = p1.send_event(UserEvent::ForegroundChanged);
         });
         if let Some(w) = self.wins.iter().find_map(|w| w.window.clone()) {
             win32::watch_display_changes(&w, move || {
-                let _ = p2.send_event(UserEvent::Display);
+                let _ = p2.send_event(UserEvent::DisplaysChanged);
             });
         }
         self.check_show_desktop();
@@ -506,13 +479,13 @@ impl ApplicationHandler<UserEvent> for App {
             },
             UserEvent::Hotkey => self.set_edit(!self.edit),
             UserEvent::TrayClick => self.open_settings(el),
-            UserEvent::Files => self.reload_at = Some(Instant::now() + Duration::from_millis(250)),
-            UserEvent::Shell => {
+            UserEvent::FilesChanged => self.reload_at = Some(Instant::now() + Duration::from_millis(250)),
+            UserEvent::ForegroundChanged => {
                 // Explorer reorders a few ms after the event: check a few times, growing gaps
                 let now = Instant::now();
-                self.shell_due = [4u64, 20, 60, 140, 300, 700].iter().map(|ms| now + Duration::from_millis(*ms)).collect();
+                self.show_desktop_checks = [4u64, 20, 60, 140, 300, 700].iter().map(|ms| now + Duration::from_millis(*ms)).collect();
             }
-            UserEvent::Display => self.display_at = Some(Instant::now() + Duration::from_millis(500)),
+            UserEvent::DisplaysChanged => self.display_at = Some(Instant::now() + Duration::from_millis(500)),
         }
     }
 
@@ -562,7 +535,7 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         let now = Instant::now();
-        if let Some(t) = self.opts.exit_after {
+        if let Some(t) = self.opts.exit_after_secs {
             if now.duration_since(self.started).as_secs_f32() >= t {
                 if self.save_at.is_some() {
                     let _ = self.ws.save(&self.opts.dir);
@@ -571,8 +544,8 @@ impl ApplicationHandler<UserEvent> for App {
                 return;
             }
         }
-        while self.shell_due.first().is_some_and(|t| *t <= now) {
-            self.shell_due.remove(0);
+        while self.show_desktop_checks.first().is_some_and(|t| *t <= now) {
+            self.show_desktop_checks.remove(0);
             self.check_show_desktop();
         }
         if self.display_at.is_some_and(|t| t <= now) {
@@ -580,7 +553,6 @@ impl ApplicationHandler<UserEvent> for App {
             self.monitors = win32::monitors(el);
             self.log(format!("displays changed: {} monitor(s)", self.monitors.len()));
             self.sync_windows(el);
-            // reposition windows whose monitor moved or changed scale
             for i in 0..self.wins.len() {
                 if let (Some(p), Some(w)) = (workspace::resolve(&self.ws.instances[i], &self.monitors), self.wins[i].window.clone()) {
                     let s = self.scale_of(i);
@@ -605,26 +577,26 @@ impl ApplicationHandler<UserEvent> for App {
         }
 
         self.selftest_tick(el, now);
-        if let Some(why) = self.gpu_lost.take() {
+        if let Some(why) = self.gpu_lost_reason.take() {
             self.recover_gpu(el, &why);
         } else if self.gpu.as_ref().is_some_and(|g| g.is_lost()) {
             self.recover_gpu(el, "device lost callback");
         }
-        let mut wake: Option<Instant> = [self.save_at, self.reload_at, self.shell_due.first().copied(), self.display_at, self.selftest.as_ref().map(|t| t.at), self.opts.exit_after.map(|t| self.started + Duration::from_secs_f32(t))]
+        let mut wake: Option<Instant> = [self.save_at, self.reload_at, self.show_desktop_checks.first().copied(), self.display_at, self.selftest.as_ref().map(|t| t.at), self.opts.exit_after_secs.map(|t| self.started + Duration::from_secs_f32(t))]
             .into_iter()
             .flatten()
             .min();
         let soonest = |t: Instant, wake: &mut Option<Instant>| *wake = Some(wake.map_or(t, |w| w.min(t)));
         for iw in &mut self.wins {
             let Some(w) = &iw.window else { continue };
-            if iw.due(now) {
+            if iw.needs_frame(now) {
                 if !iw.requested {
                     iw.requested = true;
                     w.request_redraw();
                 }
                 continue;
             }
-            if let Some(t) = iw.wake_at() {
+            if let Some(t) = iw.next_wake() {
                 soonest(t, &mut wake);
             }
         }

@@ -1,6 +1,5 @@
-//! Text shaping and measurement over glyphon/cosmic-text (decision 25). One
-//! shaped buffer per node key; re-shaped only when its text, style or width
-//! changes, so a live resize only re-wraps.
+//! Text over glyphon (decision 25): one buffer per node key, re-shaped only when
+//! its text, style or width changes.
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -127,7 +126,6 @@ impl TextEngine {
         Self { fs: FontSystem::new(), swash: SwashCache::new(), slots: HashMap::new(), frame: 0 }
     }
 
-    /// Register a user font file (the "custom fonts" feature).
     pub fn load_font_file(&mut self, path: &std::path::Path) -> bool {
         let before = self.fs.db().len();
         self.fs.db_mut().load_font_file(path).is_ok() && self.fs.db().len() > before

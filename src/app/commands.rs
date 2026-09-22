@@ -1,14 +1,10 @@
-//! Commands from the settings window (`settings::Cmd`), applied to the
-//! Workspace and the running Instances.
-
 use super::*;
 use super::tray::set_autostart;
 
 impl App {
-    /// A Widget's default window size for an Instance with this card.
     pub(super) fn default_size(&self, widget: &str, card: Card) -> (f32, f32) {
         card.window_size(match self.reg.get(widget) {
-            Some(Ok(d)) => d.meta().size,
+            Some(Ok(d)) => d.meta().default_card_size,
             _ => (200.0, 120.0),
         })
     }
@@ -29,7 +25,7 @@ impl App {
         };
         if let Some(Ok(w)) = self.reg.get(widget).cloned() {
             let mut host = AppHost::new(&self.opts.dir, None);
-            widgets::setup(&*w, &mut cfg, &mut host);
+            widgets::set_up_instance(&*w, &mut cfg, &mut host);
             for l in host.into_logs() {
                 self.log(l);
             }
@@ -59,7 +55,7 @@ impl App {
                     let was = self.card(i);
                     self.ws.instances[i].set_param(&name, &v);
                     if self.card(i).blur != was.blur {
-                        self.regutter(i, was);
+                        self.refit_window_around_card(i, was);
                     }
                     self.sync_watchers(); // a param may name a path a source watches
                     self.sources.invalidate();
@@ -81,7 +77,7 @@ impl App {
                         win32::set_zmode(h, ZMode::parse(&z).unwrap_or(ZMode::Desktop));
                     }
                     self.wins[i].raised = false;
-                    self.guard_z(i);
+                    self.update_z_guard(i);
                     if self.desktop_shown {
                         self.apply_show_desktop();
                     }
@@ -115,7 +111,6 @@ impl App {
                 }
             }
             Cmd::Theme(sel) => {
-                // icon ids follow the pack on the next build; rebuild_theme redraws everything
                 self.ws.theme = sel;
                 self.rebuild_theme();
                 self.mark_save();
@@ -145,7 +140,7 @@ impl App {
                 self.ws.set_flag(flag, on);
                 for (i, w) in was.into_iter().enumerate() {
                     if self.card(i).blur != w.blur {
-                        self.regutter(i, w);
+                        self.refit_window_around_card(i, w);
                     }
                     self.wins[i].redraw = true;
                 }

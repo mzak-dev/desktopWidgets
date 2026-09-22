@@ -1,7 +1,3 @@
-//! Drawing an Instance: build its Widget, dress and lay it out, add the Edit
-//! Mode overlay, present, schedule the next frame, and grow or shrink the
-//! window for an `[expand]` (decision 23).
-
 use super::*;
 
 impl App {
@@ -13,13 +9,13 @@ impl App {
         let (Some(window), Some(target)) = (iw.window.clone(), iw.target.as_mut()) else { return };
         let cfg = &ws.instances[i];
 
-        // advance an expand/collapse size tween before measuring the window
+        // before measuring the window
         if let Some(tw) = &iw.tween {
-            let (r, done) = tw.at(now);
+            let r = tw.rect_at(now);
             if let Some(h) = win32::hwnd_of(&window) {
                 win32::set_rect(h, r.x, r.y, r.w, r.h);
             }
-            if done {
+            if tw.finished_at(now) {
                 iw.tween = None;
             }
         }
@@ -29,10 +25,10 @@ impl App {
         }
         let scale = window.scale_factor() as f32;
         let blur = card.blur;
-        if blur != iw.blur {
+        if blur != iw.blur_applied {
             if let Some(h) = win32::hwnd_of(&window) {
                 win32::set_blur(h, blur);
-                iw.blur = blur;
+                iw.blur_applied = blur;
             }
         }
         let size = (phys.width as f32 / scale, phys.height as f32 / scale);
@@ -40,7 +36,7 @@ impl App {
         let def = reg.get(&cfg.widget).unwrap_or(&missing);
         let tm = data::now_local();
         let pack = ws.theme.icon_pack.clone();
-        let v = View { cfg, state: &iw.state, size, theme, pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };
+        let v = View { cfg, state: &iw.state, window_size: size, theme, icon_pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };
         let mut sv = Services { gpu, icons, text, anim: &mut iw.anim, sources };
         let mut p = widgets::prepare(def, &v, &mut sv);
 
@@ -70,7 +66,7 @@ impl App {
         for w in &p.warnings {
             eprintln!("wayfinder: {}: {w}", cfg.id);
         }
-        let continuous = sources.is_continuous(&p.deps);
+        let continuous = sources.needs_every_frame(&p.deps);
         iw.next_tick = if continuous { None } else { sources.next_wake(&p.deps, &tm).map(|d| now + d) };
         iw.widget_error = p.error.clone();
         iw.animating = p.frame.animating || continuous || iw.tween.is_some();
@@ -80,16 +76,14 @@ impl App {
         iw.requested = false;
         iw.last_render = now;
         let expand = p.expand;
-        if lost.is_some() && self.gpu_lost.is_none() {
-            self.gpu_lost = lost;
+        if lost.is_some() && self.gpu_lost_reason.is_none() {
+            self.gpu_lost_reason = lost;
         }
-        self.drive_expand(i, expand);
+        self.apply_expand(i, expand);
     }
 
-    /// Grow or shrink the window when the widget's `[expand]` state changes
-    /// (decision 23): grow away from the nearest screen edge, clamp to the
-    /// work area, sit above sibling widgets while open.
-    pub(super) fn drive_expand(&mut self, i: usize, expand: Option<ExpandInfo>) {
+    /// Decision 23; an open expand also sits above sibling widgets.
+    pub(super) fn apply_expand(&mut self, i: usize, expand: Option<ExpandInfo>) {
         let Some(window) = self.wins[i].window.clone() else { return };
         let cfg = self.ws.instances[i].clone();
         let Some(mon) = self.monitor_of(&cfg).cloned() else { return };
@@ -106,7 +100,7 @@ impl App {
         let cur = window.outer_position().ok().map(|p| Rect::new(p.x, p.y, window.outer_size().width as i32, window.outer_size().height as i32)).unwrap_or(collapsed);
         self.wins[i].want = Some(target);
         if first && !active {
-            return; // initial layout at the stored size; nothing to animate
+            return; // first layout: nothing to animate
         }
         self.wins[i].tween = Some(SizeTween { from: cur, to: target, start: Instant::now() });
         // one reconfigure up front; the animation itself then only moves the window

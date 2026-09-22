@@ -1,6 +1,3 @@
-//! Edit Mode (decision 20): moving, resizing, snapping, nudging and undo of
-//! Instance windows. The pure rectangle maths is `crate::edit`.
-
 use super::*;
 
 pub(super) struct UndoEntry {
@@ -70,8 +67,7 @@ impl App {
         self.wins[i].redraw = true;
     }
 
-    /// Store where a window really is (anchored to its monitor) into the Workspace.
-    pub(super) fn commit_rect(&mut self, i: usize) {
+    pub(super) fn save_rect_to_workspace(&mut self, i: usize) {
         let Some(w) = self.wins[i].window.clone() else { return };
         let Some(r) = Self::outer_rect(&w) else { return };
         if let Some((m, x, y)) = workspace::anchor((r.x, r.y), (r.w as u32, r.h as u32), &self.monitors) {
@@ -87,21 +83,18 @@ impl App {
         }
     }
 
-    /// The window grows or shrinks by the shadow gutter when blur turns off or
-    /// on (`was` is the card before the change), so the visible card stays
-    /// exactly where it was.
-    pub(super) fn regutter(&mut self, i: usize, was: Card) {
+    pub(super) fn refit_window_around_card(&mut self, i: usize, was: Card) {
         let Some(r) = self.wins[i].window.as_ref().and_then(|w| Self::outer_rect(w)) else { return };
         let s = self.scale_of(i);
         let now = self.card(i).window_of_card(was.card_of_window(r, s), s);
         self.set_window_rect(i, now);
-        self.commit_rect(i);
+        self.save_rect_to_workspace(i);
     }
 
     pub(super) fn min_size_phys(&self, i: usize) -> (i32, i32) {
         let cfg = &self.ws.instances[i];
         let min = match self.reg.get(&cfg.widget) {
-            Some(Ok(d)) => d.meta().min_size,
+            Some(Ok(d)) => d.meta().min_card_size,
             _ => (48.0, 48.0),
         };
         self.card(i).min_window_px(min, self.scale_of(i))
@@ -115,18 +108,15 @@ impl App {
         }
     }
 
-    /// Live move/resize: apply the drag for the current (screen, physical) cursor.
     pub(super) fn drag_update(&mut self, i: usize, cursor: (i32, i32)) {
         let Some(d) = &self.wins[i].drag else { return };
         let (handle, cursor0, rect0) = (d.handle, d.cursor0, d.rect0);
         let snap = self.snap_for(i);
         let min = self.min_size_phys(i);
-        // shift+drag disables snapping
         let snap = if self.mods.shift_key() { Snap { threshold: 0, grid: 0, ..snap } } else { snap };
-        // snap the visible card, not the transparent shadow margin around it
         let (card, s) = (self.card(i), self.scale_of(i));
         let g = card.gutter_px(s);
-        let c = edit::apply(handle, card.card_of_window(rect0, s), cursor.0 - cursor0.0, cursor.1 - cursor0.1, (min.0 - 2 * g, min.1 - 2 * g), &snap);
+        let c = edit::dragged_rect(handle, card.card_of_window(rect0, s), cursor.0 - cursor0.0, cursor.1 - cursor0.1, (min.0 - 2 * g, min.1 - 2 * g), &snap);
         self.set_window_rect(i, card.window_of_card(c, s));
         self.wins[i].tween = None;
     }
@@ -136,7 +126,7 @@ impl App {
             let changed = self.wins[i].window.as_ref().and_then(|w| Self::outer_rect(w)).is_some_and(|r| r != d.before);
             if changed {
                 self.undo.push(UndoEntry { id: self.ws.instances[i].id.clone(), before: d.before });
-                self.commit_rect(i);
+                self.save_rect_to_workspace(i);
             }
             self.wins[i].redraw = true;
         }
@@ -161,7 +151,7 @@ impl App {
                 if let Some(r) = self.wins[i].window.as_ref().and_then(|w| Self::outer_rect(w)) {
                     self.undo.push(UndoEntry { id: self.ws.instances[i].id.clone(), before: r });
                     self.set_window_rect(i, Rect { x: r.x + dx, y: r.y + dy, ..r });
-                    self.commit_rect(i);
+                    self.save_rect_to_workspace(i);
                 }
             }
             _ => {}
@@ -172,7 +162,7 @@ impl App {
         let Some(u) = self.undo.pop() else { return };
         if let Some(i) = self.ws.instances.iter().position(|c| c.id == u.id) {
             self.set_window_rect(i, u.before);
-            self.commit_rect(i);
+            self.save_rect_to_workspace(i);
         }
     }
 }

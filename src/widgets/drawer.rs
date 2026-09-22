@@ -1,7 +1,4 @@
-//! The Drawer, a Rust Widget: its tree comes from `drawer.toml` (so restyling
-//! it is editing that file, even a user copy of it), and its behaviour lives
-//! here. Every Drawer gets its own shortcut folder, and its `+` button adds an
-//! app to that folder.
+//! A Rust Widget drawn from `drawer.toml`, so a user copy of that file restyles it.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -30,8 +27,7 @@ impl Widget for Drawer {
         self.tree.build(inp, theme, image_size)
     }
 
-    /// A folder of its own, `<data>/drawers/<instance id>`, mirrored by `folder`.
-    fn on_add(&self, cfg: &mut InstanceCfg, host: &mut dyn Host) {
+    fn on_instance_added(&self, cfg: &mut InstanceCfg, host: &mut dyn Host) {
         let dir = host.data_dir().join("drawers").join(&cfg.id);
         if let Err(e) = std::fs::create_dir_all(&dir) {
             host.log(format!("could not create {}: {e}", dir.display()));
@@ -39,8 +35,7 @@ impl Widget for Drawer {
         cfg.set_param("folder", &Value::Str(dir.to_string_lossy().into_owned()));
     }
 
-    /// `add_app`: pick a file and put a shortcut to it in the Drawer's folder.
-    fn action(&self, verb: &str, _arg: &str, cx: &mut ActionCx) -> bool {
+    fn handle_action(&self, verb: &str, _arg: &str, cx: &mut ActionCx) -> bool {
         if verb != "add_app" {
             return false;
         }
@@ -54,7 +49,7 @@ impl Widget for Drawer {
             cx.host.log(format!("could not create a shortcut to `{}`", picked.display()));
         }
         cx.sources.invalidate(); // the folder watcher would also catch it, a moment later
-        cx.redraw = true;
+        cx.wants_redraw = true;
         true
     }
 }
@@ -63,7 +58,7 @@ impl Widget for Drawer {
 mod tests {
     use super::*;
     use crate::data::DataSources;
-    use crate::widgets::{Registry, setup};
+    use crate::widgets::{Registry, set_up_instance};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -103,7 +98,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("wf-drawer-{}", std::process::id()));
         let mut host = FakeHost { dir: dir.clone(), ..Default::default() };
         let mut cfg = InstanceCfg { id: "drawer-3".into(), widget: "drawer".into(), ..Default::default() };
-        setup(&*drawer(Path::new("nope")), &mut cfg, &mut host);
+        set_up_instance(&*drawer(Path::new("nope")), &mut cfg, &mut host);
         let want = dir.join("drawers").join("drawer-3");
         assert_eq!(cfg.folder(), want.to_string_lossy());
         assert!(want.is_dir());
@@ -117,10 +112,10 @@ mod tests {
         cfg.set_param("folder", &Value::Str("D:\\drawer".into()));
         let mut host = FakeHost { pick: Some(PathBuf::from("C:\\Apps\\app.exe")), ..Default::default() };
         let (mut state, sources) = (BTreeMap::new(), DataSources::builtin());
-        let mut cx = ActionCx { cfg: &cfg, state: &mut state, host: &mut host, sources: &sources, redraw: false };
-        assert!(w.action("add_app", "", &mut cx));
-        assert!(cx.redraw);
-        assert!(!w.action("toggle", "collapsed", &mut cx), "engine verbs are not the drawer's");
+        let mut cx = ActionCx { cfg: &cfg, state: &mut state, host: &mut host, sources: &sources, wants_redraw: false };
+        assert!(w.handle_action("add_app", "", &mut cx));
+        assert!(cx.wants_redraw);
+        assert!(!w.handle_action("toggle", "collapsed", &mut cx), "engine verbs are not the drawer's");
         assert_eq!(host.shortcuts, [(PathBuf::from("D:\\drawer"), PathBuf::from("C:\\Apps\\app.exe"))]);
     }
 
@@ -133,7 +128,7 @@ mod tests {
         assert_eq!(w.meta().name, "My Drawer");
         let mut host = FakeHost { dir: dir.clone(), ..Default::default() };
         let mut cfg = InstanceCfg { id: "drawer-1".into(), ..Default::default() };
-        setup(&*w, &mut cfg, &mut host);
+        set_up_instance(&*w, &mut cfg, &mut host);
         assert!(!cfg.folder().is_empty(), "still a Rust Widget underneath");
         std::fs::remove_dir_all(&dir).ok();
     }

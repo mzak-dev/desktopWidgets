@@ -1,6 +1,5 @@
-//! Widget definition files (TOML) -> element AST -> `ui::Node` tree
-//! (decisions 8, 11, 12, 14). Authored by hand, so parse errors are precise and
-//! unknown attributes come with a "did you mean" instead of being ignored.
+//! Widget definition files (TOML) -> element AST -> `ui::Node` tree (decisions 8, 11, 12, 14).
+//! Authored by hand, so unknown names are rejected with a "did you mean".
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -15,7 +14,6 @@ use crate::ui::*;
 use crate::value::Value;
 use crate::widgets::{Built, ExpandInfo, Inputs, ParamDef, ParamType, Seed, WidgetMeta};
 
-// ---- attributes ------------------------------------------------------------
 
 #[derive(Clone, Debug)]
 pub enum Attr {
@@ -44,20 +42,19 @@ fn parse_attr(v: &toml::Value, path: &str) -> Result<Attr, String> {
     })
 }
 
-const COMMON: &[&str] = &[
+const COMMON_ATTRS: &[&str] = &[
     "id", "width", "height", "min_width", "min_height", "max_width", "max_height", "grow", "shrink", "basis", "direction", "wrap", "align",
     "justify", "align_self", "gap", "padding", "margin", "position", "inset", "left", "top", "right", "bottom", "aspect", "fill", "fill_alpha", "border",
     "border_color", "radius", "opacity", "shadow", "clip", "on_click", "hover", "transition", "enter", "scroll", "overlay", "hit",
 ];
-/// `repeat` is structural (one copy of its children per list item), not an element kind.
-const REPEAT: &[&str] = &["for", "as", "index"];
+/// `repeat` is structural, not an element kind.
+const REPEAT_ATTRS: &[&str] = &["for", "as", "index"];
 
-/// Every `type` name: the element kinds, then `repeat`.
-fn types() -> Vec<&'static str> {
+fn type_names() -> Vec<&'static str> {
     elements::KINDS.iter().map(|k| k.name).chain(["repeat"]).collect()
 }
 
-fn lev(a: &str, b: &str) -> usize {
+fn edit_distance(a: &str, b: &str) -> usize {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     for i in 1..=a.len() {
@@ -73,7 +70,7 @@ fn lev(a: &str, b: &str) -> usize {
 fn suggest(name: &str, pool: &[&[&str]]) -> String {
     pool.iter()
         .flat_map(|p| p.iter())
-        .map(|c| (lev(name, c), *c))
+        .map(|c| (edit_distance(name, c), *c))
         .filter(|(d, _)| *d <= 2)
         .min()
         .map(|(_, c)| format!(" (did you mean `{c}`?)"))
@@ -91,10 +88,10 @@ pub struct Elem {
 fn parse_elem(t: &toml::Table, path: &str) -> Result<Elem, String> {
     let ty = t.get("type").and_then(|v| v.as_str()).unwrap_or("box").to_string();
     let specific: &[&str] = match elements::find(&ty) {
-        Some(k) => k.attrs,
-        None if ty == "repeat" => REPEAT,
+        Some(k) => k.own_attrs,
+        None if ty == "repeat" => REPEAT_ATTRS,
         None => {
-            let types = types();
+            let types = type_names();
             return Err(format!("{path}: unknown type `{ty}`{} (expected one of {})", suggest(&ty, &[&types]), types.join(", ")));
         }
     };
@@ -113,16 +110,15 @@ fn parse_elem(t: &toml::Table, path: &str) -> Result<Elem, String> {
                     children.push(parse_elem(ct, &format!("{path}.children[{i}]"))?);
                 }
             }
-            k if COMMON.contains(&k) || specific.contains(&k) => {
+            k if COMMON_ATTRS.contains(&k) || specific.contains(&k) => {
                 attrs.insert(k.to_string(), parse_attr(v, &format!("{path}.{k}"))?);
             }
-            k => return Err(format!("{path}: unknown attribute `{k}` on `{ty}`{}", suggest(k, &[COMMON, specific]))),
+            k => return Err(format!("{path}: unknown attribute `{k}` on `{ty}`{}", suggest(k, &[COMMON_ATTRS, specific]))),
         }
     }
     Ok(Elem { ty, attrs, children, when })
 }
 
-// ---- widget definition -----------------------------------------------------
 
 #[derive(Clone, Debug)]
 pub struct Expand {
@@ -131,7 +127,6 @@ pub struct Expand {
     pub height: Option<Template>,
 }
 
-/// A parsed widget definition file: what a TOML Widget is made of.
 #[derive(Clone, Debug)]
 pub struct WidgetDef {
     pub meta: WidgetMeta,
@@ -170,8 +165,8 @@ impl WidgetDef {
                         let s = v.as_str().ok_or_else(|| format!("params.{name}.seed: expected a string"))?;
                         let ids: Vec<&str> = Seed::ALL.iter().map(|x| x.id()).collect();
                         let seed = Seed::parse(s).ok_or_else(|| format!("params.{name}: unknown seed `{s}`{}", suggest(s, &[&ids])))?;
-                        if seed.fits() != ty {
-                            return Err(format!("params.{name}: seed `{s}` needs type = \"{}\"", seed.fits().id()));
+                        if seed.param_type() != ty {
+                            return Err(format!("params.{name}: seed `{s}` needs type = \"{}\"", seed.param_type().id()));
                         }
                         Some(seed)
                     }
@@ -210,18 +205,17 @@ impl WidgetDef {
             id: id.to_string(),
             name: if text("name").is_empty() { id.to_string() } else { text("name") },
             description: text("description"),
-            size: pair(t.get("size"), (200.0, 120.0), "size")?,
-            min_size: pair(t.get("min_size"), (48.0, 48.0), "min_size")?,
+            default_card_size: pair(t.get("size"), (200.0, 120.0), "size")?,
+            min_card_size: pair(t.get("min_size"), (48.0, 48.0), "min_size")?,
             params,
-            state,
+            initial_state: state,
         };
         Ok(WidgetDef { meta, expand, root: parse_elem(root_t, "root")? })
     }
 }
 
-// ---- building --------------------------------------------------------------
 
-struct B<'a> {
+struct TreeBuilder<'a> {
     theme: &'a Theme,
     scope: Scope<'a>,
     warns: Vec<String>,
@@ -229,37 +223,33 @@ struct B<'a> {
     image_size: &'a dyn Fn(&str) -> Option<(f32, f32)>,
 }
 
-/// Build the card tree of one Instance. The window around it (gutter, blur
-/// look, outline switch) is added by `card::Card::dress`.
 pub fn build(def: &WidgetDef, inp: &Inputs, theme: &Theme, image_size: &dyn Fn(&str) -> Option<(f32, f32)>) -> Result<Built, String> {
-    let card = inp.size;
-    let mut scope = Scope::with_provider(inp.sources);
+    let card = inp.card_size;
+    let mut scope = Scope::with_provider(inp.read_source);
     let obj = |m: &BTreeMap<String, Value>| Value::Obj(m.clone());
     scope.set("param", obj(&def.meta.effective_params(inp.params)));
-    let mut st = def.meta.state.clone();
+    let mut st = def.meta.initial_state.clone();
     st.extend(inp.state.clone());
     scope.set("state", obj(&st));
     scope.set("self", Value::obj([("w", (card.0 as f64).into()), ("h", (card.1 as f64).into())]));
-    let mut b = B { theme, scope, warns: vec![], images: BTreeSet::new(), image_size };
-    let mut nodes = b.build_elem(&def.root, inp.key)?;
+    let mut b = TreeBuilder { theme, scope, warns: vec![], images: BTreeSet::new(), image_size };
+    let mut nodes = b.build_elem(&def.root, inp.key_prefix)?;
     let mut root = nodes.pop().ok_or("root produced no node")?;
     root.style.size = Size { width: length(card.0), height: length(card.1) };
     let expand = match &def.expand {
         None => None,
         Some(e) => {
             let active = e.when.eval(&b.scope).map_err(|x| format!("expand.when: {x}"))?.truthy();
-            let dim = |t: &Option<Template>, b: &B| -> Result<Option<f32>, String> {
+            let dim = |t: &Option<Template>, b: &TreeBuilder| -> Result<Option<f32>, String> {
                 t.as_ref().map(|t| t.eval(&b.scope).map_err(|x| format!("expand: {x}")).map(|v| v.as_f64().unwrap_or(0.0) as f32)).transpose()
             };
-            // in card units, like the widget file; the window adds its gutter
             Some(ExpandInfo { active, width: dim(&e.width, &b)?, height: dim(&e.height, &b)? })
         }
     };
-    Ok(Built { root, deps: b.scope.deps(), images: b.images, warnings: b.warns, expand })
+    Ok(Built { root, deps: b.scope.deps(), image_ids: b.images, warnings: b.warns, expand })
 }
 
-/// A visible in-place error (decision 14): same footprint, red outline, the
-/// first message. Never a silent skip.
+/// Decision 14: a broken widget shows this in place, never a silent skip.
 pub fn error_card(msg: &str, size: (f32, f32), theme: &Theme) -> Node {
     let danger = theme.color("danger");
     let head = Node::text("e0", "Widget error", 13.0, danger).with_text(|t| t.weight = 700);
@@ -269,10 +259,9 @@ pub fn error_card(msg: &str, size: (f32, f32), theme: &Theme) -> Node {
     card
 }
 
-/// How an element kind's `build` reads its own attributes (see `elements`):
-/// tokens resolved, bindings evaluated, bad values reported as warnings.
+/// Resolves tokens and bindings; bad values become warnings, not errors.
 pub struct Attrs<'r, 'a> {
-    b: &'r mut B<'a>,
+    b: &'r mut TreeBuilder<'a>,
     e: &'r Elem,
     path: &'r str,
 }
@@ -287,7 +276,7 @@ impl<'a> Attrs<'_, 'a> {
     }
 
     pub fn num(&mut self, k: &str) -> Result<Option<f32>, String> {
-        self.b.f(self.e, k, self.path)
+        self.b.num(self.e, k, self.path)
     }
 
     pub fn flag(&mut self, k: &str) -> Result<Option<bool>, String> {
@@ -299,24 +288,24 @@ impl<'a> Attrs<'_, 'a> {
     }
 
     pub fn color(&mut self, k: &str) -> Result<Option<Color>, String> {
-        self.b.col(self.e, k, self.path)
+        self.b.color(self.e, k, self.path)
     }
 
-    /// Ask for image `id` to be uploaded; its intrinsic size once known (32x32 until then).
-    pub fn image(&mut self, id: &str) -> (f32, f32) {
+    /// 32x32 until the image is uploaded.
+    pub fn request_image(&mut self, id: &str) -> (f32, f32) {
         self.b.images.insert(id.to_string());
         (self.b.image_size)(id).unwrap_or((32.0, 32.0))
     }
 }
 
-impl B<'_> {
+impl TreeBuilder<'_> {
     fn warn(&mut self, m: String) {
         if !self.warns.contains(&m) {
             self.warns.push(m);
         }
     }
 
-    fn deref(&mut self, v: Value, ctx: &str) -> Value {
+    fn resolve_token(&mut self, v: Value, ctx: &str) -> Value {
         let mut v = v;
         for _ in 0..4 {
             let Value::Str(s) = &v else { break };
@@ -332,24 +321,24 @@ impl B<'_> {
         v
     }
 
-    fn val(&mut self, a: &Attr, ctx: &str) -> Result<Value, String> {
+    fn eval_attr(&mut self, a: &Attr, ctx: &str) -> Result<Value, String> {
         Ok(match a {
-            Attr::Lit(v) => self.deref(v.clone(), ctx),
-            Attr::Token(n) => self.deref(Value::Str(format!("${n}")), ctx),
+            Attr::Lit(v) => self.resolve_token(v.clone(), ctx),
+            Attr::Token(n) => self.resolve_token(Value::Str(format!("${n}")), ctx),
             Attr::Tpl(t) => {
                 let v = t.eval(&self.scope).map_err(|e| format!("{ctx}: {e}"))?;
-                self.deref(v, ctx)
+                self.resolve_token(v, ctx)
             }
-            Attr::List(l) => Value::List(l.iter().map(|x| self.val(x, ctx)).collect::<Result<_, _>>()?),
+            Attr::List(l) => Value::List(l.iter().map(|x| self.eval_attr(x, ctx)).collect::<Result<_, _>>()?),
             Attr::Table(_) => return Err(format!("{ctx}: expected a value, found a table")),
         })
     }
 
     fn get(&mut self, e: &Elem, k: &str, path: &str) -> Result<Option<Value>, String> {
-        e.attrs.get(k).map(|a| self.val(a, &format!("{path}.{k}"))).transpose()
+        e.attrs.get(k).map(|a| self.eval_attr(a, &format!("{path}.{k}"))).transpose()
     }
 
-    fn f(&mut self, e: &Elem, k: &str, path: &str) -> Result<Option<f32>, String> {
+    fn num(&mut self, e: &Elem, k: &str, path: &str) -> Result<Option<f32>, String> {
         Ok(self.get(e, k, path)?.and_then(|v| v.as_f64()).map(|x| x as f32))
     }
 
@@ -374,12 +363,12 @@ impl B<'_> {
         }
     }
 
-    fn col(&mut self, e: &Elem, k: &str, path: &str) -> Result<Option<Color>, String> {
+    fn color(&mut self, e: &Elem, k: &str, path: &str) -> Result<Option<Color>, String> {
         let ctx = format!("{path}.{k}");
         Ok(self.get(e, k, path)?.map(|v| self.color_of(&v, &ctx)))
     }
 
-    fn dim(v: &Value) -> Option<Dimension> {
+    fn dimension(v: &Value) -> Option<Dimension> {
         match v {
             Value::Num(n) => Some(length(*n as f32)),
             Value::Str(s) if s == "auto" => Some(auto()),
@@ -388,8 +377,8 @@ impl B<'_> {
         }
     }
 
-    fn lp(v: &Value) -> LengthPercentage {
-        match Self::dim(v) {
+    fn length_percent(v: &Value) -> LengthPercentage {
+        match Self::dimension(v) {
             Some(_) if matches!(v, Value::Str(s) if s.ends_with('%')) => {
                 let p = if let Value::Str(s) = v { s.trim_end_matches('%').parse::<f32>().unwrap_or(0.0) } else { 0.0 };
                 percent(p / 100.0)
@@ -398,7 +387,7 @@ impl B<'_> {
         }
     }
 
-    fn lpa(v: &Value) -> LengthPercentageAuto {
+    fn length_percent_auto(v: &Value) -> LengthPercentageAuto {
         match v {
             Value::Str(s) if s == "auto" => auto(),
             Value::Str(s) if s.ends_with('%') => percent(s.trim_end_matches('%').parse::<f32>().unwrap_or(0.0) / 100.0),
@@ -458,28 +447,28 @@ impl B<'_> {
         }
         if let Some(g) = self.get(e, "gap", path)? {
             let (r, c) = match &g {
-                Value::List(l) if l.len() == 2 => (Self::lp(&l[0]), Self::lp(&l[1])),
-                v => (Self::lp(v), Self::lp(v)),
+                Value::List(l) if l.len() == 2 => (Self::length_percent(&l[0]), Self::length_percent(&l[1])),
+                v => (Self::length_percent(v), Self::length_percent(v)),
             };
             st.gap = Size { width: c, height: r };
         }
         if let Some(p) = self.get(e, "padding", path)? {
             let [t, r, b, l] = Self::sides(&p);
-            st.padding = Rect { left: Self::lp(&l), right: Self::lp(&r), top: Self::lp(&t), bottom: Self::lp(&b) };
+            st.padding = Rect { left: Self::length_percent(&l), right: Self::length_percent(&r), top: Self::length_percent(&t), bottom: Self::length_percent(&b) };
         }
         if let Some(m) = self.get(e, "margin", path)? {
             let [t, r, b, l] = Self::sides(&m);
-            st.margin = Rect { left: Self::lpa(&l), right: Self::lpa(&r), top: Self::lpa(&t), bottom: Self::lpa(&b) };
+            st.margin = Rect { left: Self::length_percent_auto(&l), right: Self::length_percent_auto(&r), top: Self::length_percent_auto(&t), bottom: Self::length_percent_auto(&b) };
         }
         if let Some(v) = self.get(e, "width", path)? {
-            st.size.width = Self::dim(&v).unwrap_or(auto());
+            st.size.width = Self::dimension(&v).unwrap_or(auto());
         }
         if let Some(v) = self.get(e, "height", path)? {
-            st.size.height = Self::dim(&v).unwrap_or(auto());
+            st.size.height = Self::dimension(&v).unwrap_or(auto());
         }
         for (k, apply) in [("min_width", 0), ("min_height", 1), ("max_width", 2), ("max_height", 3)] {
             if let Some(v) = self.get(e, k, path)? {
-                let d = Self::lpa(&v);
+                let d = Self::length_percent_auto(&v);
                 match apply {
                     0 => st.min_size.width = d,
                     1 => st.min_size.height = d,
@@ -488,34 +477,34 @@ impl B<'_> {
                 }
             }
         }
-        if let Some(v) = self.f(e, "grow", path)? {
+        if let Some(v) = self.num(e, "grow", path)? {
             st.flex_grow = v;
         }
-        if let Some(v) = self.f(e, "shrink", path)? {
+        if let Some(v) = self.num(e, "shrink", path)? {
             st.flex_shrink = v;
         }
         if let Some(v) = self.get(e, "basis", path)? {
-            st.flex_basis = Self::dim(&v).unwrap_or(auto());
+            st.flex_basis = Self::dimension(&v).unwrap_or(auto());
         }
-        if let Some(v) = self.f(e, "aspect", path)? {
+        if let Some(v) = self.num(e, "aspect", path)? {
             st.aspect_ratio = Some(v);
         }
         let abs = self.text(e, "position", path)?.as_deref() == Some("absolute");
         let has_inset = ["inset", "left", "top", "right", "bottom"].iter().any(|k| e.attrs.contains_key(*k));
-        let fills_parent = elements::find(&e.ty).is_some_and(|k| k.fills_parent);
+        let fills_parent = elements::find(&e.ty).is_some_and(|k| k.fills_parent_when_unsized);
         let implicit_fill = fills_parent && !e.attrs.contains_key("width") && !e.attrs.contains_key("height");
         if abs || has_inset || implicit_fill {
             st.position = Position::Absolute;
             let mut ins = [auto(), auto(), auto(), auto()]; // l t r b
             if let Some(v) = self.get(e, "inset", path)? {
                 let s = Self::sides(&v); // t r b l order for lists; scalars fill all
-                ins = [Self::lpa(&s[3]), Self::lpa(&s[0]), Self::lpa(&s[1]), Self::lpa(&s[2])];
+                ins = [Self::length_percent_auto(&s[3]), Self::length_percent_auto(&s[0]), Self::length_percent_auto(&s[1]), Self::length_percent_auto(&s[2])];
             } else if implicit_fill && !has_inset {
                 ins = [length(0.0), length(0.0), length(0.0), length(0.0)];
             }
             for (i, k) in ["left", "top", "right", "bottom"].iter().enumerate() {
                 if let Some(v) = self.get(e, k, path)? {
-                    ins[i] = Self::lpa(&v);
+                    ins[i] = Self::length_percent_auto(&v);
                 }
             }
             st.inset = Rect { left: ins[0], right: ins[2], top: ins[1], bottom: ins[3] };
@@ -527,25 +516,24 @@ impl B<'_> {
         match self.get(e, "fill", path)? {
             Some(Value::List(l)) if l.len() == 2 => {
                 n.look.fill = self.color_of(&l[0], &format!("{path}.fill"));
-                n.look.fill2 = Some(self.color_of(&l[1], &format!("{path}.fill")));
+                n.look.gradient_bottom = Some(self.color_of(&l[1], &format!("{path}.fill")));
             }
             Some(v) => n.look.fill = self.color_of(&v, &format!("{path}.fill")),
             None => {}
         }
-        // absolute alpha for the fill only, so a see-through card keeps opaque children
-        // (negative = keep the theme's own alpha)
-        if let Some(a) = self.f(e, "fill_alpha", path)?.filter(|a| *a >= 0.0) {
+        // fill only, so a see-through card keeps opaque children; negative keeps the theme's alpha
+        if let Some(a) = self.num(e, "fill_alpha", path)?.filter(|a| *a >= 0.0) {
             n.look.fill = n.look.fill.with_alpha(a.clamp(0.0, 1.0));
-            n.look.fill2 = n.look.fill2.map(|c| c.with_alpha(a.clamp(0.0, 1.0)));
+            n.look.gradient_bottom = n.look.gradient_bottom.map(|c| c.with_alpha(a.clamp(0.0, 1.0)));
         }
-        if let Some(w) = self.f(e, "border", path)? {
+        if let Some(w) = self.num(e, "border", path)? {
             n.look.border = w;
-            n.look.border_color = self.col(e, "border_color", path)?.unwrap_or_else(|| self.theme.color("border"));
+            n.look.border_color = self.color(e, "border_color", path)?.unwrap_or_else(|| self.theme.color("border"));
         }
-        if let Some(r) = self.f(e, "radius", path)? {
+        if let Some(r) = self.num(e, "radius", path)? {
             n.look.radius = r;
         }
-        if let Some(o) = self.f(e, "opacity", path)? {
+        if let Some(o) = self.num(e, "opacity", path)? {
             n.look.opacity = o;
         }
         if let Some(a) = e.attrs.get("shadow") {
@@ -553,12 +541,12 @@ impl B<'_> {
             n.look.shadow = match a {
                 Attr::Table(t) => {
                     let mut num = |k: &str, d: f32| -> Result<f32, String> {
-                        Ok(t.get(k).map(|a| self.val(a, &format!("{path}.shadow.{k}"))).transpose()?.and_then(|v| v.as_f64()).map_or(d, |x| x as f32))
+                        Ok(t.get(k).map(|a| self.eval_attr(a, &format!("{path}.shadow.{k}"))).transpose()?.and_then(|v| v.as_f64()).map_or(d, |x| x as f32))
                     };
                     let (blur, dy) = (num("blur", 12.0)?, num("dy", 4.0)?);
                     let c = match t.get("color") {
                         Some(a) => {
-                            let v = self.val(a, &format!("{path}.shadow.color"))?;
+                            let v = self.eval_attr(a, &format!("{path}.shadow.color"))?;
                             self.color_of(&v, path)
                         }
                         None => shadow_col,
@@ -566,7 +554,7 @@ impl B<'_> {
                     Some(Shadow { blur, dy, color: c })
                 }
                 other => {
-                    let blur = self.val(other, &format!("{path}.shadow"))?.as_f64().unwrap_or(0.0) as f32;
+                    let blur = self.eval_attr(other, &format!("{path}.shadow"))?.as_f64().unwrap_or(0.0) as f32;
                     (blur > 0.0).then_some(Shadow { blur, dy: blur / 3.0, color: shadow_col })
                 }
             };
@@ -582,7 +570,7 @@ impl B<'_> {
         if let Some(Attr::Table(t)) = e.attrs.get("hover") {
             for (k, a) in t {
                 let ctx = format!("{path}.hover.{k}");
-                let v = self.val(a, &ctx)?;
+                let v = self.eval_attr(a, &ctx)?;
                 match k.as_str() {
                     "fill" => n.hover.fill = Some(self.color_of(&v, &ctx)),
                     "border_color" => n.hover.border_color = Some(self.color_of(&v, &ctx)),
@@ -594,29 +582,29 @@ impl B<'_> {
         }
         match e.attrs.get("transition") {
             Some(Attr::Table(t)) => {
-                let ms = t.get("ms").map(|a| self.val(a, path)).transpose()?.and_then(|v| v.as_f64()).unwrap_or(150.0) as u32;
-                let ease = t.get("ease").map(|a| self.val(a, path)).transpose()?.map(|v| Ease::parse(&v.to_string())).unwrap_or_default();
+                let ms = t.get("ms").map(|a| self.eval_attr(a, path)).transpose()?.and_then(|v| v.as_f64()).unwrap_or(150.0) as u32;
+                let ease = t.get("ease").map(|a| self.eval_attr(a, path)).transpose()?.map(|v| Ease::parse(&v.to_string())).unwrap_or_default();
                 n.transition = Transition { ms, ease };
             }
-            Some(a) => n.transition = Transition { ms: self.val(a, path)?.as_f64().unwrap_or(0.0) as u32, ease: Ease::Out },
+            Some(a) => n.transition = Transition { ms: self.eval_attr(a, path)?.as_f64().unwrap_or(0.0) as u32, ease: Ease::Out },
             None => {}
         }
         if let Some(Attr::Table(t)) = e.attrs.get("enter") {
-            let mut num = |k: &str, d: f64| -> Result<f64, String> { Ok(t.get(k).map(|a| self.val(a, path)).transpose()?.and_then(|v| v.as_f64()).unwrap_or(d)) };
+            let mut num = |k: &str, d: f64| -> Result<f64, String> { Ok(t.get(k).map(|a| self.eval_attr(a, path)).transpose()?.and_then(|v| v.as_f64()).unwrap_or(d)) };
             let (ms, dy, delay, stagger) = (num("ms", 200.0)?, num("dy", 8.0)?, num("delay", 0.0)?, num("stagger", 0.0)?);
-            let idx = self.scope_num("index");
+            let idx = self.scope_number("index");
             n.enter = Some(Enter { ms: ms as u32, dy: dy as f32, delay: (delay + stagger * idx) as u32 });
         }
-        if let Some(s) = self.f(e, "scroll", path)? {
-            n.scroll = Some(s.max(0.0));
+        if let Some(s) = self.num(e, "scroll", path)? {
+            n.scroll_offset = Some(s.max(0.0));
         }
         n.overlay = self.flag(e, "overlay", path)?.unwrap_or(false);
-        n.hit = self.flag(e, "hit", path)?.unwrap_or(false);
+        n.hit_testable = self.flag(e, "hit", path)?.unwrap_or(false);
         Ok(())
     }
 
-    fn scope_num(&self, name: &str) -> f64 {
-        self.scope.peek(name).and_then(|v| v.as_f64()).unwrap_or(0.0)
+    fn scope_number(&self, name: &str) -> f64 {
+        self.scope.peek_untracked(name).and_then(|v| v.as_f64()).unwrap_or(0.0)
     }
 
     fn build_elem(&mut self, e: &Elem, key: &str) -> Result<Vec<Node>, String> {
@@ -690,9 +678,9 @@ mod tests {
         let inp = Inputs {
             params: &p,
             state: &st,
-            size: (100.0, 60.0),
-            key: "t",
-            sources: &|name| match name {
+            card_size: (100.0, 60.0),
+            key_prefix: "t",
+            read_source: &|name| match name {
                 "clock" => Some(Value::obj([("minute", 7.into()), ("second", 3.into())])),
                 "shortcuts" => Some(crate::data::shortcuts_value(&[], "Default")),
                 _ => None,
@@ -725,7 +713,7 @@ mod tests {
     #[test]
     fn element_kinds_come_from_the_table_and_keep_their_own_attributes() {
         for k in elements::KINDS {
-            assert!(k.attrs.iter().all(|a| !COMMON.contains(a)), "`{}` redeclares a common attribute", k.name);
+            assert!(k.own_attrs.iter().all(|a| !COMMON_ATTRS.contains(a)), "`{}` redeclares a common attribute", k.name);
         }
         let e = WidgetDef::parse("t", "[root]\ntype='nope'").unwrap_err();
         assert!(e.contains("box, text, image, hand, ticks, arc, repeat"), "{e}");
@@ -747,7 +735,7 @@ mod tests {
         assert_eq!(t.color.to_hex(), "#6ea8ff");
         assert!(b.deps.contains("clock.minute") && b.deps.contains("param.who"), "{:?}", b.deps);
         assert!(!b.deps.contains("clock.second"));
-        // the build is the card alone, sized to the card; `card::Card::dress` adds the window
+        // the build is the card alone, sized to the card; `Card::window_node` adds the window
         assert_eq!((b.root.style.size.width, b.root.style.size.height), (length(100.0), length(60.0)));
     }
 
@@ -762,7 +750,7 @@ fill=[\"{param.tint ? '$accent' : '#000000'}\", '$accent']
 fill_alpha=0.5";
         let b = build_src(src, &[]).unwrap();
         let l = &b.root.look;
-        assert_eq!((l.fill.to_hex().as_str(), l.fill.0[3], l.fill2.unwrap().0[3]), ("#6ea8ff80", 0.5, 0.5));
+        assert_eq!((l.fill.to_hex().as_str(), l.fill.0[3], l.gradient_bottom.unwrap().0[3]), ("#6ea8ff80", 0.5, 0.5));
         let b = build_src(src, &[("tint", false.into())]).unwrap();
         assert_eq!(b.root.look.fill.to_hex(), "#00000080");
     }

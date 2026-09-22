@@ -1,15 +1,12 @@
-//! Show Desktop (ADR-002, from Rainmeter's System.cpp): keeping Desktop and
-//! Bottom widgets on the desktop layer and floating Desktop ones over a shown desktop.
+//! Show Desktop handling (ADR-002, from Rainmeter's System.cpp).
 
 use super::*;
 
 impl App {
-    /// Re-place every widget for the current Show Desktop state:
-    /// Desktop-mode widgets float just under the taskbar while the desktop is
-    /// shown and sink back after; Bottom-mode widgets stay under the desktop
-    /// (hidden by it, by definition); Normal and Topmost are not ours to move.
+    /// Desktop widgets float under the taskbar while the desktop is shown; Bottom
+    /// ones stay hidden under it; Normal and Topmost are not ours to move.
     pub(super) fn apply_show_desktop(&mut self) {
-        let host = self.test_host.or_else(win32::desktop_icon_host);
+        let host = self.fake_icon_host.or_else(win32::desktop_icon_host);
         for i in 0..self.wins.len() {
             let Some(h) = self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w)) else { continue };
             match (ZMode::parse(&self.ws.instances[i].z).unwrap_or(ZMode::Desktop), self.desktop_shown) {
@@ -40,15 +37,13 @@ impl App {
             self.log(format!("desktop {}", if shown { "shown: Desktop-layer widgets float above it" } else { "hidden: widgets back on the desktop layer" }));
             self.apply_show_desktop();
         }
-        // Leaving Show Desktop can happen without a foreground event; keep an eye
-        // on it only while it lasts (Rainmeter polls at 100 ms in this state)
-        if self.desktop_shown && self.shell_due.is_empty() {
-            self.shell_due.push(Instant::now() + Duration::from_millis(250));
+        // leaving Show Desktop can happen without a foreground event (Rainmeter polls too)
+        if self.desktop_shown && self.show_desktop_checks.is_empty() {
+            self.show_desktop_checks.push(Instant::now() + Duration::from_millis(250));
         }
     }
 
-    /// Foreign z-order changes are vetoed for widgets that must stay put.
-    pub(super) fn guard_z(&self, i: usize) {
+    pub(super) fn update_z_guard(&self, i: usize) {
         if let Some(w) = &self.wins[i].window {
             let mode = ZMode::parse(&self.ws.instances[i].z).unwrap_or(ZMode::Desktop);
             win32::set_z_guard(w, matches!(mode, ZMode::Desktop | ZMode::Bottom));

@@ -1,6 +1,5 @@
-//! The `sys` Data Source: live machine load (CPU, memory, system drive,
-//! battery, uptime). One shared sample, taken at most once per ~second no
-//! matter how many widgets ask, since CPU load is a delta between samples.
+//! One shared sample, at most every 800 ms however many widgets ask: CPU load
+//! is a delta between samples.
 
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -15,8 +14,6 @@ struct Sampled {
     value: Value,
 }
 
-// ponytail: one shared sample so N widgets cost one set of syscalls; per-widget
-// rates would need a sampler per Instance.
 #[derive(Default)]
 pub struct Sys {
     last: Mutex<Option<Sampled>>,

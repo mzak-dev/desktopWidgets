@@ -1,5 +1,3 @@
-//! The TOML Widget: a Widget that is a definition file (`format`).
-
 use super::{Built, Inputs, Widget, WidgetMeta};
 use crate::format::{self, WidgetDef};
 use crate::theme::Theme;

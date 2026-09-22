@@ -1,5 +1,4 @@
-//! Embeds every `assets/widgets/*.toml` as a built-in widget, so adding a
-//! built-in TOML Widget is dropping a file there.
+//! Embeds every `assets/widgets/*.toml` as a built-in widget.
 
 use std::path::Path;
 

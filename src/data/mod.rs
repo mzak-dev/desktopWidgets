@@ -1,11 +1,5 @@
-//! Data Sources (CONTEXT.md): named producers of values that widget
-//! definitions bind to. Each one is a module implementing `DataSource`, and
-//! declares how often each of its fields can change (`Cadence`), which is what
-//! lets the scheduler wake a window exactly when a bound value can differ and
-//! never otherwise (decision 16, ADR-0004).
-//!
-//! Adding a source: a file here implementing `DataSource`, and a line in
-//! `DataSources::builtin`. Widgets then bind to `{<name>.<field>}`.
+//! Each Data Source declares how often its fields change, so a window wakes
+//! only when a bound value can differ (decision 16, ADR-0004).
 
 mod clock;
 mod shortcuts;
@@ -22,7 +16,6 @@ pub use clock::{Clock, Tm, clock_value, now_local};
 pub use shortcuts::{ID_SEP, Shortcut, Shortcuts, file_stem, folder_items, icon_id, shortcuts_value, starter_apps};
 pub use sys::Sys;
 
-/// How often a bound field can change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Cadence {
     Frame,
@@ -31,32 +24,23 @@ pub enum Cadence {
     Minute,
 }
 
-/// What a source may look at when producing its value for one Instance.
 pub struct SourceCx<'a> {
     pub cfg: &'a InstanceCfg,
-    /// The moment being drawn.
     pub tm: Tm,
     pub icon_pack: &'a str,
 }
 
 pub trait DataSource: Send + Sync {
-    /// The root name widgets bind to (`clock` in `{clock.minute}`).
     fn name(&self) -> &'static str;
-    /// The value for one Instance at one moment. Only called when a widget
-    /// actually reads this source, at most once per build.
     fn value(&self, cx: &SourceCx) -> Value;
-    /// How often `field` (the path after the name; "" for the whole object)
-    /// can change. `None`: only on events, so it never wakes a window by time.
+    /// `field` "" is the whole object. `None`: changes only on events, never with time.
     fn cadence(&self, field: &str) -> Option<Cadence>;
-    /// Paths whose changes this source reflects for `cfg` (they are watched).
-    fn watch(&self, _cfg: &InstanceCfg) -> Vec<PathBuf> {
+    fn watched_paths(&self, _cfg: &InstanceCfg) -> Vec<PathBuf> {
         vec![]
     }
-    /// Forget cached data: a watched path or an Instance's params changed.
     fn invalidate(&self) {}
 }
 
-/// The registry of Data Sources.
 pub struct DataSources {
     list: Vec<Box<dyn DataSource>>,
 }
@@ -80,19 +64,15 @@ impl DataSources {
         self.list.iter().find(|s| s.name() == name).map(|s| s.as_ref())
     }
 
-    /// The value of source `name` for one Instance, or `None` if there is no such source.
     pub fn value(&self, name: &str, cx: &SourceCx) -> Option<Value> {
         self.get(name).map(|s| s.value(cx))
     }
 
-    /// How often a bound dotted path (`clock.minute`) can change.
     pub fn cadence_of(&self, path: &str) -> Option<Cadence> {
         let (root, field) = path.split_once('.').unwrap_or((path, ""));
         self.get(root)?.cadence(field)
     }
 
-    /// Time until the next moment any dependency can change; `None` when the
-    /// widget depends on nothing that changes with time (it then never wakes on time).
     pub fn next_wake(&self, deps: &BTreeSet<String>, tm: &Tm) -> Option<Duration> {
         let fastest = deps.iter().filter_map(|d| self.cadence_of(d)).min()?;
         let into_sec = tm.ms as u64;
@@ -102,17 +82,15 @@ impl DataSources {
             Cadence::TenSecond => (10 - (tm.second % 10)) as u64 * 1000 - into_sec,
             Cadence::Minute => (60 - tm.second) as u64 * 1000 - into_sec,
         };
-        Some(Duration::from_millis(ms + 2)) // land just after the boundary, never just before
+        Some(Duration::from_millis(ms + 2)) // just after the boundary, never just before
     }
 
-    /// True when the widget needs a frame every vsync (smooth second hand).
-    pub fn is_continuous(&self, deps: &BTreeSet<String>) -> bool {
+    pub fn needs_every_frame(&self, deps: &BTreeSet<String>) -> bool {
         deps.iter().any(|d| self.cadence_of(d) == Some(Cadence::Frame))
     }
 
-    /// Every path any source watches for `cfg`.
-    pub fn watch(&self, cfg: &InstanceCfg) -> Vec<PathBuf> {
-        self.list.iter().flat_map(|s| s.watch(cfg)).collect()
+    pub fn watched_paths(&self, cfg: &InstanceCfg) -> Vec<PathBuf> {
+        self.list.iter().flat_map(|s| s.watched_paths(cfg)).collect()
     }
 
     pub fn invalidate(&self) {
@@ -144,8 +122,8 @@ mod tests {
         // ten-second minute-hand step
         assert_eq!(src.next_wake(&deps(&["clock.minute_angle"]), &tm(12, 0, 23, 0)), Some(Duration::from_millis(7_000 + 2)));
         // smooth second hand needs frames
-        assert!(src.is_continuous(&deps(&["clock.second_smooth"])));
-        assert!(!src.is_continuous(&deps(&["clock.second"])));
+        assert!(src.needs_every_frame(&deps(&["clock.second_smooth"])));
+        assert!(!src.needs_every_frame(&deps(&["clock.second"])));
     }
 
     #[test]

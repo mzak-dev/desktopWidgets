@@ -1,9 +1,5 @@
-//! wgpu renderer: consumes a `DrawList`, nothing else (the seam in `draw.rs`).
-//! One `Instance`/`Adapter`/`Device`/`Queue` is shared by every window
-//! (decision 2); each window owns a `Target` (surface + per-window buffers).
-//!
-//! DX12 + DirectComposition by default (ADR-001), `Mailbox` presentation
-//! (ADR-005), premultiplied alpha everywhere.
+//! wgpu renderer; a `DrawList` is its only input. One device shared by every
+//! window (decision 2), DX12 + DirectComposition (ADR-001), premultiplied alpha.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,13 +17,12 @@ const SHADER: &str = include_str!("shader.wgsl");
 pub enum Power {
     High,
     Low,
-    /// The CPU rasteriser ("Microsoft Basic Render Driver"). Slow but it never
-    /// touches the vendor GPU driver, so automated tests run on it.
+    /// Never touches the vendor driver, so automated tests use it.
     Software,
 }
 
 impl Power {
-    /// Anything but an explicit "high"/"software" is Low (ADR-005: High can pin a core).
+    /// Low unless asked: High can pin a core (ADR-005).
     pub fn parse(s: &str) -> Power {
         match s.to_ascii_lowercase().as_str() {
             "high" => Power::High,
@@ -80,10 +75,8 @@ impl Buf {
     }
 }
 
-/// Swapchain sizes are rounded up to this and given this much slack, so a live
-/// drag reconfigures a handful of times instead of once per frame. wgpu resizes
-/// a DirectComposition swapchain with `ResizeBuffers`, which its own source
-/// calls fragile and which failed under per-frame resizing (see ADR-006).
+/// Swapchains grow in buckets with slack, so a live drag reconfigures a handful
+/// of times, not every frame: per-frame `ResizeBuffers` crashed the driver (ADR-006).
 const BUCKET: u32 = 128;
 const MAX_SIDE: u32 = 8192;
 
@@ -93,17 +86,15 @@ fn bucketed(v: u32) -> u32 {
 
 #[derive(Debug)]
 pub enum RenderError {
-    /// Skip this frame; nothing is wrong with the device.
+    /// Nothing is wrong with the device.
     Skip(String),
-    /// The surface could not be recovered: rebuild the GPU.
     Lost(String),
 }
 
-/// Per-window GPU state.
 pub struct Target {
     surface: Option<wgpu::Surface<'static>>,
     window: Option<Arc<Window>>,
-    /// The window's drawable size; the swapchain (`cfg`) is at least this big.
+    /// The swapchain (`cfg`) is at least this big.
     view: (u32, u32),
     failures: u32,
     last_configure: std::time::Instant,
@@ -116,7 +107,6 @@ pub struct Target {
 }
 
 impl Target {
-    /// Swapchain size (>= `view`).
     pub fn size(&self) -> (u32, u32) {
         (self.cfg.width, self.cfg.height)
     }
@@ -134,7 +124,6 @@ pub struct Gpu {
     pub format: wgpu::TextureFormat,
     pub alpha_mode: wgpu::CompositeAlphaMode,
     pub present_mode: wgpu::PresentMode,
-    /// Human-readable "adapter / backend / alpha / present" for logs and Settings.
     pub info: String,
     shape_pipe: wgpu::RenderPipeline,
     img_pipe: wgpu::RenderPipeline,
@@ -146,8 +135,7 @@ pub struct Gpu {
     text_r: [TextRenderer; 2],
     images: HashMap<String, GpuImage>,
     lost: Arc<std::sync::atomic::AtomicBool>,
-    /// How many times any swapchain was reconfigured (a regression counter for tests).
-    pub configures: std::cell::Cell<u32>,
+    pub reconfigure_count: std::cell::Cell<u32>,
 }
 
 fn instance_desc(dcomp: bool) -> wgpu::InstanceDescriptor {
@@ -164,7 +152,7 @@ fn instance_desc(dcomp: bool) -> wgpu::InstanceDescriptor {
 }
 
 impl Gpu {
-    /// Create the shared device using `window`'s surface to pick a compatible adapter.
+    /// `window`'s surface picks a compatible adapter.
     pub fn new(window: &Arc<Window>, power: Power) -> Result<(Gpu, Target), String> {
         let instance = wgpu::Instance::new(instance_desc(true));
         let surface = instance.create_surface(window.clone()).map_err(|e| format!("create surface: {e}"))?;
@@ -191,7 +179,6 @@ impl Gpu {
         Ok((gpu, target))
     }
 
-    /// Offscreen device for `--render`, tests and screenshots (no window).
     pub fn new_headless(power: Power) -> Result<Gpu, String> {
         let instance = wgpu::Instance::new(instance_desc(false));
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -343,11 +330,10 @@ impl Gpu {
             text_r,
             images: HashMap::new(),
             lost,
-            configures: std::cell::Cell::new(0),
+            reconfigure_count: std::cell::Cell::new(0),
         })
     }
 
-    /// True once the driver has reported the device lost (a TDR, say).
     pub fn is_lost(&self) -> bool {
         self.lost.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -400,7 +386,6 @@ impl Gpu {
         t
     }
 
-    /// A target for an additional window sharing this device.
     pub fn target_for(&mut self, window: &Arc<Window>) -> Result<Target, String> {
         let surface = self.instance.create_surface(window.clone()).map_err(|e| format!("create surface: {e}"))?;
         let caps = surface.get_capabilities(&self.adapter);
@@ -410,13 +395,12 @@ impl Gpu {
         Ok(self.target_with(surface, window))
     }
 
-    /// Reconfigure the swapchain, under an error scope so a failure is reported
-    /// rather than left as a silently unconfigured surface.
+    /// Under an error scope, so a failure is reported instead of a silently unconfigured surface.
     fn reconfigure(&self, t: &mut Target, w: u32, h: u32) -> bool {
         t.cfg.width = w.clamp(1, MAX_SIDE);
         t.cfg.height = h.clamp(1, MAX_SIDE);
         t.last_configure = std::time::Instant::now();
-        self.configures.set(self.configures.get() + 1);
+        self.reconfigure_count.set(self.reconfigure_count.get() + 1);
         let Some(s) = &t.surface else { return true };
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         s.configure(&self.device, &t.cfg);
@@ -429,7 +413,6 @@ impl Gpu {
         }
     }
 
-    /// Replace a broken surface with a fresh one for the same window.
     fn recover_surface(&self, t: &mut Target) -> Result<(), String> {
         let window = t.window.clone().ok_or("no window to recover")?;
         let surface = self.instance.create_surface(window).map_err(|e| format!("create surface: {e}"))?;
@@ -437,9 +420,7 @@ impl Gpu {
         if self.reconfigure(t, t.cfg.width, t.cfg.height) { Ok(()) } else { Err("configure failed on a fresh surface".into()) }
     }
 
-    /// Tell the target how big its window is. The swapchain only changes when
-    /// the window outgrows it (immediately, with slack) or is far smaller than
-    /// it for a while, never once per frame.
+    /// Reconfigures only when the window outgrows the swapchain, or has been far smaller for a while.
     pub fn fit(&self, t: &mut Target, w: u32, h: u32) {
         let (w, h) = (w.max(1), h.max(1));
         t.view = (w, h);
@@ -459,7 +440,6 @@ impl Gpu {
         }
     }
 
-    // ---- images ------------------------------------------------------------
 
     pub fn has_image(&self, id: &str) -> bool {
         self.images.contains_key(id)
@@ -502,7 +482,6 @@ impl Gpu {
         self.images.remove(id);
     }
 
-    // ---- drawing -----------------------------------------------------------
 
     fn encode(&mut self, t: &mut Target, list: &DrawList, text: &mut TextEngine, view: &wgpu::TextureView) -> Result<wgpu::CommandBuffer, String> {
         let (w, h) = (t.cfg.width, t.cfg.height);
@@ -579,7 +558,6 @@ impl Gpu {
         Ok(enc.finish())
     }
 
-    /// Draw to the window's swapchain and present.
     pub fn render(&mut self, t: &mut Target, list: &DrawList, text: &mut TextEngine) -> Result<(), RenderError> {
         use wgpu::CurrentSurfaceTexture as Cst;
         if self.is_lost() {
@@ -614,7 +592,6 @@ impl Gpu {
         Ok(())
     }
 
-    /// Render to an RGBA8 image (headless): used by `--render`, tests and docs.
     pub fn render_offscreen(&mut self, w: u32, h: u32, list: &DrawList, text: &mut TextEngine) -> Result<Vec<u8>, String> {
         let mut t = self.target_inner(None, None, w, h);
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {

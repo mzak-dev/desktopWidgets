@@ -1,10 +1,7 @@
-//! Mouse and wheel input on an Instance: hover, click actions (the Widget
-//! first, then the engine verbs), header drag and scrolling.
-
 use super::*;
 
-/// Height (logical px) of the strip at the top of a card that moves it when `header_drag` is on.
-pub(super) const HEADER_H: f32 = 32.0;
+/// Logical px.
+pub(super) const HEADER_DRAG_HEIGHT: f32 = 32.0;
 
 impl App {
     pub(super) fn on_cursor(&mut self, i: usize, pos: PhysicalPosition<f64>) {
@@ -48,7 +45,7 @@ impl App {
         let Some(w) = &self.wins[i].window else { return [0.0; 4] };
         let s = w.scale_factor() as f32;
         let size = w.inner_size();
-        self.card(i).rect_in((size.width as f32 / s, size.height as f32 / s))
+        self.card(i).card_rect_in((size.width as f32 / s, size.height as f32 / s))
     }
 
     pub(super) fn on_mouse(&mut self, i: usize, state: ElementState, button: MouseButton) {
@@ -75,7 +72,7 @@ impl App {
             self.run_action(i, &a);
         } else if self.ws.header_drag {
             let [cx, cy, cw, _] = self.card_rect(i);
-            if x >= cx && x < cx + cw && y >= cy && y < cy + HEADER_H {
+            if x >= cx && x < cx + cw && y >= cy && y < cy + HEADER_DRAG_HEIGHT {
                 self.begin_drag(i, Handle::Move, win32::cursor_pos());
             }
         }
@@ -94,21 +91,20 @@ impl App {
         });
         let Some(region) = region else { return };
         let cur = self.wins[i].state.get("scroll").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-        if let Some(next) = scroll_to(cur, dy, region.view_h, region.content_h) {
+        if let Some(next) = scrolled_offset(cur, dy, region.view_h, region.content_h) {
             self.wins[i].state.insert("scroll".into(), Value::Num(next as f64));
             self.wins[i].redraw = true;
         }
     }
 
-    /// A click action: the Widget's own verbs first (a Rust Widget's), then the engine's.
     pub(super) fn run_action(&mut self, i: usize, action: &str) {
         let (verb, rest) = action.split_once(' ').unwrap_or((action, ""));
         if let Some(Ok(w)) = self.reg.get(&self.ws.instances[i].widget).cloned() {
             let hwnd = self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w));
             let mut host = AppHost::new(&self.opts.dir, hwnd);
-            let mut cx = ActionCx { cfg: &self.ws.instances[i], state: &mut self.wins[i].state, host: &mut host, sources: &self.sources, redraw: false };
-            let handled = w.action(verb, rest, &mut cx);
-            let redraw = cx.redraw;
+            let mut cx = ActionCx { cfg: &self.ws.instances[i], state: &mut self.wins[i].state, host: &mut host, sources: &self.sources, wants_redraw: false };
+            let handled = w.handle_action(verb, rest, &mut cx);
+            let redraw = cx.wants_redraw;
             for l in host.into_logs() {
                 self.log(l);
             }
@@ -118,17 +114,17 @@ impl App {
             }
         }
         match engine_action(&mut self.wins[i].state, verb, rest) {
-            Outcome::Redraw => self.wins[i].redraw = true,
-            Outcome::Launch(target) => {
+            VerbOutcome::Redraw => self.wins[i].redraw = true,
+            VerbOutcome::Launch(target) => {
                 if !win32::open(&target) {
                     self.log(format!("could not open `{target}`"));
                 }
             }
-            Outcome::OpenSettings => {
+            VerbOutcome::OpenSettings => {
                 let _ = self.proxy.send_event(UserEvent::Menu("settings".into()));
             }
-            Outcome::Nothing => {}
-            Outcome::Unknown => self.log(format!("unknown action `{verb}` in `{action}`")),
+            VerbOutcome::Nothing => {}
+            VerbOutcome::Unknown => self.log(format!("unknown action `{verb}` in `{action}`")),
         }
     }
 }

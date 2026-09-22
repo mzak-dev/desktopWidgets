@@ -1,6 +1,5 @@
-//! Icon sourcing (decision 22). Resolution order for a shortcut:
-//! explicit image path -> Icon Pack by app name -> the target's own embedded
-//! icon (shell) -> a generated generic icon. Uploaded once, keyed by image id.
+//! Icon sourcing (decision 22): explicit path -> Icon Pack by app name -> the
+//! target's own icon -> a generic one. Uploaded once per image id.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

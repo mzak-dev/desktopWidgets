@@ -1,7 +1,5 @@
-//! Binding expressions (decision 11): arithmetic, comparison, booleans,
-//! ternary, `{expr|fmt}` interpolation. Total by construction: no loops, no
-//! user functions, no side effects, bounded depth and length, so evaluating
-//! one can never hang a redraw.
+//! Binding expressions (decision 11). Total by construction: no loops, no user
+//! functions, no side effects, bounded depth, so one can never hang a redraw.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -42,11 +40,8 @@ enum Op {
 #[derive(Clone, Debug)]
 pub struct Expr(Node);
 
-/// Names visible to expressions, plus a record of which dotted paths an
-/// evaluation actually read (the redraw scheduler's dependency set).
-///
-/// Names not set on the scope fall through to an optional provider (the Data
-/// Sources), asked at most once per name and only when something reads it.
+/// Records every dotted path read: the scheduler's dependency set. Unset names
+/// fall through to the provider, asked at most once per name.
 #[derive(Default)]
 pub struct Scope<'a> {
     vars: Vec<(String, Value)>,
@@ -60,7 +55,6 @@ impl<'a> Scope<'a> {
         Self::default()
     }
 
-    /// A scope whose unset names are looked up lazily in `provider`.
     pub fn with_provider(provider: &'a dyn Fn(&str) -> Option<Value>) -> Self {
         Scope { provider: Some(provider), ..Self::default() }
     }
@@ -81,15 +75,13 @@ impl<'a> Scope<'a> {
         self.deps.borrow_mut().clear();
     }
 
-    /// Read a dotted path (`clock.minute`) and record it as a dependency, the
-    /// way a binding does. What Rust Widgets use to read Data Sources.
+    /// How Rust Widgets read Data Sources and record the dependency.
     pub fn read(&self, path: &str) -> Result<Value, String> {
         let parts: Vec<String> = path.split('.').map(String::from).collect();
         self.lookup(&parts)
     }
 
-    /// Read a top-level name without recording a dependency.
-    pub fn peek(&self, name: &str) -> Option<&Value> {
+    pub fn peek_untracked(&self, name: &str) -> Option<&Value> {
         self.vars.iter().rev().find(|(n, _)| n == name).map(|(_, v)| v)
     }
 
@@ -118,7 +110,6 @@ impl<'a> Scope<'a> {
     }
 }
 
-// ---- lexer -----------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
 enum Tok {
@@ -179,7 +170,6 @@ fn lex(src: &str) -> Result<Vec<Tok>, String> {
     Ok(out)
 }
 
-// ---- parser (Pratt) --------------------------------------------------------
 
 struct Parser {
     toks: Vec<Tok>,
@@ -340,9 +330,8 @@ fn num(v: &Value, what: &str) -> Result<f64, String> {
     v.as_f64().ok_or_else(|| format!("`{what}` needs a number, got `{v}`"))
 }
 
-// Not code execution: this walks our own parsed `Node` tree over `Value`s. The
-// grammar has no loops, assignments, imports or host calls (see `call`'s fixed
-// whitelist), so it cannot run anything the user typed, only compute a value.
+// Walks our own parsed tree over `Value`s: no loops, assignments or host calls
+// (`call` is a fixed whitelist), so nothing the user typed can run.
 fn eval(n: &Node, sc: &Scope) -> Result<Value, String> {
     Ok(match n {
         Node::Lit(v) => v.clone(),
@@ -444,7 +433,6 @@ fn call(name: &str, a: &[Value]) -> Result<Value, String> {
     })
 }
 
-// ---- templates: "{clock.hour|02}:{clock.minute|02}" ------------------------
 
 #[derive(Clone, Copy, Debug, Default)]
 struct Fmt {
@@ -551,7 +539,6 @@ impl Template {
         Ok(Template(parts))
     }
 
-    /// True when there is no `{}` at all: a plain literal.
     pub fn is_literal(&self) -> bool {
         self.0.iter().all(|p| matches!(p, Part::Lit(_)))
     }

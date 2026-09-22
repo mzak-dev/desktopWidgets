@@ -1,7 +1,3 @@
-//! What the engine and Settings know about a Widget without building it:
-//! names, sizes, typed params (which become the settings form) and the
-//! initial Instance state. Every Widget adapter provides one.
-
 use std::collections::BTreeMap;
 
 use crate::data::starter_apps;
@@ -13,29 +9,23 @@ pub struct WidgetMeta {
     pub id: String,
     pub name: String,
     pub description: String,
-    /// Default card size, logical px.
-    pub size: (f32, f32),
-    /// Smallest card size in Edit Mode, logical px.
-    pub min_size: (f32, f32),
+    /// Logical px, like every size here.
+    pub default_card_size: (f32, f32),
+    pub min_card_size: (f32, f32),
     pub params: Vec<ParamDef>,
-    /// Initial `state.*` of a new Instance.
-    pub state: BTreeMap<String, Value>,
+    pub initial_state: BTreeMap<String, Value>,
 }
 
 impl WidgetMeta {
-    /// Defaults overlaid with an Instance's saved values.
-    pub fn effective_params(&self, over: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
-        self.params.iter().map(|p| (p.name.clone(), over.get(&p.name).cloned().unwrap_or_else(|| p.default.clone()))).collect()
+    pub fn effective_params(&self, saved: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
+        self.params.iter().map(|p| (p.name.clone(), saved.get(&p.name).cloned().unwrap_or_else(|| p.default.clone()))).collect()
     }
 
-    /// The Widget styles blur itself (it has a `blur` param), so the
-    /// Workspace-wide blur look is left to it.
-    pub fn styles_blur(&self) -> bool {
+    pub fn has_own_blur(&self) -> bool {
         self.params.iter().any(|p| p.name == "blur")
     }
 
-    /// Write every param's seed into a new Instance.
-    pub fn seed(&self, cfg: &mut InstanceCfg) {
+    pub fn seed_params(&self, cfg: &mut InstanceCfg) {
         for p in &self.params {
             if let Some(s) = p.seed {
                 s.apply(cfg, &p.name);
@@ -60,7 +50,6 @@ pub enum ParamType {
 impl ParamType {
     pub const ALL: [ParamType; 9] = [Self::Color, Self::Font, Self::Number, Self::Enum, Self::Bool, Self::Str, Self::Path, Self::Duration, Self::Shortcuts];
 
-    /// The `type = "..."` name in a widget file.
     pub fn id(self) -> &'static str {
         match self {
             Self::Color => "color",
@@ -91,15 +80,12 @@ pub struct ParamDef {
     pub max: Option<f64>,
     pub step: Option<f64>,
     pub choices: Vec<String>,
-    /// Written once when an Instance is added (CONTEXT.md: Seed).
     pub seed: Option<Seed>,
 }
 
-/// A value a param is given once, when an Instance is added, and then saved
-/// like any edit: unlike a default, it shows in Settings and can be changed.
+/// Unlike a default, a seed is written once and then saved like any edit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Seed {
-    /// A few apps every Windows machine has (`shortcuts` params).
     StarterApps,
 }
 
@@ -116,8 +102,7 @@ impl Seed {
         Seed::ALL.into_iter().find(|x| x.id() == s)
     }
 
-    /// The param type this seed fills.
-    pub fn fits(self) -> ParamType {
+    pub fn param_type(self) -> ParamType {
         match self {
             Seed::StarterApps => ParamType::Shortcuts,
         }

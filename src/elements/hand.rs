@@ -1,12 +1,10 @@
-//! `hand`: a clock-style hand from the centre of its rect.
-
-use super::{ElementKind, Shape, ShapeCx, rgba};
+use super::{ElementKind, Shape, ShapeCx, rgba_with_opacity};
 use crate::color::Color;
 use crate::draw::{Inst, KIND_CAPSULE};
 use crate::format::Attrs;
 use crate::ui::Kind;
 
-pub const KIND: ElementKind = ElementKind { name: "hand", attrs: &["angle", "length", "tail", "stroke", "color"], fills_parent: true, build };
+pub const KIND: ElementKind = ElementKind { name: "hand", own_attrs: &["angle", "length", "tail", "stroke", "color"], fills_parent_when_unsized: true, build };
 
 #[derive(Clone, Copy, Debug)]
 pub struct HandSpec {
@@ -36,7 +34,7 @@ impl Shape for HandSpec {
     }
 
     fn emit(&self, cx: &ShapeCx, out: &mut Vec<Inst>) {
-        let ((w, h), s, [x, y]) = (cx.size, cx.scale, cx.center);
+        let ((w, h), s, [x, y]) = (cx.logical_size, cx.scale, cx.center_px);
         let rad = (w.min(h) / 2.0) * s;
         let a = self.angle.to_radians();
         let dir = [a.sin(), -a.cos()];
@@ -46,9 +44,9 @@ impl Shape for HandSpec {
             b: p1,
             radius: self.width * s / 2.0,
             kind: KIND_CAPSULE,
-            fill_top: rgba(self.color, cx.opacity),
-            fill_bot: rgba(self.color, cx.opacity),
-            clip: cx.clip,
+            fill_top: rgba_with_opacity(self.color, cx.inherited_opacity),
+            fill_bot: rgba_with_opacity(self.color, cx.inherited_opacity),
+            clip: cx.clip_px,
             ..Default::default()
         });
     }
@@ -63,7 +61,7 @@ mod tests {
     fn a_hand_is_one_capsule_pointing_at_its_angle() {
         let h = HandSpec { angle: 90.0, length: 0.5, tail: 0.0, width: 2.0, color: Color([1.0; 4]) };
         let mut out = Vec::new();
-        h.emit(&ShapeCx { center: [100.0, 100.0], size: (200.0, 200.0), scale: 1.0, opacity: 1.0, clip: NO_CLIP }, &mut out);
+        h.emit(&ShapeCx { center_px: [100.0, 100.0], logical_size: (200.0, 200.0), scale: 1.0, inherited_opacity: 1.0, clip_px: NO_CLIP }, &mut out);
         assert_eq!(out.len(), 1);
         assert!((out[0].b[0] - 150.0).abs() < 1e-3 && (out[0].b[1] - 100.0).abs() < 1e-3, "3 o'clock is to the right");
     }

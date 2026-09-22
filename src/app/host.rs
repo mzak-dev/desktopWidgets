@@ -1,9 +1,6 @@
-//! `AppHost`, the App's adapter for `widgets::Host`.
-
 use super::*;
 
-/// The engine side of `widgets::Host`: native dialogs parented to an
-/// Instance's window, shortcuts through the shell, log lines kept for `App::log`.
+/// Log lines wait here because `App::log` needs `&mut App`, which the caller holds borrowed.
 pub(super) struct AppHost<'a> {
     dir: &'a std::path::Path,
     hwnd: Option<windows::Win32::Foundation::HWND>,

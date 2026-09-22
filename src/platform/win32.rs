@@ -1,5 +1,4 @@
-//! Win32 glue winit does not expose (winit#2059): extended styles, desktop
-//! z-order, and a z-order report used by the Phase 0 spike.
+//! Win32 glue winit does not expose (winit#2059).
 
 use windows::Win32::Foundation::{HWND, LPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -19,9 +18,8 @@ pub fn hwnd_of(window: &Window) -> Option<HWND> {
     Some(HWND(h.hwnd.get() as *mut _))
 }
 
-/// Hide from Alt+Tab (`WS_EX_TOOLWINDOW`; winit's `with_skip_taskbar` only
-/// covers the taskbar) and never take focus on click (`WS_EX_NOACTIVATE`).
-/// Click-through is *not* here: use `Window::set_cursor_hittest(false)`.
+/// winit's `with_skip_taskbar` doesn't hide from Alt+Tab; click-through is
+/// `Window::set_cursor_hittest(false)`, not a style.
 pub fn apply_widget_styles(window: &Window) {
     let Some(hwnd) = hwnd_of(window) else { return };
     unsafe {
@@ -31,12 +29,10 @@ pub fn apply_widget_styles(window: &Window) {
     }
 }
 
-/// Where an Instance sits relative to everything else (ADR-002).
+/// ADR-002.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ZMode {
-    /// Just above the desktop, below every application window.
     Desktop,
-    /// Bottom of the normal z-band.
     Bottom,
     Normal,
     Topmost,
@@ -54,35 +50,31 @@ impl ZMode {
     }
 }
 
-/// Rainmeter's `ZPOS_FLAGS`. `SWP_NOSENDCHANGING` matters: our own z-order calls
-/// skip `WM_WINDOWPOSCHANGING`, so the guard that vetoes *foreign* z-order
-/// changes (see `set_z_guard`) never blocks us.
-const FLAGS: windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS =
+/// Rainmeter's `ZPOS_FLAGS`. `SWP_NOSENDCHANGING` lets our calls pass the
+/// `set_z_guard` veto on foreign z-order changes.
+const OUR_ZPOS_FLAGS: windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS =
     windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS(
         SWP_NOMOVE.0 | SWP_NOSIZE.0 | SWP_NOOWNERZORDER.0 | SWP_NOACTIVATE.0 | SWP_NOSENDCHANGING.0,
     );
 
-/// Re-assert `mode` for `hwnd`. Cheap and idempotent: z-order on Windows is a
-/// process, not a state, so callers re-run this when the shell reshuffles.
+/// Idempotent: callers re-assert it whenever the shell reshuffles.
 pub fn set_zmode(hwnd: HWND, mode: ZMode) {
     unsafe {
         let _ = match mode {
-            ZMode::Topmost => SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, FLAGS),
-            ZMode::Normal => SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, FLAGS),
+            ZMode::Topmost => SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, OUR_ZPOS_FLAGS),
+            ZMode::Normal => SetWindowPos(hwnd, Some(HWND_NOTOPMOST), 0, 0, 0, 0, OUR_ZPOS_FLAGS),
             ZMode::Bottom | ZMode::Desktop => {
-                SetWindowPos(hwnd, Some(HWND_BOTTOM), 0, 0, 0, 0, FLAGS)
+                SetWindowPos(hwnd, Some(HWND_BOTTOM), 0, 0, 0, 0, OUR_ZPOS_FLAGS)
             }
         };
     }
 }
 
-/// Put `hwnd` directly *above* `host` by sending `host` behind it. This
-/// reorders a shell-owned window; it is the candidate for `ZMode::Desktop`
-/// that the spike evaluates against a plain `HWND_BOTTOM`.
+/// Reorders a shell-owned window: kept for the Phase 0 spike's comparison.
 pub fn place_above(hwnd: HWND, host: HWND) {
     unsafe {
-        let _ = SetWindowPos(hwnd, Some(HWND_BOTTOM), 0, 0, 0, 0, FLAGS);
-        let _ = SetWindowPos(host, Some(hwnd), 0, 0, 0, 0, FLAGS);
+        let _ = SetWindowPos(hwnd, Some(HWND_BOTTOM), 0, 0, 0, 0, OUR_ZPOS_FLAGS);
+        let _ = SetWindowPos(host, Some(hwnd), 0, 0, 0, 0, OUR_ZPOS_FLAGS);
     }
 }
 
@@ -92,10 +84,8 @@ fn class_of(hwnd: HWND) -> String {
     String::from_utf16_lossy(&buf[..n.max(0) as usize])
 }
 
-/// The window that hosts the desktop icons (`SHELLDLL_DefView`'s parent), found
-/// the way Rainmeter does: from the shell window. On Windows 11 24H2+ that is
-/// Progman itself; on earlier builds it is a visible WorkerW of the shell's own
-/// process. Never hardcode either.
+/// `SHELLDLL_DefView`'s parent, found from the shell window like Rainmeter: Progman
+/// on Windows 11 24H2+, a visible WorkerW before that. Never hardcode either.
 pub fn desktop_icon_host() -> Option<HWND> {
     use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId};
     unsafe {
@@ -128,7 +118,6 @@ pub struct ZEntry {
     pub pid: u32,
 }
 
-/// Every top-level window, topmost first.
 pub fn z_order() -> Vec<ZEntry> {
     unsafe extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
         let out = unsafe { &mut *(lparam.0 as *mut Vec<ZEntry>) };
@@ -150,7 +139,6 @@ pub fn z_order() -> Vec<ZEntry> {
     out
 }
 
-// ---- launching, monitors, geometry ------------------------------------------------
 
 /// `ShellExecute open`: files, folders, URLs, shortcuts.
 pub fn open(target: &str) -> bool {
@@ -161,11 +149,9 @@ pub fn open(target: &str) -> bool {
     r.0 as isize > 32
 }
 
-/// Blurs the desktop behind the whole window, or turns it off. Uses the
-/// accent-policy blur (the one Rainmeter uses), which, unlike
-/// DwmEnableBlurBehindWindow, also blurs the wallpaper and icons. DWM ignores
-/// SetWindowRgn for it, so the window must be exactly the card (no shadow
-/// gutter); Windows 11 rounds the blur's corners itself (8px).
+/// Accent-policy blur (Rainmeter's): unlike DwmEnableBlurBehindWindow it also
+/// blurs wallpaper and icons, but ignores SetWindowRgn, so the window must be
+/// exactly the card.
 pub fn set_blur(hwnd: HWND, on: bool) {
     use windows::Win32::Graphics::Dwm::DwmSetWindowAttribute;
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
@@ -196,8 +182,7 @@ pub fn set_blur(hwnd: HWND, on: bool) {
     }
 }
 
-/// Puts a shortcut to `target` in `dir` (a `.lnk` is copied as is) and returns
-/// its path; a name clash gets " (2)", " (3)"... so nothing is overwritten.
+/// A `.lnk` target is copied as is; a name clash gets " (2)", " (3)"... so nothing is overwritten.
 pub fn create_shortcut(dir: &std::path::Path, target: &std::path::Path) -> Option<std::path::PathBuf> {
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile};
     use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
@@ -225,7 +210,7 @@ pub fn create_shortcut(dir: &std::path::Path, target: &std::path::Path) -> Optio
     Some(out)
 }
 
-/// Monitors with their work areas (taskbar excluded), physical px.
+/// Physical px.
 pub fn monitors(el: &winit::event_loop::ActiveEventLoop) -> Vec<crate::workspace::MonitorInfo> {
     use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO, MONITORINFOEXW};
     use winit::platform::windows::MonitorHandleExtWindows;
@@ -257,7 +242,7 @@ pub fn cursor_pos() -> (i32, i32) {
     (p.x, p.y)
 }
 
-/// Move and resize in one atomic call, without touching z-order or focus.
+/// One atomic call that leaves z-order and focus alone.
 pub fn set_rect(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
     use windows::Win32::UI::WindowsAndMessaging::{SWP_NOZORDER, SET_WINDOW_POS_FLAGS};
     unsafe {
@@ -265,7 +250,7 @@ pub fn set_rect(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
     }
 }
 
-/// Toggle `WS_EX_NOACTIVATE`: off in Edit Mode so keys (Ctrl+Z, Esc) reach us.
+/// Off in Edit Mode so keys (Ctrl+Z, Esc) reach us.
 pub fn set_no_activate(window: &Window, on: bool) {
     let Some(hwnd) = hwnd_of(window) else { return };
     unsafe {
@@ -275,27 +260,20 @@ pub fn set_no_activate(window: &Window, on: bool) {
     }
 }
 
-/// Put `hwnd` above every window in `others` without leaving the widget band:
-/// each sibling is sent to just below `hwnd`, so nothing else is reordered
-/// (decision 23: above sibling widgets, still below application windows).
+/// Sends each sibling just below `hwnd`, so it stays under application windows (decision 23).
 pub fn raise_above(hwnd: HWND, others: &[HWND]) {
     for &o in others {
         if o != hwnd {
             unsafe {
-                let _ = SetWindowPos(o, Some(hwnd), 0, 0, 0, 0, FLAGS);
+                let _ = SetWindowPos(o, Some(hwnd), 0, 0, 0, 0, OUR_ZPOS_FLAGS);
             }
         }
     }
 }
 
-// ---- Show Desktop (Rainmeter's mechanism, from System.cpp) --------------------------------
 
-/// A hidden window pinned at `HWND_BOTTOM`: Rainmeter's "System" window.
-///
-/// In the normal state it sits *above* the desktop-icon host (the shell never
-/// lets a window go below its own). Show Desktop works by Explorer raising the
-/// host above everything, so "the sentinel is now below the host" is exactly,
-/// and only, Show Desktop. No guessing from which application windows are open.
+/// Rainmeter's hidden "System" window at `HWND_BOTTOM`. The shell keeps it above
+/// the icon host, so "the sentinel is below the host" is exactly Show Desktop.
 pub struct Sentinel(HWND);
 
 unsafe extern "system" fn sentinel_proc(h: HWND, m: u32, w: windows::Win32::Foundation::WPARAM, l: LPARAM) -> windows::Win32::Foundation::LRESULT {
@@ -318,7 +296,7 @@ impl Sentinel {
             };
             RegisterClassExW(&wc); // already registered on a second call: fine
             let h = CreateWindowExW(WS_EX_TOOLWINDOW, class, w!("System"), WS_POPUP | WS_DISABLED, 0, 0, 0, 0, None, None, Some(windows::Win32::Foundation::HINSTANCE(hinst.0)), None).ok()?;
-            let _ = SetWindowPos(h, Some(HWND_BOTTOM), 0, 0, 0, 0, FLAGS);
+            let _ = SetWindowPos(h, Some(HWND_BOTTOM), 0, 0, 0, 0, OUR_ZPOS_FLAGS);
             Some(Sentinel(h))
         }
     }
@@ -327,8 +305,7 @@ impl Sentinel {
         self.0
     }
 
-    /// Make it visible (zero size, no focus). Only tests use this: a hidden window is
-    /// not held to the z-order band rules that the real, visible desktop host obeys.
+    /// Tests only: a hidden window isn't held to the z-order band rules the real host obeys.
     pub fn show(&self) {
         use windows::Win32::UI::WindowsAndMessaging::{SW_SHOWNOACTIVATE, ShowWindow};
         unsafe {
@@ -336,16 +313,15 @@ impl Sentinel {
         }
     }
 
-    /// Put it back at the bottom (a test hook and a cheap re-assert).
     pub fn sink(&self) {
         unsafe {
-            let _ = SetWindowPos(self.0, Some(HWND_BOTTOM), 0, 0, 0, 0, FLAGS);
+            let _ = SetWindowPos(self.0, Some(HWND_BOTTOM), 0, 0, 0, 0, OUR_ZPOS_FLAGS);
         }
     }
 
     pub fn raise(&self) {
         unsafe {
-            let _ = SetWindowPos(self.0, Some(windows::Win32::UI::WindowsAndMessaging::HWND_TOP), 0, 0, 0, 0, FLAGS);
+            let _ = SetWindowPos(self.0, Some(windows::Win32::UI::WindowsAndMessaging::HWND_TOP), 0, 0, 0, 0, OUR_ZPOS_FLAGS);
         }
     }
 }
@@ -358,7 +334,6 @@ impl Drop for Sentinel {
     }
 }
 
-/// Handles of every top-level window, topmost first (cheaper than `z_order`).
 fn z_handles() -> Vec<isize> {
     unsafe extern "system" fn cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
         unsafe { &mut *(lparam.0 as *mut Vec<isize>) }.push(hwnd.0 as isize);
@@ -371,20 +346,17 @@ fn z_handles() -> Vec<isize> {
     out
 }
 
-/// The whole detection: the host has been raised above the sentinel. Pure, so
-/// it is testable on synthetic z-orders. `None` when either window is missing.
+/// Pure, so it is tested on synthetic z-orders.
 pub fn is_desktop_shown(order: &[isize], host: isize, sentinel: isize) -> Option<bool> {
     let h = order.iter().position(|&w| w == host)?;
     let s = order.iter().position(|&w| w == sentinel)?;
     Some(s > h)
 }
 
-/// Show Desktop state against an explicit host window (tests use a fake one).
 pub fn desktop_state_with(host: HWND, sentinel: &Sentinel) -> Option<bool> {
     is_desktop_shown(&z_handles(), host.0 as isize, sentinel.0.0 as isize)
 }
 
-/// Is the desktop being shown right now? `None` when the shell is not there.
 pub fn desktop_state(sentinel: &Sentinel) -> Option<bool> {
     let host = desktop_icon_host()?;
     if !unsafe { IsWindowVisible(host) }.as_bool() {
@@ -393,40 +365,33 @@ pub fn desktop_state(sentinel: &Sentinel) -> Option<bool> {
     desktop_state_with(host, sentinel)
 }
 
-/// Show Desktop response for a Desktop-mode widget (Rainmeter's `ChangeZPos`):
-/// join the topmost band, then walk *up* from the host and drop in directly
-/// under the first foreign topmost window that accepts us. With the host raised
-/// to the top of the normal band, as Explorer does, that is the taskbar layer,
-/// so the widget floats just above the desktop and the taskbar still draws
-/// over it. Candidates can refuse (other integrity level, a dying window), so,
-/// like Rainmeter, keep trying successive ones.
+/// Rainmeter's `ChangeZPos`: join the topmost band under the first foreign topmost
+/// window above the raised host (the taskbar layer). Candidates can refuse, so keep trying.
 pub fn float_over_desktop(hwnd: HWND, host: HWND) {
     use windows::Win32::System::Threading::GetCurrentProcessId;
     use windows::Win32::UI::WindowsAndMessaging::{GW_HWNDPREV, GetWindow, GetWindowThreadProcessId, WS_EX_TOPMOST};
     unsafe {
-        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, FLAGS);
+        let _ = SetWindowPos(hwnd, Some(HWND_TOPMOST), 0, 0, 0, 0, OUR_ZPOS_FLAGS);
         let me = GetCurrentProcessId();
         let mut w = host;
         while let Ok(prev) = GetWindow(w, GW_HWNDPREV) {
             w = prev;
             let mut pid = 0u32;
             GetWindowThreadProcessId(w, Some(&mut pid));
-            if pid != me && (GetWindowLongPtrW(w, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0) != 0 && SetWindowPos(hwnd, Some(w), 0, 0, 0, 0, FLAGS).is_ok() {
+            if pid != me && (GetWindowLongPtrW(w, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0) != 0 && SetWindowPos(hwnd, Some(w), 0, 0, 0, 0, OUR_ZPOS_FLAGS).is_ok() {
                 return;
             }
         }
     }
 }
 
-/// Back to the desktop layer (leaves the topmost band, drops under app windows).
 pub fn sink_to_desktop(hwnd: HWND) {
     unsafe {
-        let _ = SetWindowPos(hwnd, Some(HWND_BOTTOM), 0, 0, 0, 0, FLAGS);
+        let _ = SetWindowPos(hwnd, Some(HWND_BOTTOM), 0, 0, 0, 0, OUR_ZPOS_FLAGS);
     }
 }
 
-/// A foreign attempt to raise a window, sent the normal way (so a guard can see
-/// it). Test hook: our own calls never do this.
+/// Test hook: a raise the guard can see, unlike our own calls.
 pub fn try_raise(hwnd: HWND) {
     use windows::Win32::UI::WindowsAndMessaging::{HWND_TOP, SET_WINDOW_POS_FLAGS};
     unsafe {
@@ -453,8 +418,7 @@ unsafe extern "system" fn zguard_subclass(
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
-/// Veto foreign z-order changes for this window (Rainmeter's `OnWindowPosChanging`
-/// for On Desktop / Bottom skins). Our own calls use `SWP_NOSENDCHANGING`.
+/// Rainmeter's `OnWindowPosChanging` veto for On Desktop / Bottom skins.
 pub fn set_z_guard(window: &Window, on: bool) {
     use windows::Win32::UI::Shell::SetWindowSubclass;
     if let Some(h) = hwnd_of(window) {
@@ -480,11 +444,8 @@ unsafe extern "system" fn shell_event_proc(
     }
 }
 
-/// Call `on_change` when the foreground window changes or a window is minimised
-/// or restored: the events around Show Desktop. Rainmeter hooks the foreground
-/// event and also polls every 250 ms; here it is events only (the caller runs a
-/// short retry ladder, since Explorer reorders a few ms *after* the event), so an
-/// idle desktop costs nothing.
+/// Foreground and minimise events only, no polling, so an idle desktop costs nothing;
+/// Explorer reorders a few ms after them, so the caller re-checks on a short ladder.
 pub fn watch_shell_events(on_change: impl Fn() + Send + Sync + 'static) {
     use windows::Win32::UI::Accessibility::SetWinEventHook;
     use windows::Win32::UI::WindowsAndMessaging::{EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS};
@@ -498,7 +459,6 @@ pub fn watch_shell_events(on_change: impl Fn() + Send + Sync + 'static) {
     }
 }
 
-// ---- display changes --------------------------------------------------------------
 
 static DISPLAY_EVENT: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 
@@ -519,9 +479,7 @@ unsafe extern "system" fn display_subclass(
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
-/// Call `on_change` when monitors or the work area change (hot-plug, resolution,
-/// taskbar moved). Subclasses one window; topmost-level windows all receive the
-/// broadcast, so one is enough while it lives.
+/// Subclasses one window: every top-level window gets the broadcast.
 pub fn watch_display_changes(window: &Window, on_change: impl Fn() + Send + Sync + 'static) {
     use windows::Win32::UI::Shell::SetWindowSubclass;
     let _ = DISPLAY_EVENT.set(Box::new(on_change));
@@ -532,12 +490,11 @@ pub fn watch_display_changes(window: &Window, on_change: impl Fn() + Send + Sync
     }
 }
 
-/// Extended window style bits (for tests and diagnostics).
 pub fn ex_style(hwnd: HWND) -> u32 {
     unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 }
 }
 
-/// Index of `hwnd` in the top-level z-order (0 = topmost); larger = further back.
+/// 0 = topmost.
 pub fn z_index(hwnd: HWND) -> Option<usize> {
     z_order().iter().position(|e| e.hwnd == hwnd.0 as isize)
 }

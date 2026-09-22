@@ -1,9 +1,6 @@
-//! The `clock` Data Source: local time, localised date text and hand angles.
-
 use super::{Cadence, DataSource, SourceCx};
 use crate::value::Value;
 
-/// Broken-down local time.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Tm {
     pub year: i32,
@@ -32,8 +29,7 @@ pub fn now_local() -> Tm {
     }
 }
 
-/// Localised date text via the user's Windows locale ("niedziela", "wrzesień"...).
-fn fmt_date(tm: &Tm, pattern: &str) -> String {
+fn localized_date(tm: &Tm, pattern: &str) -> String {
     use windows::Win32::Foundation::SYSTEMTIME;
     use windows::Win32::Globalization::{ENUM_DATE_FORMATS_FLAGS, GetDateFormatEx};
     use windows::core::{HSTRING, PCWSTR};
@@ -52,7 +48,6 @@ fn fmt_date(tm: &Tm, pattern: &str) -> String {
     String::from_utf16_lossy(&buf[..(n - 1) as usize])
 }
 
-/// The `clock` value at one moment.
 pub fn clock_value(tm: &Tm) -> Value {
     let h12 = if tm.hour % 12 == 0 { 12 } else { tm.hour % 12 };
     let (h, m, s) = (tm.hour as f64, tm.minute as f64, tm.second as f64);
@@ -67,11 +62,11 @@ pub fn clock_value(tm: &Tm) -> Value {
         ("day", (tm.day as i32).into()),
         ("month", (tm.month as i32).into()),
         ("year", tm.year.into()),
-        ("weekday", fmt_date(tm, "dddd").into()),
-        ("weekday_short", fmt_date(tm, "ddd").into()),
-        ("month_name", fmt_date(tm, "MMMM").into()),
-        ("date", fmt_date(tm, "dddd, d MMMM").into()),
-        ("date_short", fmt_date(tm, "d MMM").into()),
+        ("weekday", localized_date(tm, "dddd").into()),
+        ("weekday_short", localized_date(tm, "ddd").into()),
+        ("month_name", localized_date(tm, "MMMM").into()),
+        ("date", localized_date(tm, "dddd, d MMMM").into()),
+        ("date_short", localized_date(tm, "d MMM").into()),
         // angles, degrees clockwise from 12
         ("hour_angle", ((h % 12.0) * 30.0 + m * 0.5).into()),
         // steps every 10 s (0.1 deg/s * 10): smooth to the eye, 6x cheaper than per-second

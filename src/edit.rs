@@ -1,5 +1,4 @@
-//! Edit Mode (decision 20): handles, snapping and resize maths as pure
-//! functions (physical px), plus the overlay drawn over an Instance.
+//! Edit Mode (decision 20): handle, snap and resize maths in physical px, plus the overlay.
 
 use crate::color::Color;
 use crate::theme::Theme;
@@ -66,9 +65,7 @@ impl Handle {
     }
 }
 
-/// Which handle a point (logical px, window space) grabs, given the card rect
-/// (x, y, w, h). Corners and edges are `grip` thick and reach `grip/2` outside
-/// the card; everything else, including the shadow gutter, moves the Instance.
+/// Logical px. Edges are `grip` thick; everything else, gutter included, moves the Instance.
 pub fn hit_handle(px: f32, py: f32, card: [f32; 4], grip: f32) -> Handle {
     let [x, y, w, h] = card;
     let g = grip.min(w / 3.0).min(h / 3.0).max(6.0);
@@ -87,13 +84,12 @@ pub fn hit_handle(px: f32, py: f32, card: [f32; 4], grip: f32) -> Handle {
     }
 }
 
-/// Lines an edge may snap to, and how the grid behaves.
 #[derive(Clone, Debug, Default)]
 pub struct Snap {
     pub xs: Vec<i32>,
     pub ys: Vec<i32>,
     pub threshold: i32,
-    /// Grid pitch in physical px (0 = off) and its origin (a work-area corner).
+    /// 0 = off; `origin` is a work-area corner.
     pub grid: i32,
     pub origin: (i32, i32),
 }
@@ -107,14 +103,12 @@ fn grid_snap(v: i32, origin: i32, grid: i32) -> i32 {
 }
 
 impl Snap {
-    /// Snap one coordinate: a nearby line wins, otherwise the grid.
-    fn one(&self, v: i32, lines: &[i32], origin: i32) -> i32 {
+    fn snap_coordinate(&self, v: i32, lines: &[i32], origin: i32) -> i32 {
         nearest(v, lines, self.threshold).unwrap_or_else(|| grid_snap(v, origin, self.grid))
     }
 }
 
-/// The rectangle after dragging `handle` by (dx, dy) from `start`.
-pub fn apply(handle: Handle, start: Rect, dx: i32, dy: i32, min: (i32, i32), snap: &Snap) -> Rect {
+pub fn dragged_rect(handle: Handle, start: Rect, dx: i32, dy: i32, min: (i32, i32), snap: &Snap) -> Rect {
     if handle == Handle::Move {
         let mut r = Rect { x: start.x + dx, y: start.y + dy, ..start };
         // try both edges of the box against the guide lines; the closer hit wins
@@ -135,22 +129,21 @@ pub fn apply(handle: Handle, start: Rect, dx: i32, dy: i32, min: (i32, i32), sna
     let (el, et, er, eb) = handle.edges();
     let (mut l, mut t, mut rr, mut b) = (start.x, start.y, start.right(), start.bottom());
     if el {
-        l = snap.one(l + dx, &snap.xs, snap.origin.0).min(rr - min.0);
+        l = snap.snap_coordinate(l + dx, &snap.xs, snap.origin.0).min(rr - min.0);
     }
     if er {
-        rr = snap.one(rr + dx, &snap.xs, snap.origin.0).max(l + min.0);
+        rr = snap.snap_coordinate(rr + dx, &snap.xs, snap.origin.0).max(l + min.0);
     }
     if et {
-        t = snap.one(t + dy, &snap.ys, snap.origin.1).min(b - min.1);
+        t = snap.snap_coordinate(t + dy, &snap.ys, snap.origin.1).min(b - min.1);
     }
     if eb {
-        b = snap.one(b + dy, &snap.ys, snap.origin.1).max(t + min.1);
+        b = snap.snap_coordinate(b + dy, &snap.ys, snap.origin.1).max(t + min.1);
     }
     Rect { x: l, y: t, w: rr - l, h: b - t }
 }
 
-/// The overlay drawn over an Instance in Edit Mode: outline, eight handles and
-/// a live position/size label. `card` is the visible card (window minus gutter).
+/// Outline, eight handles and a live position/size label.
 pub fn overlay(id: &str, window: (f32, f32), gutter: f32, label: &str, theme: &Theme, active: Option<Handle>) -> Node {
     let accent = theme.color("accent");
     let card = (window.0 - 2.0 * gutter, window.1 - 2.0 * gutter);
@@ -222,13 +215,13 @@ mod tests {
     fn move_snaps_either_edge_to_a_guide_and_leaves_far_moves_alone() {
         let start = Rect::new(100, 100, 200, 100);
         // right edge lands 4px shy of x=500 -> snaps so right == 500
-        let r = apply(Handle::Move, start, 196, 0, (40, 40), &snap());
+        let r = dragged_rect(Handle::Move, start, 196, 0, (40, 40), &snap());
         assert_eq!((r.x, r.right()), (300, 500));
         // left edge near 0 wins when it is the closer hit
-        let r = apply(Handle::Move, start, -97, 0, (40, 40), &snap());
+        let r = dragged_rect(Handle::Move, start, -97, 0, (40, 40), &snap());
         assert_eq!(r.x, 0);
         // nothing within the threshold: unchanged
-        let r = apply(Handle::Move, start, 60, 0, (40, 40), &snap());
+        let r = dragged_rect(Handle::Move, start, 60, 0, (40, 40), &snap());
         assert_eq!(r.x, 160);
     }
 
@@ -236,24 +229,24 @@ mod tests {
     fn resize_keeps_the_opposite_edge_fixed_and_honours_the_minimum() {
         let start = Rect::new(400, 300, 200, 100);
         let free = Snap { threshold: 0, ..Default::default() };
-        let r = apply(Handle::E, start, 55, 0, (60, 40), &free);
+        let r = dragged_rect(Handle::E, start, 55, 0, (60, 40), &free);
         assert_eq!((r.x, r.w, r.y, r.h), (400, 255, 300, 100));
         // shrinking past the minimum stops at it, anchored on the far edge
-        let r = apply(Handle::W, start, 500, 0, (60, 40), &free);
+        let r = dragged_rect(Handle::W, start, 500, 0, (60, 40), &free);
         assert_eq!((r.w, r.right()), (60, 600));
-        let r = apply(Handle::NW, start, 500, 500, (60, 40), &free);
+        let r = dragged_rect(Handle::NW, start, 500, 500, (60, 40), &free);
         assert_eq!((r.w, r.h, r.right(), r.bottom()), (60, 40, 600, 400));
         // a corner moves two edges at once
-        let r = apply(Handle::SE, start, 10, 20, (60, 40), &free);
+        let r = dragged_rect(Handle::SE, start, 10, 20, (60, 40), &free);
         assert_eq!((r.w, r.h), (210, 120));
     }
 
     #[test]
     fn grid_applies_only_when_no_guide_is_close() {
         let g = Snap { grid: 16, origin: (0, 0), threshold: 8, xs: vec![1000], ys: vec![] };
-        let r = apply(Handle::Move, Rect::new(0, 0, 100, 100), 21, 21, (40, 40), &g);
+        let r = dragged_rect(Handle::Move, Rect::new(0, 0, 100, 100), 21, 21, (40, 40), &g);
         assert_eq!((r.x, r.y), (16, 16));
-        let r = apply(Handle::Move, Rect::new(0, 0, 100, 100), 903, 0, (40, 40), &g); // right edge 1003 ~ guide 1000
+        let r = dragged_rect(Handle::Move, Rect::new(0, 0, 100, 100), 903, 0, (40, 40), &g); // right edge 1003 ~ guide 1000
         assert_eq!(r.right(), 1000);
     }
 }
