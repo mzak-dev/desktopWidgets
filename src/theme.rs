@@ -58,6 +58,7 @@ const BUILTIN_PALETTES: &[&str] = &[
     include_str!("../assets/palettes/daylight.toml"),
     include_str!("../assets/palettes/aurora.toml"),
     include_str!("../assets/palettes/graphite.toml"),
+    include_str!("../assets/palettes/glass.toml"),
 ];
 const BUILTIN_FONTS: &[&str] = &[
     include_str!("../assets/fonts/system.toml"),

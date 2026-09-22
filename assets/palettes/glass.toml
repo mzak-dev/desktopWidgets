@@ -1,0 +1,20 @@
+name = "Glass"
+[tokens]
+# ponytail: no static fill can be "contrast-aware" against a live blurred desktop;
+# this leans on a heavy text shadow instead of sampling the wallpaper. Pair with
+# the "Blur behind" style toggle so the card has no surface, only the blur.
+surface = "transparent"
+surface-2 = "transparent"
+surface-hover = "#ffffff1a"
+face = "transparent"
+border = "#ffffff33"
+text = "#ffffffff"
+text-dim = "#ffffffb3"
+accent = "#7fd4ffff"
+accent-text = "#031018ff"
+danger = "#ff6b6bff"
+shadow = "#000000b3"
+scrim = "#00000080"
+track = "#ffffff26"
+hand = "#ffffffff"
+tick = "#ffffff99"
