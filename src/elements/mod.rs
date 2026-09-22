@@ -51,7 +51,7 @@ fn build_box(_: &mut Attrs) -> Result<Kind, String> {
 pub const BOX: ElementKind = ElementKind { name: "box", own_attrs: &[], fills_parent_when_unsized: false, build: build_box };
 
 /// In the order error messages list them.
-pub const KINDS: &[ElementKind] = &[BOX, self::text::KIND, self::image::KIND, self::hand::KIND, self::ticks::KIND, self::arc::KIND];
+pub static KINDS: &[ElementKind] = &[BOX, self::text::KIND, self::image::KIND, self::hand::KIND, self::ticks::KIND, self::arc::KIND];
 
 pub fn find(name: &str) -> Option<&'static ElementKind> {
     KINDS.iter().find(|k| k.name == name)
