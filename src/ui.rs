@@ -19,6 +19,20 @@ pub enum Kind {
     /// A clock-style hand from the centre of its rect.
     Hand(HandSpec),
     Ticks(TicksSpec),
+    /// A gauge: a track ring with a value arc over it, sized by the smaller side.
+    Arc(ArcSpec),
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ArcSpec {
+    /// Degrees clockwise from 12 o'clock.
+    pub start: f32,
+    pub sweep: f32,
+    /// 0..=100.
+    pub value: f32,
+    pub width: f32,
+    pub color: Color,
+    pub track: Color,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -610,6 +624,26 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                     clip,
                     ..Default::default()
                 });
+            }
+            Kind::Arc(ar) => {
+                let radius = (w.min(h) - ar.width) / 2.0 * s;
+                let mut push = |sweep: f32, col: Color| {
+                    list.shapes.push(Inst {
+                        a: [cx, cy],
+                        b: [ar.start.to_radians(), sweep.to_radians()],
+                        radius,
+                        border: ar.width * s / 2.0,
+                        kind: KIND_ARC,
+                        fill_top: rgba(col, op),
+                        fill_bot: rgba(col, op),
+                        clip,
+                        ..Default::default()
+                    });
+                };
+                push(ar.sweep, ar.track);
+                if ar.value > 0.0 {
+                    push(ar.sweep * ar.value.min(100.0) / 100.0, ar.color);
+                }
             }
             Kind::Ticks(tk) => {
                 let rad = (w.min(h) / 2.0 - tk.inset) * s;

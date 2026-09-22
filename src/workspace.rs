@@ -94,12 +94,18 @@ pub struct Workspace {
     /// Snap grid in logical px (0 = off).
     pub grid: f32,
     pub autostart: bool,
+    /// Blur the desktop behind every widget.
+    pub blur: bool,
+    /// Draw widget borders (off = flat, outline-free look).
+    pub outlines: bool,
+    /// Drag the top strip of a widget to move it, outside Edit Mode.
+    pub header_drag: bool,
     pub instances: Vec<InstanceCfg>,
 }
 
 impl Default for Workspace {
     fn default() -> Self {
-        Self { version: 1, gpu: "low".into(), theme: Selection::default(), overrides: BTreeMap::new(), grid: 8.0, autostart: false, instances: Vec::new() }
+        Self { version: 1, gpu: "low".into(), theme: Selection::default(), overrides: BTreeMap::new(), grid: 8.0, autostart: false, blur: false, outlines: true, header_drag: false, instances: Vec::new() }
     }
 }
 

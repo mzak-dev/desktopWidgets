@@ -52,8 +52,9 @@ const TEXT: &[&str] = &["text", "size", "color", "font", "weight", "text_align",
 const IMAGE: &[&str] = &["src", "tint"];
 const HAND: &[&str] = &["angle", "length", "tail", "stroke", "color"];
 const TICKS: &[&str] = &["count", "major_every", "tick_length", "major_length", "tick_width", "major_width", "color", "major_color", "tick_inset"];
+const ARC: &[&str] = &["value", "start", "sweep", "stroke", "color", "track"];
 const REPEAT: &[&str] = &["for", "as", "index"];
-const TYPES: &[&str] = &["box", "text", "image", "hand", "ticks", "repeat"];
+const TYPES: &[&str] = &["box", "text", "image", "hand", "ticks", "arc", "repeat"];
 
 fn lev(a: &str, b: &str) -> usize {
     let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
@@ -96,6 +97,7 @@ fn parse_elem(t: &toml::Table, path: &str) -> Result<Elem, String> {
         "image" => IMAGE,
         "hand" => HAND,
         "ticks" => TICKS,
+        "arc" => ARC,
         "repeat" => REPEAT,
         _ => &[],
     };
@@ -271,7 +273,9 @@ pub struct Inputs<'a> {
     pub size: (f32, f32),
     /// Unique per Instance: prefixes every node key so text, hover and animation state never collide.
     pub key: &'a str,
+    pub outlines: bool,
     pub clock: Value,
+    pub sys: Value,
     pub shortcuts: Value,
 }
 
@@ -324,11 +328,25 @@ pub fn build(def: &WidgetDef, inp: &Inputs, theme: &Theme, image_size: &dyn Fn(&
     scope.set("state", obj(&st));
     scope.set("self", Value::obj([("w", (card.0 as f64).into()), ("h", (card.1 as f64).into())]));
     scope.set("clock", inp.clock.clone());
+    scope.set("sys", inp.sys.clone());
     scope.set("shortcuts", inp.shortcuts.clone());
     let mut b = B { theme, scope, warns: vec![], images: BTreeSet::new(), image_size };
     let mut nodes = b.build_elem(&def.root, inp.key)?;
     let mut root = nodes.pop().ok_or("root produced no node")?;
     root.style.size = Size { width: length(card.0), height: length(card.1) };
+    if inp.params.get("blur").is_some_and(|v| v.truthy()) && !def.params.iter().any(|p| p.name == "blur") {
+        // global blur: Windows rounds the blur region itself (8px), so match it and let it show through
+        root.look.radius = 8.0;
+        root.look.fill = root.look.fill.with_alpha(root.look.fill.0[3].min(0.6));
+        root.look.fill2 = root.look.fill2.map(|c| c.with_alpha(c.0[3].min(0.6)));
+    }
+    if !inp.outlines {
+        fn flat(n: &mut Node) {
+            n.look.border = 0.0;
+            n.children.iter_mut().for_each(flat);
+        }
+        flat(&mut root);
+    }
     let mut window = Node::new(format!("{}~", inp.key)).wh(inp.size.0, inp.size.1).pad(g);
     window.children.push(root);
     let root = window;
@@ -550,7 +568,7 @@ impl B<'_> {
         }
         let abs = self.text(e, "position", path)?.as_deref() == Some("absolute");
         let has_inset = ["inset", "left", "top", "right", "bottom"].iter().any(|k| e.attrs.contains_key(*k));
-        let implicit_fill = matches!(e.ty.as_str(), "hand" | "ticks") && !e.attrs.contains_key("width") && !e.attrs.contains_key("height");
+        let implicit_fill = matches!(e.ty.as_str(), "hand" | "ticks" | "arc") && !e.attrs.contains_key("width") && !e.attrs.contains_key("height");
         if abs || has_inset || implicit_fill {
             st.position = Position::Absolute;
             let mut ins = [auto(), auto(), auto(), auto()]; // l t r b
@@ -739,6 +757,16 @@ impl B<'_> {
                     color: self.col(e, "color", &path)?.unwrap_or(text),
                 });
             }
+            "arc" => {
+                n.kind = Kind::Arc(ArcSpec {
+                    start: self.f(e, "start", &path)?.unwrap_or(225.0),
+                    sweep: self.f(e, "sweep", &path)?.unwrap_or(270.0).clamp(1.0, 360.0),
+                    value: self.f(e, "value", &path)?.unwrap_or(0.0).clamp(0.0, 100.0),
+                    width: self.f(e, "stroke", &path)?.unwrap_or(6.0).max(1.0),
+                    color: self.col(e, "color", &path)?.unwrap_or_else(|| self.theme.color("accent")),
+                    track: self.col(e, "track", &path)?.unwrap_or_else(|| self.theme.color("track")),
+                });
+            }
             "ticks" => {
                 let tick = self.theme.color("tick");
                 let hand = self.theme.color("hand");
@@ -812,7 +840,9 @@ mod tests {
             state: &st,
             size: (100.0, 60.0),
             key: "t",
+            outlines: true,
             clock: Value::obj([("minute", 7.into()), ("second", 3.into())]),
+            sys: Value::default(),
             shortcuts: crate::data::shortcuts_value(&[], "Default"),
         };
         build(&def, &inp, &theme(), &|_| None)
@@ -863,6 +893,17 @@ fill_alpha=0.5";
         assert_eq!((l.fill.to_hex().as_str(), l.fill.0[3], l.fill2.unwrap().0[3]), ("#6ea8ff80", 0.5, 0.5));
         let b = build_src(src, &[("tint", false.into())]).unwrap();
         assert_eq!(b.root.children[0].look.fill.to_hex(), "#00000080");
+    }
+
+    #[test]
+    fn outlines_off_removes_every_border() {
+        let src = "[root]\ntype='box'\nborder=1\n[[root.children]]\ntype='box'\nborder=2";
+        let theme = theme();
+        let def = WidgetDef::parse("t", src).unwrap();
+        let p = BTreeMap::new();
+        let inp = Inputs { params: &p, state: &p, size: (100.0, 60.0), key: "t", outlines: false, clock: Value::default(), sys: Value::default(), shortcuts: Value::default() };
+        let b = build(&def, &inp, &theme, &|_| None).unwrap();
+        assert_eq!((b.root.children[0].look.border, b.root.children[0].children[0].look.border), (0.0, 0.0));
     }
 
     #[test]
