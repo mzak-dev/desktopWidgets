@@ -41,7 +41,7 @@ shadow = { blur = 14, dy = 5 }
     [[root.children.children]]
     type = "text"
     text = "{pad(param.hour24 ? clock.hour : clock.hour12, 2)}:{pad(clock.minute, 2)}{param.show_seconds ? ':' + pad(clock.second, 2) : ''}"
-    size = "{max(14, min(self.h * 0.42, self.w * 0.19))}"
+    size = "{max(12, min(self.h * (param.show_date ? 0.42 : 0.6), self.w / (4.6 + (param.show_seconds ? 1.7 : 0) + (param.hour24 ? 0 : 1.4))))}"
     weight = 300
     color = "$text"
 

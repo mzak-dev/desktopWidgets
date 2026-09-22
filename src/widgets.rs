@@ -23,6 +23,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("icon_list", include_str!("../assets/widgets/icon_list.toml")),
     ("icon_folder", include_str!("../assets/widgets/icon_folder.toml")),
     ("drawer", include_str!("../assets/widgets/drawer.toml")),
+    ("system_monitor", include_str!("../assets/widgets/system_monitor.toml")),
 ];
 
 /// A definition or the reason it failed to load. A broken user file replacing a
@@ -99,6 +100,9 @@ pub struct View<'a> {
     pub hover: Option<&'a str>,
     pub scale: f32,
     pub now: Instant,
+    /// Global style switches from the Workspace.
+    pub blur: bool,
+    pub outlines: bool,
 }
 
 pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
@@ -108,13 +112,18 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
         let outcome = match def {
             Err(e) => Err(format!("{}: {e}", v.cfg.widget)),
             Ok(d) => {
-                let params = v.cfg.params_map();
+                let mut params = v.cfg.params_map();
+                if v.blur {
+                    params.entry("blur".into()).or_insert(true.into());
+                }
                 let inp = Inputs {
                     params: &params,
                     state: v.state,
                     size: v.size,
                     key: &v.cfg.id,
+                    outlines: v.outlines,
                     clock: data::clock_value(&v.tm),
+                    sys: data::sys_value(),
                     shortcuts: data::shortcuts_value(v.items, v.pack),
                 };
                 let gpu = &*sv.gpu;
@@ -155,10 +164,31 @@ mod tests {
     #[test]
     fn all_builtin_widgets_parse() {
         let r = Registry::load(Path::new("no-such-dir"));
-        assert_eq!(r.ids().len(), 5);
+        assert_eq!(r.ids().len(), 6);
         assert!(r.errors().is_empty(), "built-in widget failed to parse: {:?}", r.errors());
     }
 
+
+    #[test]
+    fn system_monitor_builds_with_live_data_and_hides_what_is_off() {
+        let def = WidgetDef::parse("system_monitor", include_str!("../assets/widgets/system_monitor.toml")).unwrap();
+        let theme = Theme::compose(&crate::theme::Library::load(Path::new("nope")), &crate::theme::Selection::default(), &BTreeMap::new());
+        let arcs = |params: BTreeMap<String, Value>| {
+            let st = BTreeMap::new();
+            let inp = Inputs { params: &params, state: &st, size: (340.0, 190.0), key: "t", outlines: true, clock: Value::default(), sys: data::sys_value(), shortcuts: Value::default() };
+            let b = format::build(&def, &inp, &theme, &|_| None).unwrap();
+            assert!(b.warnings.is_empty(), "{:?}", b.warnings);
+            assert!(b.deps.contains("sys.gauges"));
+            fn count(n: &crate::ui::Node) -> usize {
+                usize::from(matches!(n.kind, crate::ui::Kind::Arc(_))) + n.children.iter().map(count).sum::<usize>()
+            }
+            count(&b.root)
+        };
+        let all = arcs(BTreeMap::new());
+        assert!(all >= 3, "{all} gauges");
+        let off = BTreeMap::from([("show_cpu".to_string(), Value::Bool(false))]);
+        assert_eq!(arcs(off), all - 1);
+    }
     #[test]
     fn a_broken_user_file_replaces_the_builtin_with_an_error_not_a_fallback() {
         let dir = std::env::temp_dir().join(format!("wf-widgets-{}", std::process::id()));

@@ -69,7 +69,12 @@ fn vs_shape(@builtin(vertex_index) vi: u32, in: ShapeIn) -> ShapeOut {
     let c = corner(vi);
     var lo: vec2f;
     var hi: vec2f;
-    if (in.kind > 0.5 && in.kind < 1.5) {
+    if (in.kind > 2.5) {
+        // arc: a centre, b (start, sweep) radians, radius of the centre line, border = half stroke
+        let m = in.radius + in.border + 2.0;
+        lo = in.a - vec2f(m);
+        hi = in.a + vec2f(m);
+    } else if (in.kind > 0.5 && in.kind < 1.5) {
         let m = in.radius + 2.0;
         lo = min(in.a, in.b) - vec2f(m);
         hi = max(in.a, in.b) + vec2f(m);
@@ -98,6 +103,22 @@ fn fs_shape(in: ShapeOut) -> @location(0) vec4f {
         discard;
     }
     let kind = in.params.z;
+    if (kind > 2.5) {
+        let tau = 6.2831853;
+        let p = in.pos - in.a;
+        let raw = atan2(p.x, -p.y) - in.b.x;
+        let rel = raw - floor(raw / tau) * tau;
+        var d: f32;
+        if (rel <= in.b.y) {
+            d = abs(length(p) - in.params.x) - in.params.y;
+        } else {
+            // past the sweep the nearest point of the arc is one of its round caps
+            let e0 = in.params.x * vec2f(sin(in.b.x), -cos(in.b.x));
+            let e1 = in.params.x * vec2f(sin(in.b.x + in.b.y), -cos(in.b.x + in.b.y));
+            d = min(length(p - e0), length(p - e1)) - in.params.y;
+        }
+        return premul(in.fill_top) * clamp(0.5 - d, 0.0, 1.0);
+    }
     if (kind > 1.5) {
         let d = sd_round_box(in.pos - in.a, in.b, in.params.x);
         let s = max(in.params.w, 0.5);

@@ -9,6 +9,9 @@ pub const NO_CLIP: [f32; 4] = [-1e6, -1e6, 1e6, 1e6];
 pub const KIND_RECT: f32 = 0.0;
 pub const KIND_CAPSULE: f32 = 1.0;
 pub const KIND_SHADOW: f32 = 2.0;
+/// `a` centre, `b` = (start, sweep) radians clockwise from 12, `radius` of the
+/// centre line, `border` half the stroke width.
+pub const KIND_ARC: f32 = 3.0;
 
 /// One SDF primitive. Rect: `a` centre, `b` half extents. Capsule: `a`,`b` are
 /// the end points and `radius` is half the stroke width. Shadow: a soft rect.
@@ -70,4 +73,14 @@ pub struct DrawList {
 
 pub fn intersect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]).max(a[0].max(b[0])), a[3].min(b[3]).max(a[1].max(b[1]))]
+}
+
+#[cfg(test)]
+mod tests {
+    /// The shader only compiles for real at pipeline creation; catch WGSL errors without a GPU.
+    #[test]
+    fn shader_is_valid_wgsl() {
+        let m = naga::front::wgsl::parse_str(include_str!("shader.wgsl")).expect("shader.wgsl parses");
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&m).expect("shader.wgsl validates");
+    }
 }

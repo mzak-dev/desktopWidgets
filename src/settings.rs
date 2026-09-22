@@ -58,6 +58,8 @@ pub enum Cmd {
     Gpu(String),
     Autostart(bool),
     Grid(f32),
+    /// A global on/off style option: `blur`, `outlines` or `header_drag`.
+    Flag(String, bool),
     Edit(bool),
     Reload,
     OpenFolder,
@@ -710,7 +712,7 @@ impl UiState {
                 .row()
                 .align(taffy::AlignItems::CENTER)
                 .gap(10.0)
-                .child(Node::new(format!("ip/{id}/hl")).col().grow(1.0).child(k.bold(format!("ip/{id}/ht"), &title, 17.0, k.c("text"))).child(k.txt(format!("ip/{id}/hs"), def.map_or("", |d| d.description.as_str()), 12.0, k.c("text-dim")).wrap_text()))
+                .child(Node::new(format!("ip/{id}/hl")).col().grow(1.0).min_w(0.0).child(k.bold(format!("ip/{id}/ht"), &title, 17.0, k.c("text"))).child(k.txt(format!("ip/{id}/hs"), def.map_or("", |d| d.description.as_str()), 12.0, k.c("text-dim")).wrap_text()))
                 .child(if confirm {
                     k.button(&format!("ip/{id}/del"), "Really remove?", format!("del:{id}"), true).with_danger_fill(k)
                 } else {
@@ -879,6 +881,8 @@ impl UiState {
             .child(k.row("ap/glyphs-row", "Glyph set", "Icons for buttons and chrome", Node::new("ap/glyphs/c").col().gap(8.0).child(k.dropdown("th:glyphs", &ctx.ws.theme.glyphs, CONTROL_W, f("th:glyphs"))).child(gl)))
             .child(k.row("ap/pack", "Icon pack", "Replaces app icons; drop PNGs named like the app into Wayfinder/iconpacks/<name>/", k.dropdown("th:pack", &ctx.ws.theme.icon_pack, CONTROL_W, f("th:pack"))))
             .child(k.section("ap/s3", "Tweaks"))
+            .child(k.row("ap/blur", "Blur behind", "Blurs the desktop behind every widget. Drops shadows and rounds corners to the Windows 11 default.", k.toggle("tg:blur", ctx.ws.blur, "flag:blur".into())))
+            .child(k.row("ap/outlines", "Outlines", "Draw a thin border around widgets and their parts", k.toggle("tg:outlines", ctx.ws.outlines, "flag:outlines".into())))
             .child(k.row(
                 "ap/accent",
                 "Accent colour",
@@ -916,6 +920,7 @@ impl UiState {
             .child(k.section("gn/s2", "Behaviour"))
             .child(k.row("gn/auto", "Start with Windows", "Launch quietly into the tray at sign-in", k.toggle("tg:autostart", ws.autostart, "autostart:toggle".into())))
             .child(k.row("gn/grid", "Snap grid", "Edit layout snaps to this many pixels (0 = off). Hold Shift to ignore snapping.", Node::new("gn/grid/c").row().align(taffy::AlignItems::CENTER).gap(12.0).child(k.slider("sl:grid", (grid.3 / grid.1) as f32, 178.0, "sl:grid".into())).child(k.txt("gn/grid/v".into(), &fmt_num(grid.3), 12.5, k.c("text-dim")))))
+            .child(k.row("gn/hd", "Move by header", "Drag the top strip of any widget to move it, without Edit layout", k.toggle("tg:header_drag", ctx.ws.header_drag, "flag:header_drag".into())))
             .child(k.row("gn/hk", "Edit hotkey", "Toggles Edit layout from anywhere", k.txt("gn/hk/t".into(), "Ctrl + Alt + E", 13.0, k.c("text")).with_text(|t| t.weight = 600)))
             .child(k.section("gn/s3", "Files"))
             .child(k.row("gn/files", "Your widgets", "Drop .toml widget definitions here; they reload as you save", Node::new("gn/files/c").row().gap(8.0).child(k.button("gn/open", "Open folder", "openfolder".into(), false)).child(k.button("gn/reload", "Reload all", "reload".into(), false))))
@@ -1186,6 +1191,15 @@ impl UiState {
             "reset" => vec![Cmd::ResetPos(rest.into())],
             "edit" => vec![Cmd::Edit(!ctx.edit)],
             "autostart" => vec![Cmd::Autostart(!ctx.ws.autostart)],
+            "flag" => {
+                let cur = match rest {
+                    "blur" => ctx.ws.blur,
+                    "outlines" => ctx.ws.outlines,
+                    "header_drag" => ctx.ws.header_drag,
+                    _ => return vec![],
+                };
+                vec![Cmd::Flag(rest.into(), !cur)]
+            }
             "dd" => {
                 self.open = if matches!(&self.open, Some(Open::Dropdown(k)) if k == rest) { None } else { Some(Open::Dropdown(rest.into())) };
                 vec![]

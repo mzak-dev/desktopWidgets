@@ -3044,6 +3044,7 @@ dependencies = [
  "global-hotkey",
  "glyphon",
  "image",
+ "naga",
  "notify",
  "pollster",
  "serde",

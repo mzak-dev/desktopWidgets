@@ -71,6 +71,9 @@ struct SizeTween {
     start: Instant,
 }
 
+/// Height (logical px) of the strip at the top of a card that moves it when `header_drag` is on.
+const HEADER_H: f32 = 32.0;
+
 /// Runtime state of one Instance, index-aligned with `Workspace::instances`.
 struct InstWin {
     window: Option<Arc<Window>>,
@@ -322,7 +325,7 @@ impl App {
     }
 
     fn blurs(&self, i: usize) -> bool {
-        self.ws.instances[i].params.get("blur").and_then(|v| v.as_bool()).unwrap_or(false)
+        self.ws.blur || self.ws.instances[i].params.get("blur").and_then(|v| v.as_bool()).unwrap_or(false)
     }
 
     /// This Instance's own gutter (zero while it blurs the desktop behind it).
@@ -462,7 +465,7 @@ impl App {
         let scale = window.scale_factor() as f32;
         // any widget with a `blur` param gets blur-behind under its card
         // any widget with a `blur` param blurs the desktop behind its window
-        let blur = cfg.params.get("blur").and_then(|v| v.as_bool()).unwrap_or(false);
+        let blur = ws.blur || cfg.params.get("blur").and_then(|v| v.as_bool()).unwrap_or(false);
         if blur != iw.blur {
             if let Some(h) = win32::hwnd_of(&window) {
                 win32::set_blur(h, blur);
@@ -474,7 +477,7 @@ impl App {
         let def = reg.get(&cfg.widget).unwrap_or(&missing);
         let tm = data::now_local();
         let pack = ws.theme.icon_pack.clone();
-        let v = View { cfg, state: &iw.state, items: &iw.items, size, theme, pack: &pack, tm, hover: iw.hover.as_deref(), scale, now };
+        let v = View { cfg, state: &iw.state, items: &iw.items, size, theme, pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, blur: ws.blur, outlines: ws.outlines };
         let mut sv = Services { gpu, icons, text, anim: &mut iw.anim };
         let mut p = widgets::prepare(def, &v, &mut sv);
 
@@ -734,6 +737,10 @@ impl App {
         let scale = self.wins[i].window.as_ref().map_or(1.0, |w| w.scale_factor());
         let (x, y) = ((pos.x / scale) as f32, (pos.y / scale) as f32);
         self.wins[i].mouse = (x, y);
+        if !self.edit && self.wins[i].drag.is_some() {
+            self.drag_update(i, win32::cursor_pos());
+            return;
+        }
         if self.edit {
             if self.wins[i].drag.is_some() {
                 self.drag_update(i, win32::cursor_pos());
@@ -823,12 +830,17 @@ impl App {
             return;
         }
         if state != ElementState::Pressed {
-            return;
+            return self.end_drag(i);
         }
         let (x, y) = self.wins[i].mouse;
         let action = self.wins[i].frame.as_ref().and_then(|f| f.hit_at(x, y)).and_then(|h| h.action.clone());
         if let Some(a) = action {
             self.run_action(i, &a);
+        } else if self.ws.header_drag {
+            let [cx, cy, cw, _] = self.card_rect(i);
+            if x >= cx && x < cx + cw && y >= cy && y < cy + HEADER_H {
+                self.begin_drag(i, Handle::Move, win32::cursor_pos());
+            }
         }
     }
 
@@ -1335,6 +1347,22 @@ impl App {
                 self.ws.autostart = on;
                 if let Err(e) = set_autostart(on) {
                     self.log(format!("autostart: {e}"));
+                }
+                self.mark_save();
+            }
+            Cmd::Flag(name, on) => {
+                let was: Vec<bool> = (0..self.wins.len()).map(|i| self.blurs(i)).collect();
+                match name.as_str() {
+                    "blur" => self.ws.blur = on,
+                    "outlines" => self.ws.outlines = on,
+                    "header_drag" => self.ws.header_drag = on,
+                    _ => {}
+                }
+                for (i, w) in was.into_iter().enumerate() {
+                    if self.blurs(i) != w {
+                        self.regutter(i);
+                    }
+                    self.wins[i].redraw = true;
                 }
                 self.mark_save();
             }

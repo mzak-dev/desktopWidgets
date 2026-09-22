@@ -1,0 +1,166 @@
+name = "System Monitor"
+description = "Live gauges for CPU, memory, disk and battery. Pick which to show, recolour them, and resize the window to reflow."
+size = [340, 190]
+min_size = [110, 110]
+
+[params.show_cpu]
+type = "bool"
+default = true
+label = "CPU"
+
+[params.show_ram]
+type = "bool"
+default = true
+label = "Memory"
+
+[params.show_disk]
+type = "bool"
+default = true
+label = "System drive"
+
+[params.show_battery]
+type = "bool"
+default = true
+label = "Battery"
+help = "Only appears on machines that have one."
+
+[params.show_detail]
+type = "bool"
+default = true
+label = "Detail line"
+help = "GB used, process count or charging state under each gauge."
+
+[params.show_footer]
+type = "bool"
+default = true
+label = "Uptime footer"
+
+[params.gauge_size]
+type = "number"
+default = 84
+min = 48
+max = 200
+step = 4
+label = "Gauge size"
+
+[params.stroke]
+type = "number"
+default = 8
+min = 2
+max = 24
+step = 1
+label = "Ring thickness"
+
+[params.sweep]
+type = "number"
+default = 270
+min = 180
+max = 360
+step = 30
+label = "Ring sweep (degrees)"
+help = "270 leaves a gap at the bottom; 360 is a full circle."
+
+[params.warn]
+type = "number"
+default = 85
+min = 10
+max = 100
+step = 5
+label = "Warn above (%)"
+help = "The ring turns to the warning colour past this load. Battery warns when below 100 minus this."
+
+[params.cpu_color]
+type = "color"
+default = "$accent"
+label = "CPU colour"
+
+[params.ram_color]
+type = "color"
+default = "#4da3ff"
+label = "Memory colour"
+
+[params.disk_color]
+type = "color"
+default = "#5fd38d"
+label = "Drive colour"
+
+[params.battery_color]
+type = "color"
+default = "#f2c94c"
+label = "Battery colour"
+
+[params.warn_color]
+type = "color"
+default = "$danger"
+label = "Warning colour"
+
+[root]
+direction = "column"
+justify = "center"
+gap = 8
+padding = 14
+fill = ["$surface", "$surface-2"]
+radius = "$radius-lg"
+border = 1
+shadow = { blur = 14, dy = 5 }
+
+  [[root.children]]
+  direction = "row"
+  wrap = true
+  align = "start"
+  justify = "center"
+  gap = 12
+  grow = 1
+    [[root.children.children]]
+    type = "repeat"
+    for = "{sys.gauges}"
+    as = "g"
+      [[root.children.children.children]]
+      when = "{g.id == 'cpu' ? param.show_cpu : g.id == 'ram' ? param.show_ram : g.id == 'disk' ? param.show_disk : param.show_battery}"
+      direction = "column"
+      align = "center"
+      gap = 3
+      width = "{param.gauge_size}"
+        [[root.children.children.children.children]]
+        width = "{param.gauge_size}"
+        height = "{param.gauge_size}"
+          [[root.children.children.children.children.children]]
+          type = "arc"
+          start = "{180 + (360 - param.sweep) / 2}"
+          sweep = "{param.sweep}"
+          stroke = "{param.stroke}"
+          value = "{g.value}"
+          color = "{(g.id == 'battery' ? 100 - g.value : g.value) > param.warn ? param.warn_color : (g.id == 'cpu' ? param.cpu_color : g.id == 'ram' ? param.ram_color : g.id == 'disk' ? param.disk_color : param.battery_color)}"
+
+          [[root.children.children.children.children.children]]
+          inset = 0
+          align = "center"
+          justify = "center"
+            [[root.children.children.children.children.children.children]]
+            type = "text"
+            text = "{g.value}%"
+            size = "{max(10, param.gauge_size * 0.25)}"
+            weight = 600
+            color = "$text"
+
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{g.label}"
+        size = "{max(10, min(param.gauge_size * 0.14, 14))}"
+        weight = 600
+        color = "$text"
+
+        [[root.children.children.children.children]]
+        type = "text"
+        when = "{param.show_detail}"
+        text = "{g.detail}"
+        size = "{max(9, min(param.gauge_size * 0.115, 12))}"
+        color = "$text-dim"
+
+  [[root.children]]
+  type = "text"
+  when = "{param.show_footer}"
+  text = "Up {sys.uptime}"
+  size = 11
+  text_align = "center"
+  color = "$text-dim"
