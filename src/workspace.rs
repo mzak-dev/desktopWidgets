@@ -73,8 +73,13 @@ impl InstanceCfg {
     }
 
     pub fn set_items(&mut self, items: &[Shortcut]) {
+        self.set_shortcuts("items", items);
+    }
+
+    /// Store shortcuts in a `shortcuts` param.
+    pub fn set_shortcuts(&mut self, name: &str, items: &[Shortcut]) {
         let list = items.iter().map(|s| serde_json::Value::from(&s.to_value())).collect();
-        self.params.insert("items".into(), serde_json::Value::Array(list));
+        self.params.insert(name.into(), serde_json::Value::Array(list));
     }
 
     pub fn folder(&self) -> String {

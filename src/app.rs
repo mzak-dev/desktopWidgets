@@ -21,11 +21,10 @@ use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
 use crate::anim::{Anim, Ease};
+use crate::card::Card;
 use crate::data::{self, DataSources};
 use crate::draw::DrawList;
 use crate::edit::{self, Handle, Rect, Snap};
-use crate::card::Card;
-use crate::format::ExpandInfo;
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
 use crate::platform::win32::{self, ZMode};
@@ -34,7 +33,7 @@ use crate::text::TextEngine;
 use crate::theme::{Library, Theme};
 use crate::ui::{self, Env, Frame};
 use crate::value::Value;
-use crate::widgets::{self, Def, Registry, Services, View};
+use crate::widgets::{self, Def, ExpandInfo, Host, Registry, Services, View};
 use crate::workspace::{self, InstanceCfg, MonitorInfo, Workspace};
 
 #[derive(Debug)]
@@ -712,7 +711,7 @@ impl App {
     fn min_size_phys(&self, i: usize) -> (i32, i32) {
         let cfg = &self.ws.instances[i];
         let min = match self.reg.get(&cfg.widget) {
-            Some(Ok(d)) => d.min_size,
+            Some(Ok(d)) => d.meta().min_size,
             _ => (48.0, 48.0),
         };
         self.card(i).min_window_px(min, self.scale_of(i))
@@ -1194,7 +1193,7 @@ impl App {
     /// A Widget's default window size for an Instance with this card.
     fn default_size(&self, widget: &str, card: Card) -> (f32, f32) {
         card.window_size(match self.reg.get(widget) {
-            Some(Ok(d)) => d.size,
+            Some(Ok(d)) => d.meta().size,
             _ => (200.0, 120.0),
         })
     }
@@ -1213,8 +1212,12 @@ impl App {
             h,
             ..Default::default()
         };
-        if matches!(widget, "icon_list" | "icon_folder") {
-            cfg.set_items(&data::starter_apps());
+        if let Some(Ok(w)) = self.reg.get(widget).cloned() {
+            let mut host = AppHost::new(&self.opts.dir, None);
+            widgets::setup(&*w, &mut cfg, &mut host);
+            for l in host.into_logs() {
+                self.log(l);
+            }
         }
         if widget == "drawer" {
             let dir = self.opts.dir.join("drawers").join(&cfg.id);
@@ -1515,6 +1518,42 @@ impl App {
     }
 }
 
+/// The engine side of `widgets::Host`: native dialogs parented to an
+/// Instance's window, shortcuts through the shell, log lines kept for `App::log`.
+struct AppHost<'a> {
+    dir: &'a std::path::Path,
+    hwnd: Option<windows::Win32::Foundation::HWND>,
+    logs: Vec<String>,
+}
+
+impl<'a> AppHost<'a> {
+    fn new(dir: &'a std::path::Path, hwnd: Option<windows::Win32::Foundation::HWND>) -> Self {
+        Self { dir, hwnd, logs: Vec::new() }
+    }
+
+    fn into_logs(self) -> Vec<String> {
+        self.logs
+    }
+}
+
+impl Host for AppHost<'_> {
+    fn data_dir(&self) -> &std::path::Path {
+        self.dir
+    }
+
+    fn pick_file(&mut self) -> Option<PathBuf> {
+        crate::dialog::pick_file(self.hwnd)
+    }
+
+    fn create_shortcut(&mut self, dir: &std::path::Path, target: &std::path::Path) -> bool {
+        win32::create_shortcut(dir, target).is_some()
+    }
+
+    fn log(&mut self, msg: String) {
+        self.logs.push(msg);
+    }
+}
+
 /// Start with Windows (HKCU Run key).
 fn set_autostart(on: bool) -> Result<(), String> {
     use windows::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW};
@@ -1535,28 +1574,28 @@ fn set_autostart(on: bool) -> Result<(), String> {
 }
 
 /// First-run arrangement: right-hand side of the primary monitor, clear of the desktop icons.
-fn default_instances(monitors: &[MonitorInfo], reg: &Registry, card: Card) -> Vec<InstanceCfg> {
+fn default_instances(monitors: &[MonitorInfo], reg: &Registry, card: Card, host: &mut dyn Host) -> Vec<InstanceCfg> {
     let Some(m) = monitors.iter().find(|m| m.x == 0 && m.y == 0).or(monitors.first()) else { return vec![] };
     let logical_w = m.work.2 as f32 / m.scale as f32;
     let size = |id: &str| match reg.get(id) {
-        Some(Ok(d)) => card.window_size(d.size),
+        Some(Ok(d)) => card.window_size(d.meta().size),
         _ => (240.0, 160.0),
     };
     let mut out = Vec::new();
-    let mut col = |id: &str, widget: &str, x_from_right: f32, y: f32, items: bool| {
+    let mut col = |id: &str, widget: &str, x_from_right: f32, y: f32| {
         let (w, h) = size(widget);
         let mut c = InstanceCfg { id: id.into(), widget: widget.into(), monitor: m.reference(), x: (logical_w - x_from_right - w).max(0.0), y, w, h, ..Default::default() };
-        if items {
-            c.set_items(&data::starter_apps());
+        if let Some(Ok(wd)) = reg.get(widget) {
+            widgets::setup(&**wd, &mut c, host);
         }
         out.push(c);
         (w, h)
     };
-    let (cw, ch) = col("clock-1", "clock", 8.0, 8.0, false);
-    let (_, dh) = col("digital_clock-1", "digital_clock", 8.0, 8.0 + ch - 20.0, false);
+    let (cw, ch) = col("clock-1", "clock", 8.0, 8.0);
+    let (_, dh) = col("digital_clock-1", "digital_clock", 8.0, 8.0 + ch - 20.0);
     let x2 = 8.0 + cw.max(340.0) - 20.0;
-    let (lw, lh) = col("icon_list-1", "icon_list", x2, 8.0, true);
-    col("icon_folder-1", "icon_folder", x2 + lw - 20.0, 8.0, true);
+    let (lw, lh) = col("icon_list-1", "icon_list", x2, 8.0);
+    col("icon_folder-1", "icon_folder", x2 + lw - 20.0, 8.0);
     let _ = (dh, lh);
     out
 }
@@ -1579,7 +1618,12 @@ impl ApplicationHandler<UserEvent> for App {
         self.init_tray();
         self.init_hotkey();
         if self.ws.instances.is_empty() {
-            self.ws.instances = default_instances(&self.monitors, &self.reg, self.new_card());
+            let card = self.new_card();
+            let mut host = AppHost::new(&self.opts.dir, None);
+            self.ws.instances = default_instances(&self.monitors, &self.reg, card, &mut host);
+            for l in host.into_logs() {
+                self.log(l);
+            }
             self.mark_save();
             self.log("first run: created the default widgets");
         }

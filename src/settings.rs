@@ -21,14 +21,13 @@ use crate::anim::{Anim, Ease};
 use crate::color::Color;
 use crate::data::Shortcut;
 use crate::dialog;
-use crate::format::{ParamDef, ParamType, WidgetDef};
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
 use crate::text::TextEngine;
 use crate::theme::{Library, Selection, Theme};
 use crate::ui::{self, Env, Frame, Kind, Node};
 use crate::value::Value;
-use crate::widgets::Registry;
+use crate::widgets::{ParamDef, ParamType, Registry, WidgetMeta};
 use crate::workspace::{Flag, Workspace};
 
 /// Everything the settings window may read.
@@ -362,8 +361,8 @@ impl UiState {
         ctx.ws.instances.iter().find(|c| c.id == id)
     }
 
-    fn def_of<'a>(&self, ctx: &'a Ctx, widget: &str) -> Option<&'a Arc<WidgetDef>> {
-        ctx.reg.get(widget).and_then(|d| d.as_ref().ok())
+    fn def_of<'a>(&self, ctx: &'a Ctx, widget: &str) -> Option<&'a WidgetMeta> {
+        ctx.reg.get(widget).and_then(|d| d.as_ref().ok()).map(|w| w.meta())
     }
 
     fn param_value(cfg: &crate::workspace::InstanceCfg, p: &ParamDef) -> Value {
@@ -658,7 +657,7 @@ impl UiState {
         }
         for (i, c) in ctx.ws.instances.iter().enumerate() {
             let on = sel.is_some_and(|s| s.id == c.id);
-            let name = ctx.reg.get(&c.widget).and_then(|d| d.as_ref().ok()).map_or(c.widget.clone(), |d| d.name.clone());
+            let name = self.def_of(ctx, &c.widget).map_or(c.widget.clone(), |d| d.name.clone());
             let parked = ctx.parked.contains(&c.id);
             list = list.child(
                 Node::new(format!("w/i/{}", c.id))
@@ -679,7 +678,7 @@ impl UiState {
         let mut add = Node::new("w/add").col().gap(6.0).child(k.section("w/add/h", "Add a widget"));
         let mut chips = Node::new("w/add/chips").row().wrap().gap(6.0);
         for id in ctx.reg.ids() {
-            let label = ctx.reg.get(&id).and_then(|d| d.as_ref().ok()).map_or(id.clone(), |d| d.name.clone());
+            let label = self.def_of(ctx, &id).map_or(id.clone(), |d| d.name.clone());
             chips = chips.child(
                 Node::new(format!("w/add/{id}"))
                     .row()

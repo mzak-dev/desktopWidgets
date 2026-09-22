@@ -81,6 +81,13 @@ impl<'a> Scope<'a> {
         self.deps.borrow_mut().clear();
     }
 
+    /// Read a dotted path (`clock.minute`) and record it as a dependency, the
+    /// way a binding does. What Rust Widgets use to read Data Sources.
+    pub fn read(&self, path: &str) -> Result<Value, String> {
+        let parts: Vec<String> = path.split('.').map(String::from).collect();
+        self.lookup(&parts)
+    }
+
     /// Read a top-level name without recording a dependency.
     pub fn peek(&self, name: &str) -> Option<&Value> {
         self.vars.iter().rev().find(|(n, _)| n == name).map(|(_, v)| v)

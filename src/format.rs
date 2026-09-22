@@ -13,6 +13,7 @@ use crate::expr::{Scope, Template};
 use crate::theme::Theme;
 use crate::ui::*;
 use crate::value::Value;
+use crate::widgets::{Built, ExpandInfo, Inputs, ParamDef, ParamType, Seed, WidgetMeta};
 
 // ---- attributes ------------------------------------------------------------
 
@@ -123,49 +124,6 @@ fn parse_elem(t: &toml::Table, path: &str) -> Result<Elem, String> {
 
 // ---- widget definition -----------------------------------------------------
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ParamType {
-    Color,
-    Font,
-    Number,
-    Enum,
-    Bool,
-    Str,
-    Path,
-    Duration,
-    Shortcuts,
-}
-
-impl ParamType {
-    fn parse(s: &str) -> Option<Self> {
-        Some(match s {
-            "color" => Self::Color,
-            "font" => Self::Font,
-            "number" => Self::Number,
-            "enum" => Self::Enum,
-            "bool" => Self::Bool,
-            "string" => Self::Str,
-            "path" => Self::Path,
-            "duration" => Self::Duration,
-            "shortcuts" => Self::Shortcuts,
-            _ => return None,
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct ParamDef {
-    pub name: String,
-    pub ty: ParamType,
-    pub default: Value,
-    pub label: String,
-    pub help: String,
-    pub min: Option<f64>,
-    pub max: Option<f64>,
-    pub step: Option<f64>,
-    pub choices: Vec<String>,
-}
-
 #[derive(Clone, Debug)]
 pub struct Expand {
     pub when: Template,
@@ -173,15 +131,10 @@ pub struct Expand {
     pub height: Option<Template>,
 }
 
+/// A parsed widget definition file: what a TOML Widget is made of.
 #[derive(Clone, Debug)]
 pub struct WidgetDef {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub size: (f32, f32),
-    pub min_size: (f32, f32),
-    pub params: Vec<ParamDef>,
-    pub state: BTreeMap<String, Value>,
+    pub meta: WidgetMeta,
     pub expand: Option<Expand>,
     pub root: Elem,
 }
@@ -211,6 +164,18 @@ impl WidgetDef {
                 let ty = p.get("type").and_then(|v| v.as_str()).ok_or_else(|| format!("params.{name}: missing `type`"))?;
                 let ty = ParamType::parse(ty).ok_or_else(|| format!("params.{name}: unknown param type `{ty}`"))?;
                 let f = |k: &str| p.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+                let seed = match p.get("seed") {
+                    None => None,
+                    Some(v) => {
+                        let s = v.as_str().ok_or_else(|| format!("params.{name}.seed: expected a string"))?;
+                        let ids: Vec<&str> = Seed::ALL.iter().map(|x| x.id()).collect();
+                        let seed = Seed::parse(s).ok_or_else(|| format!("params.{name}: unknown seed `{s}`{}", suggest(s, &[&ids])))?;
+                        if seed.fits() != ty {
+                            return Err(format!("params.{name}: seed `{s}` needs type = \"{}\"", seed.fits().id()));
+                        }
+                        Some(seed)
+                    }
+                };
                 params.push(ParamDef {
                     name: name.clone(),
                     ty,
@@ -226,6 +191,7 @@ impl WidgetDef {
                     max: f("max"),
                     step: f("step"),
                     choices: p.get("choices").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|c| c.as_str().map(String::from)).collect()).unwrap_or_default(),
+                    seed,
                 });
             }
         }
@@ -240,7 +206,7 @@ impl WidgetDef {
             }
         };
         let root_t = t.get("root").and_then(|v| v.as_table()).ok_or("missing [root] table")?;
-        Ok(WidgetDef {
+        let meta = WidgetMeta {
             id: id.to_string(),
             name: if text("name").is_empty() { id.to_string() } else { text("name") },
             description: text("description"),
@@ -248,48 +214,12 @@ impl WidgetDef {
             min_size: pair(t.get("min_size"), (48.0, 48.0), "min_size")?,
             params,
             state,
-            expand,
-            root: parse_elem(root_t, "root")?,
-        })
-    }
-
-    /// Defaults overlaid with an Instance's saved values.
-    pub fn effective_params(&self, over: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
-        self.params.iter().map(|p| (p.name.clone(), over.get(&p.name).cloned().unwrap_or_else(|| p.default.clone()))).collect()
+        };
+        Ok(WidgetDef { meta, expand, root: parse_elem(root_t, "root")? })
     }
 }
 
 // ---- building --------------------------------------------------------------
-
-/// Everything a build reads besides the definition.
-pub struct Inputs<'a> {
-    pub params: &'a BTreeMap<String, Value>,
-    pub state: &'a BTreeMap<String, Value>,
-    /// Card size, logical px (the window minus its gutter: see `card`).
-    pub size: (f32, f32),
-    /// Unique per Instance: prefixes every node key so text, hover and animation state never collide.
-    pub key: &'a str,
-    /// Data Sources by name, read lazily: only the ones a binding reads are evaluated.
-    pub sources: &'a dyn Fn(&str) -> Option<Value>,
-}
-
-#[derive(Debug)]
-pub struct Built {
-    pub root: Node,
-    /// Dotted paths the build read: the scheduler's dependency set.
-    pub deps: BTreeSet<String>,
-    /// Image ids the tree uses, so the app can make sure they are uploaded.
-    pub images: BTreeSet<String>,
-    pub warnings: Vec<String>,
-    pub expand: Option<ExpandInfo>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ExpandInfo {
-    pub active: bool,
-    pub width: Option<f32>,
-    pub height: Option<f32>,
-}
 
 struct B<'a> {
     theme: &'a Theme,
@@ -305,8 +235,8 @@ pub fn build(def: &WidgetDef, inp: &Inputs, theme: &Theme, image_size: &dyn Fn(&
     let card = inp.size;
     let mut scope = Scope::with_provider(inp.sources);
     let obj = |m: &BTreeMap<String, Value>| Value::Obj(m.clone());
-    scope.set("param", obj(&def.effective_params(inp.params)));
-    let mut st = def.state.clone();
+    scope.set("param", obj(&def.meta.effective_params(inp.params)));
+    let mut st = def.meta.state.clone();
     st.extend(inp.state.clone());
     scope.set("state", obj(&st));
     scope.set("self", Value::obj([("w", (card.0 as f64).into()), ("h", (card.1 as f64).into())]));
@@ -780,6 +710,16 @@ mod tests {
         let e = WidgetDef::parse("t", "nmae='x'\n[root]").unwrap_err();
         assert!(e.contains("did you mean `name`"), "{e}");
         assert!(WidgetDef::parse("t", "[root]\ntext='{1 +}'\ntype='text'").is_err()); // bad expression caught at parse time
+    }
+
+    #[test]
+    fn seeds_are_checked_when_the_file_is_read() {
+        let p = |extra: &str| WidgetDef::parse("t", &format!("[params.items]\ntype='shortcuts'\n{extra}\n[root]"));
+        assert_eq!(p("seed='starter-apps'").unwrap().meta.params[0].seed, Some(Seed::StarterApps));
+        let e = p("seed='starter-app'").unwrap_err();
+        assert!(e.contains("did you mean `starter-apps`"), "{e}");
+        let e = WidgetDef::parse("t", "[params.t]\ntype='string'\nseed='starter-apps'\n[root]").unwrap_err();
+        assert!(e.contains("needs type = \"shortcuts\""), "{e}");
     }
 
     #[test]

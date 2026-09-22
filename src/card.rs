@@ -6,9 +6,9 @@
 
 use crate::color::Color;
 use crate::edit::Rect;
-use crate::format::ExpandInfo;
 use crate::theme::Theme;
 use crate::ui::Node;
+use crate::widgets::ExpandInfo;
 use crate::workspace::{InstanceCfg, Workspace};
 
 /// Radius Windows 11 gives the blur region; a globally blurred card matches it.
