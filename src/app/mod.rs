@@ -54,7 +54,7 @@ use crate::workspace::{self, InstanceCfg, MonitorInfo, Workspace};
 use self::edit_mode::UndoEntry;
 use self::first_run::default_instances;
 use self::host::AppHost;
-use self::instance::{Drag, Instance, SizeTween};
+use self::instance::{Drag, Instance, Outcome, SizeTween, engine_action, expand_target, scroll_to};
 use self::selftest::SelfTest;
 
 #[derive(Debug)]
@@ -610,7 +610,6 @@ impl ApplicationHandler<UserEvent> for App {
         } else if self.gpu.as_ref().is_some_and(|g| g.is_lost()) {
             self.recover_gpu(el, "device lost callback");
         }
-        let interval = Duration::from_micros(16_667);
         let mut wake: Option<Instant> = [self.save_at, self.reload_at, self.shell_due.first().copied(), self.display_at, self.selftest.as_ref().map(|t| t.at), self.opts.exit_after.map(|t| self.started + Duration::from_secs_f32(t))]
             .into_iter()
             .flatten()
@@ -618,17 +617,14 @@ impl ApplicationHandler<UserEvent> for App {
         let soonest = |t: Instant, wake: &mut Option<Instant>| *wake = Some(wake.map_or(t, |w| w.min(t)));
         for iw in &mut self.wins {
             let Some(w) = &iw.window else { continue };
-            let due = iw.redraw || iw.next_tick.is_some_and(|t| t <= now) || (iw.animating && now.duration_since(iw.last_render) >= interval);
-            if due {
+            if iw.due(now) {
                 if !iw.requested {
                     iw.requested = true;
                     w.request_redraw();
                 }
                 continue;
             }
-            if iw.animating {
-                soonest(iw.last_render + interval, &mut wake);
-            } else if let Some(t) = iw.next_tick {
+            if let Some(t) = iw.wake_at() {
                 soonest(t, &mut wake);
             }
         }

@@ -15,13 +15,11 @@ impl App {
 
         // advance an expand/collapse size tween before measuring the window
         if let Some(tw) = &iw.tween {
-            let t = (now.saturating_duration_since(tw.start).as_secs_f32() / 0.20).clamp(0.0, 1.0);
-            let k = Ease::Out.apply(t);
-            let l = |a: i32, b: i32| a + ((b - a) as f32 * k).round() as i32;
+            let (r, done) = tw.at(now);
             if let Some(h) = win32::hwnd_of(&window) {
-                win32::set_rect(h, l(tw.from.x, tw.to.x), l(tw.from.y, tw.to.y), l(tw.from.w, tw.to.w).max(1), l(tw.from.h, tw.to.h).max(1));
+                win32::set_rect(h, r.x, r.y, r.w, r.h);
             }
-            if t >= 1.0 {
+            if done {
                 iw.tween = None;
             }
         }
@@ -99,17 +97,7 @@ impl App {
         let scale = mon.scale;
         let Some(pos) = workspace::resolve(&cfg, &self.monitors) else { return };
         let collapsed = Rect::new(pos.0, pos.1, (cfg.w as f64 * scale).round() as i32, (cfg.h as f64 * scale).round() as i32);
-        let target = if active {
-            let e = expand.unwrap();
-            let (tw, th) = (e.width.unwrap_or(cfg.w), e.height.unwrap_or(cfg.h));
-            let (w, h) = (((tw as f64 * scale).round() as i32).min(mon.work.2 as i32), ((th as f64 * scale).round() as i32).min(mon.work.3 as i32));
-            let (wl, wt, wr, wb) = (mon.work.0, mon.work.1, mon.work.0 + mon.work.2 as i32, mon.work.1 + mon.work.3 as i32);
-            let x = if collapsed.x + w > wr { (collapsed.right() - w).max(wl) } else { collapsed.x };
-            let y = if collapsed.y + h > wb { (collapsed.bottom() - h).max(wt) } else { collapsed.y };
-            Rect::new(x, y, w, h)
-        } else {
-            collapsed
-        };
+        let target = expand_target(expand, (cfg.w, cfg.h), collapsed, mon.work, scale);
         if self.wins[i].want == Some(target) {
             return;
         }

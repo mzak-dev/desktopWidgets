@@ -93,16 +93,14 @@ impl App {
             frame.rect_of(&s.key).is_some_and(|[x, y, w, h]| mx >= x && mx < x + w && my >= y && my < y + h)
         });
         let Some(region) = region else { return };
-        let max = (region.content_h - region.view_h).max(0.0);
         let cur = self.wins[i].state.get("scroll").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-        let next = (cur - dy).clamp(0.0, max);
-        if (next - cur).abs() > 0.01 {
+        if let Some(next) = scroll_to(cur, dy, region.view_h, region.content_h) {
             self.wins[i].state.insert("scroll".into(), Value::Num(next as f64));
             self.wins[i].redraw = true;
         }
     }
 
-    /// A click action: the Widget's own first (a Rust Widget's verbs), then the engine's.
+    /// A click action: the Widget's own verbs first (a Rust Widget's), then the engine's.
     pub(super) fn run_action(&mut self, i: usize, action: &str) {
         let (verb, rest) = action.split_once(' ').unwrap_or((action, ""));
         if let Some(Ok(w)) = self.reg.get(&self.ws.instances[i].widget).cloned() {
@@ -119,28 +117,18 @@ impl App {
                 return;
             }
         }
-        match verb {
-            "launch" => {
-                if !win32::open(rest.trim()) {
-                    self.log(format!("could not open `{}`", rest.trim()));
+        match engine_action(&mut self.wins[i].state, verb, rest) {
+            Outcome::Redraw => self.wins[i].redraw = true,
+            Outcome::Launch(target) => {
+                if !win32::open(&target) {
+                    self.log(format!("could not open `{target}`"));
                 }
             }
-            "toggle" => {
-                let cur = self.wins[i].state.get(rest).map_or(false, |v| v.truthy());
-                self.wins[i].state.insert(rest.to_string(), Value::Bool(!cur));
-                self.wins[i].state.insert("scroll".into(), Value::Num(0.0));
-                self.wins[i].redraw = true;
-            }
-            "set" => {
-                if let Some((name, val)) = rest.split_once(' ') {
-                    self.wins[i].state.insert(name.to_string(), Value::Str(val.to_string()));
-                    self.wins[i].redraw = true;
-                }
-            }
-            "settings" => {
+            Outcome::OpenSettings => {
                 let _ = self.proxy.send_event(UserEvent::Menu("settings".into()));
             }
-            other => self.log(format!("unknown action `{other}` in `{action}`")),
+            Outcome::Nothing => {}
+            Outcome::Unknown => self.log(format!("unknown action `{verb}` in `{action}`")),
         }
     }
 }

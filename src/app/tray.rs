@@ -3,7 +3,7 @@
 
 use super::*;
 
-pub(super) fn tray_icon_image() -> tray_icon::Icon {
+fn tray_icon_image() -> tray_icon::Icon {
     let n = 32u32;
     let mut px = vec![0u8; (n * n * 4) as usize];
     for y in 0..n {

@@ -1,13 +1,13 @@
-//! The engine side of `widgets::Host`: what a Widget may ask for outside a build.
+//! `AppHost`, the App's adapter for `widgets::Host`.
 
 use super::*;
 
 /// The engine side of `widgets::Host`: native dialogs parented to an
 /// Instance's window, shortcuts through the shell, log lines kept for `App::log`.
 pub(super) struct AppHost<'a> {
-    pub(super) dir: &'a std::path::Path,
-    pub(super) hwnd: Option<windows::Win32::Foundation::HWND>,
-    pub(super) logs: Vec<String>,
+    dir: &'a std::path::Path,
+    hwnd: Option<windows::Win32::Foundation::HWND>,
+    logs: Vec<String>,
 }
 
 impl<'a> AppHost<'a> {
