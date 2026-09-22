@@ -74,6 +74,8 @@ struct SizeTween {
 /// Runtime state of one Instance, index-aligned with `Workspace::instances`.
 struct InstWin {
     window: Option<Arc<Window>>,
+    /// Whether DWM blur is currently switched on for this window.
+    blur: bool,
     target: Option<Target>,
     state: BTreeMap<String, Value>,
     anim: Anim,
@@ -118,6 +120,7 @@ impl InstWin {
             grab: None,
             mouse: (-1.0, -1.0),
             tween: None,
+            blur: false,
             want: None,
             raised: false,
             error: None,
@@ -318,6 +321,15 @@ impl App {
         format::gutter(&self.theme)
     }
 
+    fn blurs(&self, i: usize) -> bool {
+        self.ws.instances[i].params.get("blur").and_then(|v| v.as_bool()).unwrap_or(false)
+    }
+
+    /// This Instance's own gutter (zero while it blurs the desktop behind it).
+    fn gutter_of(&self, i: usize) -> f32 {
+        format::gutter_for(&self.theme, self.blurs(i))
+    }
+
     // ---- windows -------------------------------------------------------------
 
     fn monitor_of(&self, cfg: &InstanceCfg) -> Option<&MonitorInfo> {
@@ -425,7 +437,7 @@ impl App {
 
     fn render(&mut self, i: usize) {
         let now = Instant::now();
-        let gutter = self.gutter();
+        let gutter = self.gutter_of(i);
         let App { gpu, text, icons, theme, reg, ws, wins, edit, .. } = self;
         let (Some(gpu), Some(iw)) = (gpu.as_mut(), wins.get_mut(i)) else { return };
         let (Some(window), Some(target)) = (iw.window.clone(), iw.target.as_mut()) else { return };
@@ -448,6 +460,15 @@ impl App {
             gpu.fit(target, phys.width, phys.height);
         }
         let scale = window.scale_factor() as f32;
+        // any widget with a `blur` param gets blur-behind under its card
+        // any widget with a `blur` param blurs the desktop behind its window
+        let blur = cfg.params.get("blur").and_then(|v| v.as_bool()).unwrap_or(false);
+        if blur != iw.blur {
+            if let Some(h) = win32::hwnd_of(&window) {
+                win32::set_blur(h, blur);
+                iw.blur = blur;
+            }
+        }
         let size = (phys.width as f32 / scale, phys.height as f32 / scale);
         let missing: Def = Err(format!("unknown widget `{}`", cfg.widget));
         let def = reg.get(&cfg.widget).unwrap_or(&missing);
@@ -539,10 +560,11 @@ impl App {
         let siblings = self.hwnds();
         if let Some(h) = hwnd {
             let mode = ZMode::parse(&cfg.z).unwrap_or(ZMode::Desktop);
-            if active && matches!(mode, ZMode::Desktop | ZMode::Bottom) && !self.wins[i].raised {
+            let grows = target.w > collapsed.w || target.h > collapsed.h;
+            if active && grows && matches!(mode, ZMode::Desktop | ZMode::Bottom) && !self.wins[i].raised {
                 win32::raise_above(h, &siblings);
                 self.wins[i].raised = true;
-            } else if !active && self.wins[i].raised {
+            } else if !(active && grows) && self.wins[i].raised {
                 win32::set_zmode(h, mode);
                 self.wins[i].raised = false;
             }
@@ -637,8 +659,8 @@ impl App {
             ys.extend([m.work.1, m.work.1 + m.work.3 as i32]);
             origin = (m.work.0, m.work.1);
         }
-        let g = self.gutter() * scale as f32;
         for (j, other) in self.wins.iter().enumerate() {
+            let g = self.gutter_of(j) * scale as f32;
             if j == i {
                 continue;
             }
@@ -685,10 +707,20 @@ impl App {
         }
     }
 
+    /// The window grows or shrinks by the shadow gutter when blur turns off or
+    /// on, so the visible card stays exactly where it was.
+    fn regutter(&mut self, i: usize) {
+        let Some(r) = self.wins[i].window.as_ref().and_then(|w| Self::outer_rect(w)) else { return };
+        let g = (self.gutter() * self.scale_of(i) as f32).round() as i32;
+        let k = if self.blurs(i) { 1 } else { -1 };
+        self.set_window_rect(i, Rect { x: r.x + k * g, y: r.y + k * g, w: r.w - k * 2 * g, h: r.h - k * 2 * g });
+        self.commit_rect(i);
+    }
+
     fn min_size_phys(&self, i: usize) -> (i32, i32) {
         let cfg = &self.ws.instances[i];
         let s = self.scale_of(i);
-        let g = 2.0 * self.gutter() as f64;
+        let g = 2.0 * self.gutter_of(i) as f64;
         let (mw, mh) = match self.reg.get(&cfg.widget) {
             Some(Ok(d)) => d.min_size,
             _ => (48.0, 48.0),
@@ -747,7 +779,11 @@ impl App {
         let min = self.min_size_phys(i);
         // shift+drag disables snapping
         let snap = if self.mods.shift_key() { Snap { threshold: 0, grid: 0, ..snap } } else { snap };
-        let r = edit::apply(handle, rect0, cursor.0 - cursor0.0, cursor.1 - cursor0.1, min, &snap);
+        // snap the visible card, not the transparent shadow margin around it
+        let g = (self.gutter_of(i) * self.scale_of(i) as f32).round() as i32;
+        let card0 = Rect { x: rect0.x + g, y: rect0.y + g, w: rect0.w - 2 * g, h: rect0.h - 2 * g };
+        let c = edit::apply(handle, card0, cursor.0 - cursor0.0, cursor.1 - cursor0.1, (min.0 - 2 * g, min.1 - 2 * g), &snap);
+        let r = Rect { x: c.x - g, y: c.y - g, w: c.w + 2 * g, h: c.h + 2 * g };
         self.set_window_rect(i, r);
         self.wins[i].tween = None;
     }
@@ -764,7 +800,7 @@ impl App {
     }
 
     fn card_rect(&self, i: usize) -> [f32; 4] {
-        let g = self.gutter();
+        let g = self.gutter_of(i);
         let Some(w) = &self.wins[i].window else { return [0.0; 4] };
         let s = w.scale_factor() as f32;
         let size = w.inner_size();
@@ -824,6 +860,19 @@ impl App {
                 if !win32::open(rest.trim()) {
                     self.log(format!("could not open `{}`", rest.trim()));
                 }
+            }
+            "add_app" => {
+                let hwnd = self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w));
+                let Some(picked) = crate::dialog::pick_file(hwnd) else { return };
+                let folder = self.ws.instances[i].folder();
+                if folder.is_empty() {
+                    return self.log("this drawer has no shortcut folder");
+                }
+                if win32::create_shortcut(std::path::Path::new(&folder), &picked).is_none() {
+                    self.log(format!("could not create a shortcut to `{}`", picked.display()));
+                }
+                self.refresh_items(i); // the folder watcher would also catch it, a moment later
+                self.wins[i].redraw = true;
             }
             "toggle" => {
                 let cur = self.wins[i].state.get(rest).map_or(false, |v| v.truthy());
@@ -1170,6 +1219,11 @@ impl App {
         if matches!(widget, "icon_list" | "icon_folder") {
             cfg.set_items(&default_shortcuts());
         }
+        if widget == "drawer" {
+            let dir = self.opts.dir.join("drawers").join(&cfg.id);
+            let _ = std::fs::create_dir_all(&dir);
+            cfg.set_param("folder", &Value::Str(dir.to_string_lossy().into_owned()));
+        }
         self.log(format!("added {}", cfg.id));
         self.ws.instances.push(cfg);
         self.sync_windows(el);
@@ -1192,7 +1246,11 @@ impl App {
             }
             Cmd::Param(id, name, v) => {
                 if let Some(i) = find(self, &id) {
+                    let was = self.blurs(i);
                     self.ws.instances[i].set_param(&name, &v);
+                    if name == "blur" && self.blurs(i) != was {
+                        self.regutter(i);
+                    }
                     if name == "folder" {
                         self.sync_watchers();
                     }

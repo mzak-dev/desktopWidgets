@@ -1,0 +1,172 @@
+name = "Drawer"
+description = "A titled drawer of apps. Snaps to other widgets; collapses to its header. Apps you add become shortcuts in this widget's own folder."
+size = [260, 220]
+min_size = [120, 60]
+
+[params.title]
+type = "string"
+default = "Drawer"
+label = "Title"
+
+[params.folder]
+type = "path"
+default = ""
+label = "Shortcut folder"
+help = "Filled in for you. Drop shortcuts into it, or use + on the drawer."
+
+[params.icon_size]
+type = "number"
+default = 36
+min = 20
+max = 72
+step = 2
+label = "Icon size"
+
+[params.transparent]
+type = "bool"
+default = false
+label = "Transparent background"
+
+[params.opacity]
+type = "number"
+default = 60
+min = 0
+max = 100
+step = 1
+label = "Background opacity (%)"
+help = "Used when the background is transparent."
+
+[params.blur]
+type = "bool"
+default = false
+label = "Blur behind"
+help = "Blurs the wallpaper and icons under the drawer. Drops the shadow and rounds the corners to the Windows 11 default."
+
+[params.tint]
+type = "bool"
+default = true
+label = "Tint from theme"
+help = "Colour the transparent background with the theme's surface colour. Off gives a neutral dark glass."
+
+[state]
+collapsed = false
+scroll = 0
+
+# collapsing shrinks the window to the header row
+[expand]
+when = "{state.collapsed}"
+height = "44"
+
+[root]
+direction = "column"
+fill = ["{param.tint ? '$surface' : '#141414'}", "{param.tint ? '$surface-2' : '#141414'}"]
+fill_alpha = "{param.transparent ? param.opacity / 100 : -1}"
+radius = "{param.blur ? 8 : '$radius-lg'}"
+border = 1
+shadow = { blur = 14, dy = 5 }
+padding = [8, 10]
+gap = 6
+clip = true
+
+  [[root.children]]
+  direction = "row"
+  align = "center"
+  gap = 4
+  height = 28
+  shrink = 0
+
+    [[root.children.children]]
+    type = "text"
+    text = "{param.title}"
+    size = 13
+    weight = 700
+    color = "$text"
+    grow = 1
+    padding = [0, 6]
+
+    [[root.children.children]]
+    width = 28
+    height = 28
+    radius = 14
+    align = "center"
+    justify = "center"
+    on_click = "add_app"
+    hover = { fill = "$surface-hover" }
+    transition = 120
+      [[root.children.children.children]]
+      type = "text"
+      text = "$glyph-add"
+      font = "$font-glyph"
+      size = 13
+      color = "$text-dim"
+
+    [[root.children.children]]
+    width = 28
+    height = 28
+    radius = 14
+    align = "center"
+    justify = "center"
+    on_click = "toggle collapsed"
+    hover = { fill = "$surface-hover" }
+    transition = 120
+      [[root.children.children.children]]
+      when = "{state.collapsed}"
+      type = "text"
+      text = "$glyph-chevron-right"
+      font = "$font-glyph"
+      size = 13
+      color = "$text-dim"
+
+      [[root.children.children.children]]
+      when = "{!state.collapsed}"
+      type = "text"
+      text = "$glyph-chevron-down"
+      font = "$font-glyph"
+      size = 13
+      color = "$text-dim"
+
+  [[root.children]]
+  when = "{!state.collapsed}"
+  grow = 1
+  direction = "row"
+  wrap = true
+  gap = 6
+  align = "start"
+  scroll = "{state.scroll}"
+  hit = true
+
+    [[root.children.children]]
+    type = "text"
+    when = "{shortcuts.count == 0}"
+    text = "Empty. Press + to add an app."
+    size = 12
+    color = "$text-dim"
+    padding = 6
+
+    [[root.children.children]]
+    type = "repeat"
+    for = "{shortcuts.items}"
+      [[root.children.children.children]]
+      direction = "column"
+      align = "center"
+      gap = 4
+      padding = 6
+      width = "{param.icon_size + 30}"
+      radius = "$radius-sm"
+      on_click = "launch {item.target}"
+      hover = { fill = "$surface-hover" }
+      transition = 140
+      enter = { ms = 240, dy = 8, stagger = 24 }
+        [[root.children.children.children.children]]
+        type = "image"
+        src = "{item.icon_id}"
+        width = "{param.icon_size}"
+        height = "{param.icon_size}"
+
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{item.name}"
+        size = 11
+        color = "$text"
+        text_align = "center"
+        text_wrap = true
