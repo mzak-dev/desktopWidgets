@@ -21,7 +21,7 @@ use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
 use crate::anim::{Anim, Ease};
-use crate::data::{self, Shortcut};
+use crate::data::{self, DataSources};
 use crate::draw::DrawList;
 use crate::edit::{self, Handle, Rect, Snap};
 use crate::card::Card;
@@ -92,7 +92,6 @@ struct InstWin {
     requested: bool,
     animating: bool,
     last_render: Instant,
-    items: Vec<Shortcut>,
     drag: Option<Drag>,
     grab: Option<Handle>,
     mouse: (f32, f32),
@@ -119,7 +118,6 @@ impl InstWin {
             requested: false,
             animating: false,
             last_render: Instant::now(),
-            items: Vec::new(),
             drag: None,
             grab: None,
             mouse: (-1.0, -1.0),
@@ -155,6 +153,7 @@ pub struct App {
     lib: Library,
     theme: Theme,
     reg: Registry,
+    sources: DataSources,
     gpu: Option<Gpu>,
     text: TextEngine,
     icons: IconService,
@@ -167,7 +166,8 @@ pub struct App {
     tray: Option<TrayIcon>,
     _hotkeys: Option<GlobalHotKeyManager>,
     watchers: Vec<RecommendedWatcher>,
-    watched_folders: Vec<(String, String)>,
+    /// Paths the Data Sources watch, per Instance id (one watcher each).
+    watched: Vec<(String, PathBuf)>,
     log: Vec<String>,
     save_at: Option<Instant>,
     reload_at: Option<Instant>,
@@ -235,6 +235,7 @@ impl App {
             lib,
             theme,
             reg,
+            sources: DataSources::builtin(),
             gpu: None,
             text,
             wins: Vec::new(),
@@ -246,7 +247,7 @@ impl App {
             tray: None,
             _hotkeys: None,
             watchers: Vec::new(),
-            watched_folders: Vec::new(),
+            watched: Vec::new(),
             log: Vec::new(),
             save_at: None,
             reload_at: None,
@@ -402,7 +403,6 @@ impl App {
         iw.window = Some(window.clone());
         iw.target = Some(target);
         iw.redraw = true;
-        self.refresh_items(i);
         self.render(i);
         window.set_visible(true);
         // winit rebuilds WS_EX_* from its own flags on every state change, so our
@@ -413,12 +413,6 @@ impl App {
             self.apply_show_desktop();
         }
         Ok(())
-    }
-
-    fn refresh_items(&mut self, i: usize) {
-        let cfg = &self.ws.instances[i];
-        let folder = cfg.folder();
-        self.wins[i].items = if folder.is_empty() { cfg.items() } else { data::folder_items(&folder, 96) };
     }
 
     fn index_of(&self, id: WindowId) -> Option<usize> {
@@ -439,7 +433,7 @@ impl App {
     fn render(&mut self, i: usize) {
         let now = Instant::now();
         let card = self.card(i);
-        let App { gpu, text, icons, theme, reg, ws, wins, edit, .. } = self;
+        let App { gpu, text, icons, theme, reg, sources, ws, wins, edit, .. } = self;
         let (Some(gpu), Some(iw)) = (gpu.as_mut(), wins.get_mut(i)) else { return };
         let (Some(window), Some(target)) = (iw.window.clone(), iw.target.as_mut()) else { return };
         let cfg = &ws.instances[i];
@@ -473,8 +467,8 @@ impl App {
         let def = reg.get(&cfg.widget).unwrap_or(&missing);
         let tm = data::now_local();
         let pack = ws.theme.icon_pack.clone();
-        let v = View { cfg, state: &iw.state, items: &iw.items, size, theme, pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };
-        let mut sv = Services { gpu, icons, text, anim: &mut iw.anim };
+        let v = View { cfg, state: &iw.state, size, theme, pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };
+        let mut sv = Services { gpu, icons, text, anim: &mut iw.anim, sources };
         let mut p = widgets::prepare(def, &v, &mut sv);
 
         if *edit {
@@ -503,8 +497,8 @@ impl App {
         for w in &p.warnings {
             eprintln!("wayfinder: {}: {w}", cfg.id);
         }
-        let continuous = data::is_continuous(&p.deps);
-        iw.next_tick = if continuous { None } else { data::next_wake(&p.deps, &tm).map(|d| now + d) };
+        let continuous = sources.is_continuous(&p.deps);
+        iw.next_tick = if continuous { None } else { sources.next_wake(&p.deps, &tm).map(|d| now + d) };
         iw.widget_error = p.error.clone();
         iw.animating = p.frame.animating || continuous || iw.tween.is_some();
         iw.deps = p.deps;
@@ -874,7 +868,7 @@ impl App {
                 if win32::create_shortcut(std::path::Path::new(&folder), &picked).is_none() {
                     self.log(format!("could not create a shortcut to `{}`", picked.display()));
                 }
-                self.refresh_items(i); // the folder watcher would also catch it, a moment later
+                self.sources.invalidate(); // the folder watcher would also catch it, a moment later
                 self.wins[i].redraw = true;
             }
             "toggle" => {
@@ -1220,7 +1214,7 @@ impl App {
             ..Default::default()
         };
         if matches!(widget, "icon_list" | "icon_folder") {
-            cfg.set_items(&default_shortcuts());
+            cfg.set_items(&data::starter_apps());
         }
         if widget == "drawer" {
             let dir = self.opts.dir.join("drawers").join(&cfg.id);
@@ -1254,10 +1248,8 @@ impl App {
                     if self.card(i).blur != was.blur {
                         self.regutter(i, was);
                     }
-                    if name == "folder" {
-                        self.sync_watchers();
-                    }
-                    self.refresh_items(i);
+                    self.sync_watchers(); // a param may name a path a source watches
+                    self.sources.invalidate();
                     self.wins[i].redraw = true;
                     self.mark_save();
                 }
@@ -1265,7 +1257,6 @@ impl App {
             Cmd::Items(id, items) => {
                 if let Some(i) = find(self, &id) {
                     self.ws.instances[i].set_items(&items);
-                    self.refresh_items(i);
                     self.wins[i].redraw = true;
                     self.mark_save();
                 }
@@ -1311,14 +1302,9 @@ impl App {
                 }
             }
             Cmd::Theme(sel) => {
-                let icon_changed = sel.icon_pack != self.ws.theme.icon_pack;
+                // icon ids follow the pack on the next build; rebuild_theme redraws everything
                 self.ws.theme = sel;
                 self.rebuild_theme();
-                if icon_changed {
-                    for i in 0..self.wins.len() {
-                        self.refresh_items(i);
-                    }
-                }
                 self.mark_save();
             }
             Cmd::Override(k, v) => {
@@ -1417,9 +1403,7 @@ impl App {
             self.log(e);
         }
         self.rebuild_theme();
-        for i in 0..self.wins.len() {
-            self.refresh_items(i);
-        }
+        self.sources.invalidate();
         self.log("reloaded widget definitions, themes and folders");
     }
 
@@ -1447,7 +1431,7 @@ impl App {
 
     fn sync_watchers(&mut self) {
         // one recursive watch on the data dir (widgets, themes, icon packs) plus
-        // one per mirrored folder
+        // one per path a Data Source watches (a mirrored folder)
         if self.watchers.is_empty() {
             let _ = std::fs::create_dir_all(&self.opts.dir);
             if let Some(mut w) = self.watcher(true) {
@@ -1456,13 +1440,13 @@ impl App {
                 }
             }
         }
-        let want: Vec<(String, String)> = self.ws.instances.iter().filter(|c| !c.folder().is_empty()).map(|c| (c.id.clone(), c.folder())).collect();
-        if want != self.watched_folders {
+        let want: Vec<(String, PathBuf)> = self.ws.instances.iter().flat_map(|c| self.sources.watch(c).into_iter().map(|p| (c.id.clone(), p))).collect();
+        if want != self.watched {
             self.watchers.truncate(1);
-            self.watched_folders = want.clone();
+            self.watched = want.clone();
             for (_, dir) in want {
                 if let Some(mut w) = self.watcher(false) {
-                    if w.watch(std::path::Path::new(&dir), RecursiveMode::NonRecursive).is_ok() {
+                    if w.watch(&dir, RecursiveMode::NonRecursive).is_ok() {
                         self.watchers.push(w);
                     }
                 }
@@ -1531,14 +1515,6 @@ impl App {
     }
 }
 
-fn default_shortcuts() -> Vec<Shortcut> {
-    let win = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
-    [("Notepad", format!("{win}\\notepad.exe")), ("Calculator", format!("{win}\\System32\\calc.exe")), ("Explorer", format!("{win}\\explorer.exe")), ("Terminal", format!("{win}\\System32\\cmd.exe"))]
-        .into_iter()
-        .map(|(n, t)| Shortcut { name: n.into(), target: t, icon: String::new() })
-        .collect()
-}
-
 /// Start with Windows (HKCU Run key).
 fn set_autostart(on: bool) -> Result<(), String> {
     use windows::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW};
@@ -1571,7 +1547,7 @@ fn default_instances(monitors: &[MonitorInfo], reg: &Registry, card: Card) -> Ve
         let (w, h) = size(widget);
         let mut c = InstanceCfg { id: id.into(), widget: widget.into(), monitor: m.reference(), x: (logical_w - x_from_right - w).max(0.0), y, w, h, ..Default::default() };
         if items {
-            c.set_items(&default_shortcuts());
+            c.set_items(&data::starter_apps());
         }
         out.push(c);
         (w, h)

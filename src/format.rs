@@ -273,9 +273,8 @@ pub struct Inputs<'a> {
     pub size: (f32, f32),
     /// Unique per Instance: prefixes every node key so text, hover and animation state never collide.
     pub key: &'a str,
-    pub clock: Value,
-    pub sys: Value,
-    pub shortcuts: Value,
+    /// Data Sources by name, read lazily: only the ones a binding reads are evaluated.
+    pub sources: &'a dyn Fn(&str) -> Option<Value>,
 }
 
 #[derive(Debug)]
@@ -298,7 +297,7 @@ pub struct ExpandInfo {
 
 struct B<'a> {
     theme: &'a Theme,
-    scope: Scope,
+    scope: Scope<'a>,
     warns: Vec<String>,
     images: BTreeSet<String>,
     image_size: &'a dyn Fn(&str) -> Option<(f32, f32)>,
@@ -308,16 +307,13 @@ struct B<'a> {
 /// look, outline switch) is added by `card::Card::dress`.
 pub fn build(def: &WidgetDef, inp: &Inputs, theme: &Theme, image_size: &dyn Fn(&str) -> Option<(f32, f32)>) -> Result<Built, String> {
     let card = inp.size;
-    let mut scope = Scope::new();
+    let mut scope = Scope::with_provider(inp.sources);
     let obj = |m: &BTreeMap<String, Value>| Value::Obj(m.clone());
     scope.set("param", obj(&def.effective_params(inp.params)));
     let mut st = def.state.clone();
     st.extend(inp.state.clone());
     scope.set("state", obj(&st));
     scope.set("self", Value::obj([("w", (card.0 as f64).into()), ("h", (card.1 as f64).into())]));
-    scope.set("clock", inp.clock.clone());
-    scope.set("sys", inp.sys.clone());
-    scope.set("shortcuts", inp.shortcuts.clone());
     let mut b = B { theme, scope, warns: vec![], images: BTreeSet::new(), image_size };
     let mut nodes = b.build_elem(&def.root, inp.key)?;
     let mut root = nodes.pop().ok_or("root produced no node")?;
@@ -812,9 +808,11 @@ mod tests {
             state: &st,
             size: (100.0, 60.0),
             key: "t",
-            clock: Value::obj([("minute", 7.into()), ("second", 3.into())]),
-            sys: Value::default(),
-            shortcuts: crate::data::shortcuts_value(&[], "Default"),
+            sources: &|name| match name {
+                "clock" => Some(Value::obj([("minute", 7.into()), ("second", 3.into())])),
+                "shortcuts" => Some(crate::data::shortcuts_value(&[], "Default")),
+                _ => None,
+            },
         };
         build(&def, &inp, &theme(), &|_| None)
     }

@@ -4,7 +4,7 @@
 //! one can never hang a redraw.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::value::Value;
 
@@ -44,15 +44,25 @@ pub struct Expr(Node);
 
 /// Names visible to expressions, plus a record of which dotted paths an
 /// evaluation actually read (the redraw scheduler's dependency set).
+///
+/// Names not set on the scope fall through to an optional provider (the Data
+/// Sources), asked at most once per name and only when something reads it.
 #[derive(Default)]
-pub struct Scope {
+pub struct Scope<'a> {
     vars: Vec<(String, Value)>,
     deps: RefCell<BTreeSet<String>>,
+    provider: Option<&'a dyn Fn(&str) -> Option<Value>>,
+    provided: RefCell<BTreeMap<String, Value>>,
 }
 
-impl Scope {
+impl<'a> Scope<'a> {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// A scope whose unset names are looked up lazily in `provider`.
+    pub fn with_provider(provider: &'a dyn Fn(&str) -> Option<Value>) -> Self {
+        Scope { provider: Some(provider), ..Self::default() }
     }
 
     pub fn set(&mut self, name: &str, v: Value) {
@@ -77,19 +87,27 @@ impl Scope {
     }
 
     fn lookup(&self, path: &[String]) -> Result<Value, String> {
-        let root = self
-            .vars
-            .iter()
-            .rev()
-            .find(|(n, _)| *n == path[0])
-            .map(|(_, v)| v)
-            .ok_or_else(|| format!("undefined name `{}`", path[0]))?;
-        let mut cur = root;
-        for seg in &path[1..] {
-            cur = cur.get(seg).ok_or_else(|| format!("undefined `{}`", path.join(".")))?;
-        }
+        let walk = |root: &Value| -> Result<Value, String> {
+            let mut cur = root;
+            for seg in &path[1..] {
+                cur = cur.get(seg).ok_or_else(|| format!("undefined `{}`", path.join(".")))?;
+            }
+            Ok(cur.clone())
+        };
+        let undefined = || format!("undefined name `{}`", path[0]);
+        let v = match self.vars.iter().rev().find(|(n, _)| *n == path[0]) {
+            Some((_, root)) => walk(root)?,
+            None => {
+                let mut provided = self.provided.borrow_mut();
+                if !provided.contains_key(&path[0]) {
+                    let v = self.provider.and_then(|p| p(&path[0])).ok_or_else(undefined)?;
+                    provided.insert(path[0].clone(), v);
+                }
+                walk(&provided[&path[0]])?
+            }
+        };
         self.deps.borrow_mut().insert(path.join("."));
-        Ok(cur.clone())
+        Ok(v)
     }
 }
 
@@ -587,6 +605,22 @@ mod tests {
         // `||` inside an interpolation is logical-or, not a format separator
         assert_eq!(Template::parse("{0 || 4}").unwrap().eval(&sc).unwrap(), Value::Num(4.0));
         assert!(Template::parse("plain").unwrap().is_literal());
+    }
+
+    #[test]
+    fn provided_names_are_asked_for_once_and_only_when_read() {
+        let asked = RefCell::new(Vec::new());
+        let provider = |n: &str| {
+            asked.borrow_mut().push(n.to_string());
+            (n == "clock").then(|| Value::obj([("minute", 5.into())]))
+        };
+        let mut sc = Scope::with_provider(&provider);
+        sc.set("param", Value::obj([("x", 1.into())]));
+        let t = Template::parse("{clock.minute + clock.minute + param.x}").unwrap();
+        assert_eq!(t.eval(&sc).unwrap(), Value::Num(11.0));
+        assert_eq!(*asked.borrow(), ["clock"], "one ask per name, none for names set on the scope");
+        assert!(sc.deps().contains("clock.minute"), "provided reads are dependencies too");
+        assert!(Template::parse("{sys.cpu}").unwrap().eval(&sc).is_err(), "a name nobody provides is still undefined");
     }
 
     #[test]

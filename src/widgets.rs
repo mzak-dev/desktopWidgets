@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use crate::anim::Anim;
 use crate::card::Card;
-use crate::data::{self, Shortcut, Tm};
+use crate::data::{DataSources, SourceCx, Tm};
 use crate::format::{self, ExpandInfo, Inputs, WidgetDef};
 use crate::gfx::Gpu;
 use crate::icons::IconService;
@@ -87,13 +87,14 @@ pub struct Services<'a> {
     pub icons: &'a mut IconService,
     pub text: &'a mut TextEngine,
     pub anim: &'a mut Anim,
+    pub sources: &'a DataSources,
 }
 
 /// Everything about one Instance at one moment.
 pub struct View<'a> {
     pub cfg: &'a InstanceCfg,
     pub state: &'a BTreeMap<String, Value>,
-    pub items: &'a [Shortcut],
+    /// Window size, logical px.
     pub size: (f32, f32),
     pub theme: &'a Theme,
     pub pack: &'a str,
@@ -107,6 +108,9 @@ pub struct View<'a> {
 
 pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
     let card_size = v.card.card_size(v.size);
+    let cx = SourceCx { cfg: v.cfg, tm: v.tm, icon_pack: v.pack };
+    let sources = sv.sources;
+    let read = |name: &str| sources.value(name, &cx);
     let mut uploaded = false;
     let mut result = None;
     for _ in 0..2 {
@@ -123,9 +127,7 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
                     state: v.state,
                     size: card_size,
                     key: &v.cfg.id,
-                    clock: data::clock_value(&v.tm),
-                    sys: data::sys_value(),
-                    shortcuts: data::shortcuts_value(v.items, v.pack),
+                    sources: &read,
                 };
                 let gpu = &*sv.gpu;
                 format::build(d, &inp, v.theme, &|id| gpu.image_size(id).map(|(w, h)| (w as f32, h as f32)))
@@ -180,7 +182,9 @@ mod tests {
         let theme = Theme::compose(&crate::theme::Library::load(Path::new("nope")), &crate::theme::Selection::default(), &BTreeMap::new());
         let arcs = |params: BTreeMap<String, Value>| {
             let st = BTreeMap::new();
-            let inp = Inputs { params: &params, state: &st, size: (300.0, 150.0), key: "t", clock: Value::default(), sys: data::sys_value(), shortcuts: Value::default() };
+            let sys = crate::data::Sys::default();
+            let read = |n: &str| (n == "sys").then(|| sys.sample());
+            let inp = Inputs { params: &params, state: &st, size: (300.0, 150.0), key: "t", sources: &read };
             let b = format::build(&def, &inp, &theme, &|_| None).unwrap();
             assert!(b.warnings.is_empty(), "{:?}", b.warnings);
             assert!(b.deps.contains("sys.gauges"));

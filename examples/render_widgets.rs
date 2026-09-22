@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use wayfinder::anim::Anim;
 use wayfinder::card::Card;
-use wayfinder::data::{Shortcut, Tm};
+use wayfinder::data::{DataSources, Shortcut, Tm};
 use wayfinder::gfx::{Gpu, Power};
 use wayfinder::icons::IconService;
 use wayfinder::text::TextEngine;
@@ -57,6 +57,7 @@ fn main() {
     let theme = Theme::compose(&lib, &sel, &BTreeMap::new());
     let reg = Registry::load(Path::new("nope"));
     let card = Card::new(&theme, false, true);
+    let sources = DataSources::builtin();
     let tm = Tm { year: 2026, month: 9, day: 21, dow: 1, hour: 15, minute: 42, second: 18, ms: 400 };
 
     let cases = vec![
@@ -85,15 +86,15 @@ fn main() {
         // and capture the frame after they have settled.
         let base = Instant::now();
         {
-            let v = View { cfg: &cfg, state: &state, items: &items, size, theme: &theme, pack: "Default", tm, hover: None, scale, now: base, card };
-            let mut sv = Services { gpu: &mut gpu, icons: &mut icons, text: &mut text, anim: &mut anim };
+            let v = View { cfg: &cfg, state: &state, size, theme: &theme, pack: "Default", tm, hover: None, scale, now: base, card };
+            let mut sv = Services { gpu: &mut gpu, icons: &mut icons, text: &mut text, anim: &mut anim, sources: &sources };
             let _ = prepare(def, &v, &mut sv);
         }
         // two passes: the first learns the expand size, the second lays out at it
         for pass in 0..2 {
             let now = base + Duration::from_millis(2000);
-            let v = View { cfg: &cfg, state: &state, items: &items, size, theme: &theme, pack: "Default", tm, hover: None, scale, now, card };
-            let mut sv = Services { gpu: &mut gpu, icons: &mut icons, text: &mut text, anim: &mut anim };
+            let v = View { cfg: &cfg, state: &state, size, theme: &theme, pack: "Default", tm, hover: None, scale, now, card };
+            let mut sv = Services { gpu: &mut gpu, icons: &mut icons, text: &mut text, anim: &mut anim, sources: &sources };
             let p = prepare(def, &v, &mut sv);
             if let Some(e) = &p.error {
                 println!("{}: ERROR {e}", c.widget);
