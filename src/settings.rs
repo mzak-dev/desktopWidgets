@@ -579,7 +579,8 @@ impl UiState {
         };
         // a new key per page replays the enter animation
         let page_root = Node::new(format!("s/page/{}", self.page.id())).col().grow(1.0).enter(240, 10.0, 0).child(body);
-        let content = Node::new("s/content").col().grow(1.0).child(titlebar).child(page_root);
+        // min_w(0), like `w/right`: a page's unwrapped text must not widen the window
+        let content = Node::new("s/content").col().grow(1.0).min_w(0.0).child(titlebar).child(page_root);
 
         let card = Node::new("s/card")
             .row()
@@ -669,9 +670,11 @@ impl UiState {
         add = add.child(chips);
         let left = Node::new("w/left").col().w(214.0).no_shrink().gap(10.0).pad_xy(0.0, 0.0).child(self.scrolling("w/scroll-l", Node::new("w/l/c").col().gap(10.0).child(list).child(add)));
 
+        // min_w(0): text reports its unwrapped width as min-content, so without it a long description pushes Remove out
+        let right = Node::new("w/right").col().grow(1.0).min_w(0.0);
         let right = match sel {
-            None => Node::new("w/right").col().grow(1.0).center().child(k.txt("w/none".into(), "Select a widget to configure it.", 13.0, k.c("text-dim"))),
-            Some(cfg) => Node::new("w/right").col().grow(1.0).child(self.scrolling("w/scroll-r", self.instance_panel(k, ctx, cfg, images))),
+            None => right.center().child(k.txt("w/none".into(), "Select a widget to configure it.", 13.0, k.c("text-dim"))),
+            Some(cfg) => right.child(self.scrolling("w/scroll-r", self.instance_panel(k, ctx, cfg, images))),
         };
         Node::new("w").row().grow(1.0).gap(22.0).pad_xy(24.0, 4.0).child(left).child(right)
     }
@@ -1583,6 +1586,23 @@ mod tests {
 
     fn ctx(w: &World) -> Ctx<'_> {
         Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, parked: &[] }
+    }
+
+    #[test]
+    fn a_long_description_wraps_and_keeps_remove_in_the_window() {
+        let mut w = world();
+        w.ws.instances.push(InstanceCfg { id: "system_monitor-1".into(), widget: "system_monitor".into(), ..Default::default() });
+        let c = ctx(&w);
+        let mut ui = UiState::default();
+        ui.selected = Some("system_monitor-1".into());
+        let (root, _) = ui.build(&c, WIN);
+        let (mut text, mut anim) = (TextEngine::new(), Anim::default());
+        let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale: 1.0 };
+        let f = ui::layout(&root, WIN, &mut env);
+        let [x, _, bw, _] = f.rect_of("ip/system_monitor-1/del").unwrap();
+        assert!(x + bw <= WIN.0, "Remove ends at {} in a {} px window", x + bw, WIN.0);
+        let [_, _, _, dh] = f.rect_of("ip/system_monitor-1/hs").unwrap();
+        assert!(dh > 20.0, "the description wraps onto more lines ({dh} px tall)");
     }
 
     #[test]
