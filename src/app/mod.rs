@@ -49,7 +49,7 @@ use crate::workspace::{self, InstanceCfg, MonitorInfo, Workspace};
 use self::edit_mode::UndoEntry;
 use self::first_run::{default_instances, write_missing_guides};
 use self::host::AppHost;
-use self::instance::{Drag, Instance, VerbOutcome, SizeTween, engine_action, expand_target, scrolled_offset};
+use self::instance::{Drag, Instance, VerbOutcome, SizeTween, base_size_after_edit, engine_action, expand_target, scrolled_offset};
 use self::selftest::SelfTest;
 
 #[derive(Debug)]

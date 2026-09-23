@@ -83,6 +83,7 @@ impl App {
 
     /// Decision 23; an open expand also sits above sibling widgets.
     pub(super) fn apply_expand(&mut self, i: usize, expand: Option<ExpandInfo>) {
+        self.wins[i].expand = expand;
         let Some(window) = self.wins[i].window.clone() else { return };
         let cfg = self.ws.instances[i].clone();
         let Some(mon) = self.monitor_of(&cfg).cloned() else { return };

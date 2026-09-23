@@ -73,12 +73,14 @@ impl App {
         let Some(r) = Self::outer_rect(&w) else { return };
         if let Some((m, x, y)) = workspace::anchor((r.x, r.y), (r.w as u32, r.h as u32), &self.monitors) {
             let scale = self.monitors.iter().find(|mi| mi.name == m.name).map_or(1.0, |mi| mi.scale);
+            let window = ((r.w as f64 / scale).round() as f32, (r.h as f64 / scale).round() as f32);
+            let expand = self.wins[i].expand;
             let cfg = &mut self.ws.instances[i];
             cfg.monitor = m;
             cfg.x = x;
             cfg.y = y;
-            cfg.w = (r.w as f64 / scale).round() as f32;
-            cfg.h = (r.h as f64 / scale).round() as f32;
+            // a collapsed drawer's 44 px must not become its open height
+            (cfg.w, cfg.h) = base_size_after_edit(window, (cfg.w, cfg.h), expand);
             self.wins[i].want = None;
             self.mark_save();
         }

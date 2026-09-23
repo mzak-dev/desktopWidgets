@@ -57,6 +57,8 @@ pub(super) struct Instance {
     pub(super) mouse: (f32, f32),
     pub(super) tween: Option<SizeTween>,
     pub(super) want: Option<Rect>,
+    /// The Widget's last `[expand]`, window units: which axes the window's size belongs to.
+    pub(super) expand: Option<ExpandInfo>,
     pub(super) raised: bool,
     pub(super) error: Option<String>,
     pub(super) widget_error: Option<String>,
@@ -84,6 +86,7 @@ impl Instance {
             tween: None,
             blur_applied: None,
             want: None,
+            expand: None,
             raised: false,
             error: None,
             widget_error: None,
@@ -96,6 +99,15 @@ impl Instance {
 
     pub(super) fn next_wake(&self) -> Option<Instant> {
         if self.animating { Some(self.last_render + ANIMATION_FRAME) } else { self.next_tick }
+    }
+}
+
+/// The size to store after a move or resize. While an expand is active the window
+/// shows the expand's size on the axes it sets, so those keep the stored size.
+pub(super) fn base_size_after_edit(window: (f32, f32), stored: (f32, f32), expand: Option<ExpandInfo>) -> (f32, f32) {
+    match expand.filter(|e| e.active) {
+        Some(e) => (if e.width.is_some() { stored.0 } else { window.0 }, if e.height.is_some() { stored.1 } else { window.1 }),
+        None => window,
     }
 }
 
@@ -149,6 +161,17 @@ pub(super) fn engine_action(state: &mut BTreeMap<String, Value>, verb: &str, res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn editing_an_expanded_widget_keeps_its_base_size_on_the_expanded_axes() {
+        // a collapsed drawer: `[expand]` sets only the height (44), the open size is 300x220
+        let collapsed = Some(ExpandInfo { active: true, width: None, height: Some(44.0) });
+        assert_eq!(base_size_after_edit((300.0, 44.0), (300.0, 220.0), collapsed), (300.0, 220.0), "moving it keeps the open height");
+        assert_eq!(base_size_after_edit((360.0, 44.0), (300.0, 220.0), collapsed), (360.0, 220.0), "a width change still counts");
+        let open = Some(ExpandInfo { active: false, width: None, height: Some(44.0) });
+        assert_eq!(base_size_after_edit((360.0, 250.0), (300.0, 220.0), open), (360.0, 250.0));
+        assert_eq!(base_size_after_edit((360.0, 250.0), (300.0, 220.0), None), (360.0, 250.0));
+    }
 
     #[test]
     fn an_idle_instance_is_never_due_and_wakes_only_for_its_next_tick() {
