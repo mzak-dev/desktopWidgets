@@ -2,6 +2,7 @@ name = "Drawer"
 description = "A collapsible drawer of app shortcuts."
 size = [260, 220]
 min_size = [120, 60]
+max_size = [900, 720]
 
 [params.title]
 type = "string"

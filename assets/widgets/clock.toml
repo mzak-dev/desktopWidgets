@@ -2,6 +2,7 @@ name = "Analog Clock"
 description = "A classic round clock face that scales with its window."
 size = [220, 220]
 min_size = [96, 96]
+max_size = [520, 520]
 
 [params.ticks]
 type = "bool"

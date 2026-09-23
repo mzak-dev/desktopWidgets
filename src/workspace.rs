@@ -33,6 +33,8 @@ pub struct InstanceCfg {
     /// "desktop" | "bottom" | "normal" | "topmost"
     pub z: String,
     pub click_through: bool,
+    /// Resizing stops at the Widget's max card size; off lets it grow (never below the min).
+    pub size_limit: bool,
     pub params: BTreeMap<String, serde_json::Value>,
     /// Its own palette, fonts, glyphs or icon pack; unset uses the global one.
     #[serde(skip_serializing_if = "ThemePick::is_empty")]
@@ -54,6 +56,7 @@ impl Default for InstanceCfg {
             h: 120.0,
             z: "desktop".into(),
             click_through: false,
+            size_limit: true,
             params: BTreeMap::new(),
             theme: ThemePick::default(),
             style: BTreeMap::new(),

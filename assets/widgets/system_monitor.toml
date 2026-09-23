@@ -2,6 +2,7 @@ name = "System Monitor"
 description = "Live gauges for CPU, memory, disk and battery. Pick which to show, recolour them, and resize the window to reflow."
 size = [340, 190]
 min_size = [110, 110]
+max_size = [720, 440]
 
 [params.show_cpu]
 type = "bool"

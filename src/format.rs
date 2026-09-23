@@ -134,7 +134,7 @@ pub struct WidgetDef {
     pub root: Elem,
 }
 
-const TOP: &[&str] = &["name", "description", "size", "min_size", "params", "state", "expand", "root"];
+const TOP: &[&str] = &["name", "description", "size", "min_size", "max_size", "params", "state", "expand", "root"];
 
 fn pair(v: Option<&toml::Value>, default: (f32, f32), what: &str) -> Result<(f32, f32), String> {
     let Some(v) = v else { return Ok(default) };
@@ -208,12 +208,18 @@ impl WidgetDef {
             }
         };
         let root_t = t.get("root").and_then(|v| v.as_table()).ok_or("missing [root] table")?;
+        let min_card_size = pair(t.get("min_size"), (48.0, 48.0), "min_size")?;
+        let max_card_size = t.get("max_size").map(|v| pair(Some(v), (0.0, 0.0), "max_size")).transpose()?;
+        if max_card_size.is_some_and(|m| m.0 < min_card_size.0 || m.1 < min_card_size.1) {
+            return Err("max_size is smaller than min_size".into());
+        }
         let meta = WidgetMeta {
             id: id.to_string(),
             name: if text("name").is_empty() { id.to_string() } else { text("name") },
             description: text("description"),
             default_card_size: pair(t.get("size"), (200.0, 120.0), "size")?,
-            min_card_size: pair(t.get("min_size"), (48.0, 48.0), "min_size")?,
+            min_card_size,
+            max_card_size,
             params,
             initial_state: state,
         };
@@ -694,6 +700,14 @@ mod tests {
             },
         };
         build(&def, &inp, &theme(), &|_| None)
+    }
+
+    #[test]
+    fn max_size_is_read_and_must_not_undercut_the_min() {
+        let d = WidgetDef::parse("t", "min_size = [100, 100]\nmax_size = [300, 200]\n[root]\ntype = 'box'").unwrap();
+        assert_eq!((d.meta.max_card_size, WidgetDef::parse("t", "[root]\ntype = 'box'").unwrap().meta.max_card_size), (Some((300.0, 200.0)), None));
+        let e = WidgetDef::parse("t", "min_size = [100, 100]\nmax_size = [80, 200]\n[root]\ntype = 'box'").err().unwrap();
+        assert!(e.contains("max_size"), "{e}");
     }
 
     #[test]

@@ -108,7 +108,8 @@ impl Snap {
     }
 }
 
-pub fn dragged_rect(handle: Handle, start: Rect, dx: i32, dy: i32, min: (i32, i32), snap: &Snap) -> Rect {
+/// `max`, when given, bounds a resize the way `min` does; a move ignores both.
+pub fn dragged_rect(handle: Handle, start: Rect, dx: i32, dy: i32, min: (i32, i32), max: Option<(i32, i32)>, snap: &Snap) -> Rect {
     if handle == Handle::Move {
         let mut r = Rect { x: start.x + dx, y: start.y + dy, ..start };
         // try both edges of the box against the guide lines; the closer hit wins
@@ -139,6 +140,20 @@ pub fn dragged_rect(handle: Handle, start: Rect, dx: i32, dy: i32, min: (i32, i3
     }
     if eb {
         b = snap.snap_coordinate(b + dy, &snap.ys, snap.origin.1).max(t + min.1);
+    }
+    if let Some(m) = max {
+        if el {
+            l = l.max(rr - m.0);
+        }
+        if er {
+            rr = rr.min(l + m.0);
+        }
+        if et {
+            t = t.max(b - m.1);
+        }
+        if eb {
+            b = b.min(t + m.1);
+        }
     }
     Rect { x: l, y: t, w: rr - l, h: b - t }
 }
@@ -215,13 +230,13 @@ mod tests {
     fn move_snaps_either_edge_to_a_guide_and_leaves_far_moves_alone() {
         let start = Rect::new(100, 100, 200, 100);
         // right edge lands 4px shy of x=500 -> snaps so right == 500
-        let r = dragged_rect(Handle::Move, start, 196, 0, (40, 40), &snap());
+        let r = dragged_rect(Handle::Move, start, 196, 0, (40, 40), None, &snap());
         assert_eq!((r.x, r.right()), (300, 500));
         // left edge near 0 wins when it is the closer hit
-        let r = dragged_rect(Handle::Move, start, -97, 0, (40, 40), &snap());
+        let r = dragged_rect(Handle::Move, start, -97, 0, (40, 40), None, &snap());
         assert_eq!(r.x, 0);
         // nothing within the threshold: unchanged
-        let r = dragged_rect(Handle::Move, start, 60, 0, (40, 40), &snap());
+        let r = dragged_rect(Handle::Move, start, 60, 0, (40, 40), None, &snap());
         assert_eq!(r.x, 160);
     }
 
@@ -229,24 +244,40 @@ mod tests {
     fn resize_keeps_the_opposite_edge_fixed_and_honours_the_minimum() {
         let start = Rect::new(400, 300, 200, 100);
         let free = Snap { threshold: 0, ..Default::default() };
-        let r = dragged_rect(Handle::E, start, 55, 0, (60, 40), &free);
+        let r = dragged_rect(Handle::E, start, 55, 0, (60, 40), None, &free);
         assert_eq!((r.x, r.w, r.y, r.h), (400, 255, 300, 100));
         // shrinking past the minimum stops at it, anchored on the far edge
-        let r = dragged_rect(Handle::W, start, 500, 0, (60, 40), &free);
+        let r = dragged_rect(Handle::W, start, 500, 0, (60, 40), None, &free);
         assert_eq!((r.w, r.right()), (60, 600));
-        let r = dragged_rect(Handle::NW, start, 500, 500, (60, 40), &free);
+        let r = dragged_rect(Handle::NW, start, 500, 500, (60, 40), None, &free);
         assert_eq!((r.w, r.h, r.right(), r.bottom()), (60, 40, 600, 400));
         // a corner moves two edges at once
-        let r = dragged_rect(Handle::SE, start, 10, 20, (60, 40), &free);
+        let r = dragged_rect(Handle::SE, start, 10, 20, (60, 40), None, &free);
         assert_eq!((r.w, r.h), (210, 120));
+    }
+
+    #[test]
+    fn resize_stops_at_the_max_only_while_a_max_is_given() {
+        let start = Rect::new(400, 300, 200, 100);
+        let free = Snap { threshold: 0, ..Default::default() };
+        let r = dragged_rect(Handle::SE, start, 500, 500, (60, 40), Some((300, 150)), &free);
+        assert_eq!((r.x, r.y, r.w, r.h), (400, 300, 300, 150));
+        let r = dragged_rect(Handle::NW, start, -500, -500, (60, 40), Some((300, 150)), &free);
+        assert_eq!((r.right(), r.bottom(), r.w, r.h), (600, 400, 300, 150), "anchored on the far edge");
+        let r = dragged_rect(Handle::E, start, 500, 0, (60, 40), None, &free);
+        assert_eq!(r.w, 700, "no limit");
+        let r = dragged_rect(Handle::W, start, 500, 0, (60, 40), Some((300, 150)), &free);
+        assert_eq!(r.w, 60, "the min holds either way");
+        let r = dragged_rect(Handle::Move, start, 30, 0, (60, 40), Some((100, 50)), &free);
+        assert_eq!((r.w, r.h), (200, 100), "moving never resizes");
     }
 
     #[test]
     fn grid_applies_only_when_no_guide_is_close() {
         let g = Snap { grid: 16, origin: (0, 0), threshold: 8, xs: vec![1000], ys: vec![] };
-        let r = dragged_rect(Handle::Move, Rect::new(0, 0, 100, 100), 21, 21, (40, 40), &g);
+        let r = dragged_rect(Handle::Move, Rect::new(0, 0, 100, 100), 21, 21, (40, 40), None, &g);
         assert_eq!((r.x, r.y), (16, 16));
-        let r = dragged_rect(Handle::Move, Rect::new(0, 0, 100, 100), 903, 0, (40, 40), &g); // right edge 1003 ~ guide 1000
+        let r = dragged_rect(Handle::Move, Rect::new(0, 0, 100, 100), 903, 0, (40, 40), None, &g); // right edge 1003 ~ guide 1000
         assert_eq!(r.right(), 1000);
     }
 }

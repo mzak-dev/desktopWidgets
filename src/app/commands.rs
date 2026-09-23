@@ -84,6 +84,23 @@ impl App {
                     self.mark_save();
                 }
             }
+            Cmd::SizeLimit(id, on) => {
+                if let Some(i) = find(self, &id) {
+                    self.ws.instances[i].size_limit = on;
+                    let (card, s) = (self.card(i), self.scale_of(i));
+                    // switching it back on shrinks an oversized widget, keeping its top-left
+                    if let (Some(max), Some(r)) = (self.max_size_phys(i), self.wins[i].window.as_ref().and_then(|w| Self::outer_rect(w))) {
+                        let g = card.gutter_px(s);
+                        let mut c = card.card_of_window(r, s);
+                        (c.w, c.h) = (c.w.min(max.0 - 2 * g), c.h.min(max.1 - 2 * g));
+                        if card.window_of_card(c, s) != r {
+                            self.set_window_rect(i, card.window_of_card(c, s));
+                            self.save_rect_to_workspace(i);
+                        }
+                    }
+                    self.mark_save();
+                }
+            }
             Cmd::ClickThrough(id, on) => {
                 if let Some(i) = find(self, &id) {
                     self.ws.instances[i].click_through = on;

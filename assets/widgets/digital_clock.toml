@@ -2,6 +2,7 @@ name = "Digital Clock"
 description = "Large time with the date underneath. Text scales with the window."
 size = [300, 132]
 min_size = [120, 56]
+max_size = [640, 260]
 
 [params.hour24]
 type = "bool"

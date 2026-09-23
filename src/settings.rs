@@ -46,6 +46,7 @@ pub enum Cmd {
     Items(String, Vec<Shortcut>),
     Z(String, String),
     ClickThrough(String, bool),
+    SizeLimit(String, bool),
     ResetPos(String),
     Theme(Selection),
     /// Set (`Some`) or reset (`None`) a Style token.
@@ -794,6 +795,9 @@ impl UiState {
         let z = Node::new(format!("ip/{id}/zc")).child(k.dropdown(&format!("z:{id}"), &self.dropdown_label(ctx, &format!("z:{id}")), CONTROL_W, matches!(&self.open, Some(Open::Dropdown(o)) if *o == format!("z:{id}"))));
         p = p.child(k.row(&format!("ip/{id}/z"), "Layer", "Where it sits relative to other windows", z));
         p = p.child(k.row(&format!("ip/{id}/ct"), "Click-through", "Clicks pass to whatever is underneath", k.toggle(&format!("ct:{id}"), cfg.click_through, format!("ct:{id}"))));
+        if def.is_some_and(|d| d.max_card_size.is_some()) {
+            p = p.child(k.row(&format!("ip/{id}/lim"), "Size limit", "Keep it within the size it was designed for. Off lets it grow larger; the minimum always applies.", k.toggle(&format!("lim:{id}"), cfg.size_limit, format!("lim:{id}"))));
+        }
         let placement = Node::new(format!("ip/{id}/pl")).row().gap(8.0).child(k.button(&format!("ip/{id}/edit"), "Edit layout", "edit:toggle".into(), false)).child(k.button(&format!("ip/{id}/reset"), "Reset position", format!("reset:{id}"), false));
         p = p.child(k.row(&format!("ip/{id}/pos"), "Position", &format!("{:.0}, {:.0}  ·  {:.0} x {:.0}", cfg.x, cfg.y, cfg.w, cfg.h), placement));
 
@@ -1290,6 +1294,7 @@ impl UiState {
                 vec![Cmd::Param(id.into(), name.into(), Value::Bool(!cur))]
             }
             "ct" => Self::instance(ctx, rest).map(|c| vec![Cmd::ClickThrough(rest.into(), !c.click_through)]).unwrap_or_default(),
+            "lim" => Self::instance(ctx, rest).map(|c| vec![Cmd::SizeLimit(rest.into(), !c.size_limit)]).unwrap_or_default(),
             "reset" => vec![Cmd::ResetPos(rest.into())],
             "edit" => vec![Cmd::Edit(!ctx.edit)],
             "autostart" => vec![Cmd::Autostart(!ctx.ws.autostart)],
@@ -1751,6 +1756,16 @@ mod tests {
             assert!(x + w <= WIN.0, "`{k}` ends at {} in a {} px window", x + w, WIN.0);
         }
         assert!(f.rect_of("sr/system_monitor-1/anim-speed").is_some(), "the Style section is on the widget's panel");
+    }
+
+    #[test]
+    fn size_limit_toggles_per_widget() {
+        let mut w = world();
+        let c = ctx(&w);
+        assert_eq!(UiState::default().act("lim:clock-1", &c, None), vec![Cmd::SizeLimit("clock-1".into(), false)]);
+        w.ws.instances[0].size_limit = false;
+        let c = ctx(&w);
+        assert_eq!(UiState::default().act("lim:clock-1", &c, None), vec![Cmd::SizeLimit("clock-1".into(), true)]);
     }
 
     #[test]

@@ -2,6 +2,7 @@ name = "Icon Folder"
 description = "A folder of shortcuts. Click to expand it in place."
 size = [92, 112]
 min_size = [72, 88]
+max_size = [200, 240]
 
 [params.title]
 type = "string"

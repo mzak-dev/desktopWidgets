@@ -97,7 +97,17 @@ impl App {
             Some(Ok(d)) => d.meta().min_card_size,
             _ => (48.0, 48.0),
         };
-        self.card(i).min_window_px(min, self.scale_of(i))
+        self.card(i).window_px(min, self.scale_of(i))
+    }
+
+    /// `None` while the Instance's size limit is off or its Widget declares no max.
+    pub(super) fn max_size_phys(&self, i: usize) -> Option<(i32, i32)> {
+        let cfg = &self.ws.instances[i];
+        let max = match self.reg.get(&cfg.widget) {
+            Some(Ok(d)) => d.meta().max_card_size,
+            _ => None,
+        };
+        max.filter(|_| cfg.size_limit).map(|m| self.card(i).window_px(m, self.scale_of(i)))
     }
 
     pub(super) fn begin_drag(&mut self, i: usize, handle: Handle, cursor0: (i32, i32)) {
@@ -112,11 +122,11 @@ impl App {
         let Some(d) = &self.wins[i].drag else { return };
         let (handle, cursor0, rect0) = (d.handle, d.cursor0, d.rect0);
         let snap = self.snap_for(i);
-        let min = self.min_size_phys(i);
+        let (min, max) = (self.min_size_phys(i), self.max_size_phys(i));
         let snap = if self.mods.shift_key() { Snap { threshold: 0, grid: 0, ..snap } } else { snap };
         let (card, s) = (self.card(i), self.scale_of(i));
         let g = card.gutter_px(s);
-        let c = edit::dragged_rect(handle, card.card_of_window(rect0, s), cursor.0 - cursor0.0, cursor.1 - cursor0.1, (min.0 - 2 * g, min.1 - 2 * g), &snap);
+        let c = edit::dragged_rect(handle, card.card_of_window(rect0, s), cursor.0 - cursor0.0, cursor.1 - cursor0.1, (min.0 - 2 * g, min.1 - 2 * g), max.map(|m| (m.0 - 2 * g, m.1 - 2 * g)), &snap);
         self.set_window_rect(i, card.window_of_card(c, s));
         self.wins[i].tween = None;
     }

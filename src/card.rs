@@ -85,9 +85,10 @@ impl Card {
         [g, g, window.0 - 2.0 * g, window.1 - 2.0 * g]
     }
 
-    pub fn min_window_px(&self, min_card: (f32, f32), scale: f64) -> (i32, i32) {
+    /// A card size (logical) as a window size (physical px).
+    pub fn window_px(&self, card: (f32, f32), scale: f64) -> (i32, i32) {
         let g = 2.0 * self.gutter as f64;
-        (((min_card.0 as f64 + g) * scale) as i32, ((min_card.1 as f64 + g) * scale) as i32)
+        (((card.0 as f64 + g) * scale) as i32, ((card.1 as f64 + g) * scale) as i32)
     }
 
     pub fn expand_in_window_units(&self, e: ExpandInfo) -> ExpandInfo {

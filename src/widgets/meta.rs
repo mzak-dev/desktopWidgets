@@ -12,6 +12,8 @@ pub struct WidgetMeta {
     /// Logical px, like every size here.
     pub default_card_size: (f32, f32),
     pub min_card_size: (f32, f32),
+    /// Resizing stops here unless the Instance switches its size limit off.
+    pub max_card_size: Option<(f32, f32)>,
     pub params: Vec<ParamDef>,
     pub initial_state: BTreeMap<String, Value>,
 }

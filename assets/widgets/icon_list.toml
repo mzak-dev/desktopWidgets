@@ -2,6 +2,7 @@ name = "Icon List"
 description = "A vertical list of application shortcuts. Scrolls when it overflows."
 size = [240, 320]
 min_size = [140, 96]
+max_size = [480, 900]
 
 [params.title]
 type = "string"
