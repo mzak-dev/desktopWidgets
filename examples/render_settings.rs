@@ -51,13 +51,17 @@ fn main() {
     let states: Vec<(&str, Vec<&str>)> = vec![
         ("widgets_folder", vec!["nav:widgets", "sel:icon_folder-1"]),
         ("widgets_clock_dropdown", vec!["nav:widgets", "sel:clock-1", "dd:z:clock-1"]),
-        ("appearance_picker", vec!["nav:appearance", "cp:ov:accent"]),
+        ("appearance_picker", vec!["nav:appearance", "cp:sy:*:accent"]),
+        ("widgets_clock_style", vec!["nav:widgets", "sel:clock-1"]),
         ("general", vec!["nav:general"]),
     ];
     for (name, acts) in states {
         let mut ui = UiState::default();
         for a in acts {
             let _ = ui.act(a, &ctx, None);
+        }
+        if name.ends_with("_style") {
+            ui.scroll.insert("w/scroll-r".into(), 520.0);
         }
         let mut anim = Anim::default();
         let base = Instant::now();
