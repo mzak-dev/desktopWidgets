@@ -141,3 +141,13 @@ fn a_tall_digital_clock_adds_city_chips() {
     assert!(texts_at("digital_clock", (340.0, 220.0)).iter().any(|t| t == "London"));
     assert!(!texts_at("digital_clock", (300.0, 132.0)).iter().any(|t| t == "London"), "default size: time and date only");
 }
+
+#[test]
+fn the_monitor_trades_detail_for_room() {
+    let compact = texts_at("system_monitor", (200.0, 90.0));
+    assert!(compact.iter().any(|t| t == "CPU") && !compact.iter().any(|t| t.starts_with("Up ")), "compact: bars, no footer: {compact:?}");
+    let normal = texts_at("system_monitor", (340.0, 190.0));
+    assert!(normal.iter().any(|t| t.starts_with("Up ")) && !normal.iter().any(|t| t == "Commit" || t == "Download"), "normal: gauges and uptime: {normal:?}");
+    let large = texts_at("system_monitor", (620.0, 380.0));
+    assert!(["Commit", "Download", "Memory"].iter().all(|w| large.iter().any(|t| t == w)), "large: more gauges and history: {large:?}");
+}

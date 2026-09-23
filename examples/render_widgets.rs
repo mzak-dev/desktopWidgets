@@ -4,7 +4,8 @@
 //!   cargo run --release --example render_widgets -- out.png [palette] [max]
 //!
 //! `max` renders every built-in widget at its `max_size` instead of the README cases;
-//! `edit` draws the Edit Mode overlay on each tile, every other one with its remove button armed.
+//! `edit` draws the Edit Mode overlay on each tile, every other one with its remove button armed;
+//! `tiers` renders each widget at the sizes where its content changes.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -72,7 +73,26 @@ fn main() {
         };
         Case { widget: w, size: card.window_size(max), params: vec![], state: vec![], expanded: false }
     };
-    let cases = if at_max { ["clock", "digital_clock", "system_monitor", "icon_list", "icon_folder", "drawer"].map(max_case).into() } else { vec![
+    let at_card = |w: &'static str, c: (f32, f32)| Case { widget: w, size: card.window_size(c), params: vec![], state: vec![], expanded: false };
+    let tiers = std::env::args().nth(3).is_some_and(|a| a == "tiers");
+    let cases = if tiers {
+        vec![
+            at_card("clock", (180.0, 180.0)),
+            at_card("clock", (330.0, 400.0)),
+            at_card("clock", (560.0, 240.0)),
+            at_card("digital_clock", (300.0, 132.0)),
+            at_card("digital_clock", (460.0, 230.0)),
+            at_card("system_monitor", (200.0, 96.0)),
+            at_card("system_monitor", (340.0, 190.0)),
+            at_card("system_monitor", (640.0, 400.0)),
+            at_card("icon_list", (150.0, 260.0)),
+            at_card("icon_list", (420.0, 300.0)),
+            at_card("icon_folder", (92.0, 112.0)),
+            at_card("icon_folder", (180.0, 220.0)),
+            at_card("drawer", (180.0, 220.0)),
+            at_card("drawer", (420.0, 260.0)),
+        ]
+    } else if at_max { ["clock", "digital_clock", "system_monitor", "icon_list", "icon_folder", "drawer"].map(max_case).into() } else { vec![
         Case { widget: "clock", size: (260.0, 260.0), params: vec![], state: vec![], expanded: false },
         Case { widget: "clock", size: (150.0, 150.0), params: vec![("smooth_seconds", true.into())], state: vec![], expanded: false },
         Case { widget: "digital_clock", size: (340.0, 172.0), params: vec![], state: vec![], expanded: false },
@@ -139,12 +159,13 @@ fn main() {
         }
     }
 
-    // contact sheet: two rows over a soft "wallpaper"
+    // contact sheet: rows of four over a soft "wallpaper"
     let pad = 24u32;
     let row_w = |r: &[(u32, u32, Vec<u8>)]| r.iter().map(|t| t.0 + pad).sum::<u32>() + pad;
-    let (top, bot) = tiles.split_at(4);
-    let (sw, rh1, rh2) = (row_w(top).max(row_w(bot)), top.iter().map(|t| t.1).max().unwrap() + pad, bot.iter().map(|t| t.1).max().unwrap() + pad);
-    let sh = rh1 + rh2 + pad;
+    let rows: Vec<&[(u32, u32, Vec<u8>)]> = tiles.chunks(4).collect();
+    let row_h: Vec<u32> = rows.iter().map(|r| r.iter().map(|t| t.1).max().unwrap() + pad).collect();
+    let sw = rows.iter().map(|r| row_w(r)).max().unwrap();
+    let sh = row_h.iter().sum::<u32>() + pad;
     let mut sheet = image::RgbaImage::new(sw, sh);
     for y in 0..sh {
         for x in 0..sw {
@@ -169,8 +190,11 @@ fn main() {
             x0 += w + pad;
         }
     };
-    blit(top, pad / 2);
-    blit(bot, rh1 + pad / 2);
+    let mut y0 = pad / 2;
+    for (r, h) in rows.iter().zip(&row_h) {
+        blit(r, y0);
+        y0 += h;
+    }
     sheet.save(&out).expect("save");
     println!("wrote {out} ({sw}x{sh})");
 }
