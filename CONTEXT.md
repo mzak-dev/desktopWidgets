@@ -38,7 +38,14 @@ _Avoid_: layout (taffy owns that word), profile
 
 **Theme**:
 A named set of design tokens made of three independently swappable axes: a palette, a font set and a glyph set.
-_Avoid_: skin, style
+_Avoid_: skin
+
+**Style**:
+The Theme tokens `assets/style.toml` declares: accent, roundness, outlines, blur, transparency, tint, shadow, text scale, animation speed. Set globally, overridable per Instance, applied by the engine to every Card.
+_Avoid_: tweaks, overrides (for the whole set)
+
+**Size Limit**:
+A Widget's maximum card size. An Instance may switch it off to grow larger; the minimum always applies.
 
 **Glyph Set**:
 Icons for the engine's own chrome — gear, chevron, close.
@@ -66,6 +73,7 @@ To hide an Instance whose monitor is absent while remembering it, instead of rel
 - A **TOML Widget** is a tree of **Elements**; a **Rust Widget** builds its tree in code or wraps a TOML Widget's.
 - An **Instance** shows one **Card**; its params may be **Seeded** when it is added.
 - A **Widget** binds to one or more **Data Sources**; its appearance resolves through the active **Theme**.
+- An **Instance** takes the global **Style** and axes unless it overrides them; its own values win.
 - An **Instance** has exactly one **Z-mode** and is anchored to one monitor; if that monitor is absent it is **Parked**.
 
 ## Commit messages

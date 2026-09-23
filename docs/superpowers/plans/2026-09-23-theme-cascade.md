@@ -23,7 +23,7 @@ Sub-projects 2 (motion) and 3 (widget redesign) follow with their own specs.
 
 ## Global constraints
 
-- Commits: Conventional Commits, `type(scope): summary`, imperative, lower case, no trailing period, under ~50 chars. No AI attribution anywhere (no Co-Authored-By trailers, no "generated with" lines).
+- Commits: Conventional Commits, `type(scope): summary`, imperative, lower case, no trailing period, under ~50 chars; a plain message with no trailers.
 - **Never run wgpu/DX12 on the user's GPU without asking.** Renders use the software adapter (the examples do so by default); the live app only with `--gpu software`.
 - Tests: `cargo test --lib` (no GPU). Lint: `cargo clippy --all-targets`.
 - An undefined token stays magenta (decision 14). Legacy `workspace.json` fields are read, never written.
