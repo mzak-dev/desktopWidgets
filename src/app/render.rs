@@ -5,7 +5,7 @@ impl App {
         let now = Instant::now();
         let theme = self.theme_of(i);
         let card = Card::new(&theme);
-        let App { gpu, text, icons, theme: chrome, reg, sources, ws, wins, edit, .. } = self;
+        let App { gpu, text, icons, theme: chrome, reg, sources, ws, wins, edit, remove_armed, .. } = self;
         let (Some(gpu), Some(iw)) = (gpu.as_mut(), wins.get_mut(i)) else { return };
         let (Some(window), Some(target)) = (iw.window.clone(), iw.target.as_mut()) else { return };
         let cfg = &ws.instances[i];
@@ -44,7 +44,8 @@ impl App {
         if *edit {
             let (cw, ch) = card.card_size(size);
             let label = format!("{}, {}   {}x{}", cfg.x as i32, cfg.y as i32, cw as i32, ch as i32);
-            let ov = edit::overlay(&cfg.id, size, card.gutter, &label, chrome, iw.drag.as_ref().map(|d| d.handle));
+            let armed = remove_armed.as_deref() == Some(cfg.id.as_str());
+            let ov = edit::overlay(&cfg.id, size, card.gutter, &label, chrome, iw.drag.as_ref().map(|d| d.handle), armed);
             let mut env = Env { text, anim: &mut iw.ov_anim, hover: None, now, scale };
             let of = ui::layout(&ov, size, &mut env);
             let [l0, _] = of.list.layers;

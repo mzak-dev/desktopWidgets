@@ -18,10 +18,10 @@ fn fixed_texts(n: &Node, out: &mut Vec<(String, TextSpec)>) {
     if n.scroll_offset.is_some() {
         return;
     }
-    if let Kind::Text(t) = &n.kind {
-        if !t.text.trim().is_empty() {
-            out.push((n.key.clone(), t.clone()));
-        }
+    if let Kind::Text(t) = &n.kind
+        && !t.text.trim().is_empty()
+    {
+        out.push((n.key.clone(), t.clone()));
     }
     n.children.iter().for_each(|c| fixed_texts(c, out));
 }

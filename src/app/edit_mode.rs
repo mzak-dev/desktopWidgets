@@ -11,6 +11,7 @@ impl App {
             return;
         }
         self.edit = on;
+        self.remove_armed = None;
         self.undo.clear();
         for i in 0..self.wins.len() {
             let click_through = self.ws.instances[i].click_through;

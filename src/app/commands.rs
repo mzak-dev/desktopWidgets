@@ -37,19 +37,24 @@ impl App {
         self.mark_save();
     }
 
+    pub(super) fn remove_instance(&mut self, id: &str) {
+        let Some(i) = self.ws.instances.iter().position(|c| c.id == id) else { return };
+        self.ws.instances.remove(i);
+        self.wins.remove(i);
+        self.remove_armed = None;
+        self.sync_watchers();
+        self.mark_save();
+        if let Some(s) = &mut self.settings {
+            s.invalidate();
+        }
+        self.log(format!("removed {id}"));
+    }
+
     pub(super) fn apply(&mut self, el: &ActiveEventLoop, cmd: Cmd) {
         let find = |s: &Self, id: &str| s.ws.instances.iter().position(|c| c.id == id);
         match cmd {
             Cmd::Add(w) => self.add_instance(el, &w),
-            Cmd::Remove(id) => {
-                if let Some(i) = find(self, &id) {
-                    self.ws.instances.remove(i);
-                    self.wins.remove(i);
-                    self.sync_watchers();
-                    self.mark_save();
-                    self.log(format!("removed {id}"));
-                }
-            }
+            Cmd::Remove(id) => self.remove_instance(&id),
             Cmd::Param(id, name, v) => {
                 if let Some(i) = find(self, &id) {
                     let was = self.card(i);

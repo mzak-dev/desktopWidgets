@@ -1511,6 +1511,11 @@ pub struct SettingsWin {
 }
 
 impl SettingsWin {
+    /// Rebuild on the next frame, e.g. after a change made outside the window.
+    pub fn invalidate(&mut self) {
+        self.redraw = true;
+    }
+
     pub fn open(el: &ActiveEventLoop, gpu: &mut Option<Gpu>, power: Power) -> Result<SettingsWin, String> {
         let pos = el.primary_monitor().or_else(|| el.available_monitors().next()).map(|m| {
             let (p, s, sc) = (m.position(), m.size(), m.scale_factor());

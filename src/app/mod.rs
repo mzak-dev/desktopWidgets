@@ -83,6 +83,8 @@ pub struct App {
     wins: Vec<Instance>,
     settings: Option<SettingsWin>,
     edit: bool,
+    /// The Instance whose Edit Mode remove button was clicked once and now asks "Remove?".
+    remove_armed: Option<String>,
     undo: Vec<UndoEntry>,
     mods: ModifiersState,
     monitors: Vec<MonitorInfo>,
@@ -134,6 +136,7 @@ impl App {
             wins: Vec::new(),
             settings: None,
             edit: false,
+            remove_armed: None,
             undo: Vec::new(),
             mods: ModifiersState::empty(),
             monitors: Vec::new(),
