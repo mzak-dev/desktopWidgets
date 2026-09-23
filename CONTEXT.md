@@ -44,6 +44,10 @@ _Avoid_: skin
 The Theme tokens `assets/style.toml` declares: accent, roundness, outlines, blur, transparency, tint, shadow, text scale, animation speed. Set globally, overridable per Instance, applied by the engine to every Card.
 _Avoid_: tweaks, overrides (for the whole set)
 
+**Size Tier**:
+A range of card sizes over which a Widget shows the same content; crossing into the next one adds or drops detail (city clocks, graphs, labels), not just scale. Declared with `when` on `self.w` / `self.h`.
+_Avoid_: breakpoint, mode
+
 **Size Limit**:
 A Widget's maximum card size. An Instance may switch it off to grow larger; the minimum always applies.
 
