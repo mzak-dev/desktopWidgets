@@ -135,3 +135,9 @@ fn a_big_clock_shows_its_default_cities_and_a_small_one_does_not() {
     assert!(texts_at("clock", (520.0, 220.0)).iter().any(|t| t == "London"), "wide: a list beside it");
     assert!(!texts_at("clock", (220.0, 220.0)).iter().any(|t| t == "Tokyo"), "default size: just the face");
 }
+
+#[test]
+fn a_tall_digital_clock_adds_city_chips() {
+    assert!(texts_at("digital_clock", (340.0, 220.0)).iter().any(|t| t == "London"));
+    assert!(!texts_at("digital_clock", (300.0, 132.0)).iter().any(|t| t == "London"), "default size: time and date only");
+}
