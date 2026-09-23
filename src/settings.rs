@@ -20,7 +20,7 @@ use crate::dialog;
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
 use crate::text::TextEngine;
-use crate::theme::{Library, Selection, Theme};
+use crate::theme::{Library, Selection, Theme, style_schema};
 use crate::ui::{self, Env, Frame, Kind, Node};
 use crate::value::Value;
 use crate::widgets::{ParamDef, ParamType, Registry, WidgetMeta};
@@ -46,9 +46,13 @@ pub enum Cmd {
     Items(String, Vec<Shortcut>),
     Z(String, String),
     ClickThrough(String, bool),
+    SizeLimit(String, bool),
     ResetPos(String),
     Theme(Selection),
-    Override(String, Option<String>),
+    /// Set (`Some`) or reset (`None`) a Style token.
+    Style(Scope, String, Option<Value>),
+    /// An Instance's own palette/fonts/glyphs/pack (`palette|fonts|glyphs|pack`); `None` = global.
+    ThemePick(String, String, Option<String>),
     Gpu(String),
     Autostart(bool),
     Grid(f32),
@@ -59,6 +63,52 @@ pub enum Cmd {
     Quit,
     Close,
     Minimize,
+}
+
+/// Where a Style change lands: the Workspace or one Instance (`*` or its id in action keys).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Scope {
+    Global,
+    Instance(String),
+}
+
+impl Scope {
+    pub fn parse(s: &str) -> Scope {
+        if s == "*" { Scope::Global } else { Scope::Instance(s.into()) }
+    }
+
+    pub fn key(&self) -> &str {
+        match self {
+            Scope::Global => "*",
+            Scope::Instance(id) => id,
+        }
+    }
+}
+
+/// (axis in `tp:` keys, label) of the axes an Instance may pick for itself.
+const THEME_AXES: [(&str, &str); 4] = [("palette", "Palette"), ("fonts", "Font set"), ("glyphs", "Glyph set"), ("pack", "Icon pack")];
+
+fn axis_of<'a>(sel: &'a Selection, axis: &str) -> &'a str {
+    match axis {
+        "palette" => &sel.palette,
+        "fonts" => &sel.fonts,
+        "glyphs" => &sel.glyphs,
+        _ => &sel.icon_pack,
+    }
+}
+
+fn picked(pick: &crate::theme::ThemePick, axis: &str) -> Option<String> {
+    match axis {
+        "palette" => pick.palette.clone(),
+        "fonts" => pick.fonts.clone(),
+        "glyphs" => pick.glyphs.clone(),
+        _ => pick.icon_pack.clone(),
+    }
+}
+
+fn capitalized(s: &str) -> String {
+    let mut c = s.chars();
+    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -351,6 +401,30 @@ impl UiState {
         cfg.params.get(&p.name).map(Value::from).unwrap_or_else(|| p.default.clone())
     }
 
+    /// The Theme a Style row shows: the Workspace's, or the Instance's with its overrides.
+    fn scope_theme(ctx: &Ctx, scope: &Scope) -> Theme {
+        match scope {
+            Scope::Instance(id) => match Self::instance(ctx, id) {
+                Some(cfg) => ctx.ws.theme_for(ctx.lib, cfg),
+                None => ctx.ws.global_theme(ctx.lib),
+            },
+            Scope::Global => ctx.ws.global_theme(ctx.lib),
+        }
+    }
+
+    /// Whether `scope` sets `token` itself rather than inheriting it.
+    fn style_is_set(ctx: &Ctx, scope: &Scope, token: &str) -> bool {
+        match scope {
+            Scope::Global => ctx.ws.style.contains_key(token),
+            Scope::Instance(id) => Self::instance(ctx, id).is_some_and(|c| c.style.contains_key(token)),
+        }
+    }
+
+    /// `<scope>:<token>`, the rest of a `sy:` key.
+    fn style_target(rest: &str) -> Option<(Scope, &str)> {
+        rest.split_once(':').map(|(s, t)| (Scope::parse(s), t))
+    }
+
     fn resolve_color(ctx: &Ctx, v: &Value) -> Color {
         let s = v.to_string();
         match s.strip_prefix('$') {
@@ -373,6 +447,19 @@ impl UiState {
             "th:glyphs" => return ctx.lib.glyphs.iter().map(|a| (a.name.clone(), a.name.clone())).collect(),
             "th:pack" => return ctx.lib.icon_packs.iter().map(|n| (n.clone(), n.clone())).collect(),
             _ => {}
+        }
+        if let Some((_, axis)) = key.strip_prefix("tp:").and_then(|r| r.split_once(':')) {
+            let names: Vec<String> = match axis {
+                "palette" => ctx.lib.palettes.iter().map(|a| a.name.clone()).collect(),
+                "fonts" => ctx.lib.fonts.iter().map(|a| a.name.clone()).collect(),
+                "glyphs" => ctx.lib.glyphs.iter().map(|a| a.name.clone()).collect(),
+                _ => ctx.lib.icon_packs.clone(),
+            };
+            let global = (String::new(), format!("Global ({})", axis_of(&ctx.ws.theme, axis)));
+            return std::iter::once(global).chain(names.into_iter().map(|n| (n.clone(), n))).collect();
+        }
+        if let Some((_, tok)) = key.strip_prefix("sy:").and_then(Self::style_target) {
+            return style_schema().iter().find(|p| p.name == tok).map(|p| p.choices.iter().map(|c| (c.clone(), capitalized(c))).collect()).unwrap_or_default();
         }
         if let Some(rest) = key.strip_prefix("p:") {
             if let Some((id, name)) = rest.split_once(':') {
@@ -400,6 +487,12 @@ impl UiState {
             "th:pack" => return ctx.ws.theme.icon_pack.clone(),
             _ => {}
         }
+        if let Some((id, axis)) = key.strip_prefix("tp:").and_then(|r| r.split_once(':')) {
+            return Self::instance(ctx, id).and_then(|c| picked(&c.theme, axis)).unwrap_or_default();
+        }
+        if let Some((scope, tok)) = key.strip_prefix("sy:").and_then(Self::style_target) {
+            return Self::scope_theme(ctx, &scope).str(tok);
+        }
         if let Some(rest) = key.strip_prefix("p:") {
             if let Some((id, name)) = rest.split_once(':') {
                 if let Some(cfg) = ctx.ws.instances.iter().find(|c| c.id == id) {
@@ -416,8 +509,8 @@ impl UiState {
     }
 
     fn color_of_target(&self, ctx: &Ctx, target: &str) -> Color {
-        if let Some(tok) = target.strip_prefix("ov:") {
-            return ctx.ws.overrides.get(tok).and_then(|s| Color::parse(s)).unwrap_or_else(|| ctx.theme.color(tok));
+        if let Some((scope, tok)) = target.strip_prefix("sy:").and_then(Self::style_target) {
+            return Self::scope_theme(ctx, &scope).color(tok);
         }
         if let Some((id, name)) = target.strip_prefix("p:").and_then(|r| r.split_once(':')) {
             if let Some(cfg) = ctx.ws.instances.iter().find(|c| c.id == id) {
@@ -430,8 +523,8 @@ impl UiState {
     }
 
     fn color_cmd(target: &str, hex: String) -> Option<Cmd> {
-        if let Some(tok) = target.strip_prefix("ov:") {
-            return Some(Cmd::Override(tok.to_string(), Some(hex)));
+        if let Some((scope, tok)) = target.strip_prefix("sy:").and_then(Self::style_target) {
+            return Some(Cmd::Style(scope, tok.into(), Some(Value::Str(hex))));
         }
         let (id, name) = target.strip_prefix("p:")?.split_once(':')?;
         Some(Cmd::Param(id.to_string(), name.to_string(), Value::Str(hex)))
@@ -442,9 +535,10 @@ impl UiState {
         if key == "grid" {
             return Some((0.0, 32.0, 4.0, ctx.ws.grid as f64));
         }
-        if let Some(tok) = key.strip_prefix("ov:") {
-            let cur = ctx.ws.overrides.get(tok).and_then(|s| s.parse().ok()).unwrap_or(ctx.theme.num(tok) as f64);
-            return Some((0.0, 40.0, 1.0, cur));
+        if let Some((scope, tok)) = key.strip_prefix("sy:").and_then(Self::style_target) {
+            let p = style_schema().iter().find(|p| p.name == tok)?;
+            let cur = Self::scope_theme(ctx, &scope).num(tok) as f64;
+            return Some((p.min.unwrap_or(0.0), p.max.unwrap_or(100.0), p.step.unwrap_or(1.0), cur));
         }
         let (id, name) = key.strip_prefix("p:")?.split_once(':')?;
         let cfg = ctx.ws.instances.iter().find(|c| c.id == id)?;
@@ -457,8 +551,8 @@ impl UiState {
         if key == "grid" {
             return Some(Cmd::Grid(v as f32));
         }
-        if let Some(tok) = key.strip_prefix("ov:") {
-            return Some(Cmd::Override(tok.to_string(), Some(fmt_num(v))));
+        if let Some((scope, tok)) = key.strip_prefix("sy:").and_then(Self::style_target) {
+            return Some(Cmd::Style(scope, tok.into(), Some(Value::Num(v))));
         }
         let (id, name) = key.strip_prefix("p:")?.split_once(':')?;
         Some(Cmd::Param(id.to_string(), name.to_string(), Value::Num(v)))
@@ -579,7 +673,8 @@ impl UiState {
         };
         // a new key per page replays the enter animation
         let page_root = Node::new(format!("s/page/{}", self.page.id())).col().grow(1.0).enter(240, 10.0, 0).child(body);
-        let content = Node::new("s/content").col().grow(1.0).child(titlebar).child(page_root);
+        // min_w(0), like `w/right`: a page's unwrapped text must not widen the window
+        let content = Node::new("s/content").col().grow(1.0).min_w(0.0).child(titlebar).child(page_root);
 
         let card = Node::new("s/card")
             .row()
@@ -669,9 +764,11 @@ impl UiState {
         add = add.child(chips);
         let left = Node::new("w/left").col().w(214.0).no_shrink().gap(10.0).pad_xy(0.0, 0.0).child(self.scrolling("w/scroll-l", Node::new("w/l/c").col().gap(10.0).child(list).child(add)));
 
+        // min_w(0): text reports its unwrapped width as min-content, so without it a long description pushes Remove out
+        let right = Node::new("w/right").col().grow(1.0).min_w(0.0);
         let right = match sel {
-            None => Node::new("w/right").col().grow(1.0).center().child(k.txt("w/none".into(), "Select a widget to configure it.", 13.0, k.c("text-dim"))),
-            Some(cfg) => Node::new("w/right").col().grow(1.0).child(self.scrolling("w/scroll-r", self.instance_panel(k, ctx, cfg, images))),
+            None => right.center().child(k.txt("w/none".into(), "Select a widget to configure it.", 13.0, k.c("text-dim"))),
+            Some(cfg) => right.child(self.scrolling("w/scroll-r", self.instance_panel(k, ctx, cfg, images))),
         };
         Node::new("w").row().grow(1.0).gap(22.0).pad_xy(24.0, 4.0).child(left).child(right)
     }
@@ -698,6 +795,9 @@ impl UiState {
         let z = Node::new(format!("ip/{id}/zc")).child(k.dropdown(&format!("z:{id}"), &self.dropdown_label(ctx, &format!("z:{id}")), CONTROL_W, matches!(&self.open, Some(Open::Dropdown(o)) if *o == format!("z:{id}"))));
         p = p.child(k.row(&format!("ip/{id}/z"), "Layer", "Where it sits relative to other windows", z));
         p = p.child(k.row(&format!("ip/{id}/ct"), "Click-through", "Clicks pass to whatever is underneath", k.toggle(&format!("ct:{id}"), cfg.click_through, format!("ct:{id}"))));
+        if def.is_some_and(|d| d.max_card_size.is_some()) {
+            p = p.child(k.row(&format!("ip/{id}/lim"), "Size limit", "Keep it within the size it was designed for. Off lets it grow larger; the minimum always applies.", k.toggle(&format!("lim:{id}"), cfg.size_limit, format!("lim:{id}"))));
+        }
         let placement = Node::new(format!("ip/{id}/pl")).row().gap(8.0).child(k.button(&format!("ip/{id}/edit"), "Edit layout", "edit:toggle".into(), false)).child(k.button(&format!("ip/{id}/reset"), "Reset position", format!("reset:{id}"), false));
         p = p.child(k.row(&format!("ip/{id}/pos"), "Position", &format!("{:.0}, {:.0}  ·  {:.0} x {:.0}", cfg.x, cfg.y, cfg.w, cfg.h), placement));
 
@@ -711,7 +811,55 @@ impl UiState {
         } else {
             p = p.child(k.txt(format!("ip/{id}/err"), "This widget's definition failed to load; see the Log page.", 12.5, k.c("danger")).wrap_text());
         }
+        p = p.child(k.section(&format!("ip/{id}/s3"), "Style"));
+        for (axis, label) in THEME_AXES {
+            let key = format!("tp:{id}:{axis}");
+            let open = matches!(&self.open, Some(Open::Dropdown(o)) if *o == key);
+            p = p.child(k.row(&format!("ip/{id}/tp/{axis}"), label, "", k.dropdown(&key, &self.dropdown_label(ctx, &key), CONTROL_W, open)));
+        }
+        let scope = Scope::Instance(id.clone());
+        p = p.kids(style_schema().iter().map(|pd| self.style_row(k, ctx, &scope, pd)));
+        if !cfg.style.is_empty() || !cfg.theme.is_empty() {
+            p = p.child(k.row(&format!("ip/{id}/rs"), "Reset style", "Back to the global style", k.button(&format!("ip/{id}/rs/b"), "Reset style", format!("syreset:{id}|*"), false)));
+        }
         p.child(Node::new(format!("ip/{id}/pad")).h(24.0))
+    }
+
+    /// One Style token at one scope, built like a Widget param's row.
+    fn style_row(&self, k: &Kit, ctx: &Ctx, scope: &Scope, pd: &ParamDef) -> Node {
+        let (sk, tok) = (scope.key(), pd.name.as_str());
+        let key = format!("sy:{sk}:{tok}");
+        let rk = format!("sr/{sk}/{tok}");
+        let theme = Self::scope_theme(ctx, scope);
+        let control = match pd.ty {
+            ParamType::Bool => k.toggle(&format!("tg:{key}"), theme.flag(tok), format!("sy:{sk}|{tok}")),
+            ParamType::Number | ParamType::Duration => {
+                let (min, max, _step, cur) = self.slider_spec(ctx, &key).unwrap_or((0.0, 100.0, 1.0, 0.0));
+                let frac = if max > min { ((cur - min) / (max - min)) as f32 } else { 0.0 };
+                Node::new(format!("{rk}/sc")).row().align(taffy::AlignItems::CENTER).gap(12.0).child(k.slider(&format!("sl:{key}"), frac, 178.0, format!("sl:{key}"))).child(k.txt(format!("{rk}/v"), &fmt_num(cur), 12.5, k.c("text-dim")))
+            }
+            ParamType::Color => {
+                let f = self.focus.as_ref().filter(|f| f.key == format!("hx:{key}")).map(|f| (f.caret, self.caret_on));
+                Node::new(format!("{rk}/cc"))
+                    .row()
+                    .align(taffy::AlignItems::CENTER)
+                    .gap(8.0)
+                    .child(k.swatch(&format!("{rk}/sw"), theme.color(tok), 26.0, Some(format!("cp:{key}")), matches!(&self.open, Some(Open::Color(o)) if *o == key)))
+                    .child(k.input(&format!("hx:{key}"), &self.input_text(ctx, &format!("hx:{key}")), "#rrggbb", f, 110.0, true))
+            }
+            _ => k.dropdown(&key, &self.dropdown_label(ctx, &key), CONTROL_W, matches!(&self.open, Some(Open::Dropdown(o)) if *o == key)),
+        };
+        let mut c = Node::new(format!("{rk}/c")).row().wrap().align(taffy::AlignItems::CENTER).gap(10.0).child(control);
+        let own = matches!(scope, Scope::Instance(_));
+        if Self::style_is_set(ctx, scope, tok) {
+            if own {
+                c = c.child(Node::new(format!("{rk}/dot")).wh(8.0, 8.0).radius(4.0).fill(k.c("accent")));
+            }
+            c = c.child(k.button(&format!("{rk}/reset"), "Reset", format!("syreset:{sk}|{tok}"), false));
+        } else if own {
+            c = c.child(k.txt(format!("{rk}/g"), "global", 11.5, k.c("text-dim")));
+        }
+        k.row(&rk, &pd.label, &pd.help, c)
     }
 
     fn param_row(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, pd: &ParamDef, images: &mut Vec<String>) -> Node {
@@ -840,10 +988,7 @@ impl UiState {
         }
         let fonts_axis = ctx.lib.fonts(&ctx.ws.theme.fonts);
         let fam = fonts_axis.tokens.get("font-body").map(|v| v.to_string()).unwrap_or_default();
-        let acc = "ov:accent";
-        let fk = self.focus.as_ref().filter(|f| f.key == format!("hx:{acc}")).map(|f| (f.caret, self.caret_on));
-        let overridden = ctx.ws.overrides.contains_key("accent");
-        let rad = self.slider_spec(ctx, "ov:radius-lg").unwrap_or((0.0, 40.0, 1.0, 22.0));
+        let style = Node::new("ap/style").col().kids(style_schema().iter().map(|pd| self.style_row(k, ctx, &Scope::Global, pd)));
         let mut body = Node::new("ap").col().gap(4.0).pad_xy(24.0, 4.0);
         body = body
             .child(k.section("ap/s1", "Palette"))
@@ -855,23 +1000,9 @@ impl UiState {
             }))))
             .child(k.row("ap/glyphs-row", "Glyph set", "Icons for buttons and chrome", Node::new("ap/glyphs/c").col().gap(8.0).child(k.dropdown("th:glyphs", &ctx.ws.theme.glyphs, CONTROL_W, f("th:glyphs"))).child(gl)))
             .child(k.row("ap/pack", "Icon pack", "Replaces app icons; drop PNGs named like the app into Wayfinder/iconpacks/<name>/", k.dropdown("th:pack", &ctx.ws.theme.icon_pack, CONTROL_W, f("th:pack"))))
-            .child(k.section("ap/s3", "Tweaks"))
-            .child(flag_row(k, ctx, "ap/blur", Flag::Blur))
-            .child(flag_row(k, ctx, "ap/outlines", Flag::Outlines))
-            .child(k.row(
-                "ap/accent",
-                "Accent colour",
-                "Overrides the palette's accent everywhere",
-                Node::new("ap/accent/c")
-                    .row()
-                    .align(taffy::AlignItems::CENTER)
-                    .gap(8.0)
-                    .child(k.swatch("ap/accent/sw", self.color_of_target(ctx, acc), 26.0, Some(format!("cp:{acc}")), matches!(&self.open, Some(Open::Color(o)) if o == acc)))
-                    .child(k.input(&format!("hx:{acc}"), &self.input_text(ctx, &format!("hx:{acc}")), "#rrggbb", fk, 110.0, true))
-                    .child(k.button("ap/accent/reset", "Reset", "ovreset:accent".into(), false).opacity(if overridden { 1.0 } else { 0.4 })),
-            ))
-            .child(k.row("ap/radius", "Card roundness", "Corner radius of large cards", Node::new("ap/radius/c").row().align(taffy::AlignItems::CENTER).gap(12.0).child(k.slider("sl:ov:radius-lg", (rad.3 / rad.1) as f32, 178.0, "sl:ov:radius-lg".into())).child(k.txt("ap/radius/v".into(), &fmt_num(rad.3), 12.5, k.c("text-dim")))))
-            .child(k.row("ap/resetall", "Reset tweaks", "", k.button("ap/resetall/b", "Clear all overrides", "ovreset:*".into(), false)))
+            .child(k.section("ap/s3", "Style"))
+            .child(style)
+            .child(k.row("ap/resetall", "Reset all style", "Back to the defaults and each palette's own colours", k.button("ap/resetall/b", "Reset all style", "syreset:*|*".into(), false)))
             .child(Node::new("ap/pad").h(24.0));
         self.scrolling("ap/scroll", body)
     }
@@ -1108,6 +1239,12 @@ impl UiState {
             }
             return vec![Cmd::Theme(sel)];
         }
+        if let Some((scope, tok)) = key.strip_prefix("sy:").and_then(Self::style_target) {
+            return vec![Cmd::Style(scope, tok.into(), Some(Value::Str(value.into())))];
+        }
+        if let Some((id, axis)) = key.strip_prefix("tp:").and_then(|r| r.split_once(':')) {
+            return vec![Cmd::ThemePick(id.into(), axis.into(), (!value.is_empty()).then(|| value.to_string()))];
+        }
         if let Some((id, name)) = key.strip_prefix("p:").and_then(|r| r.split_once(':')) {
             return vec![Cmd::Param(id.into(), name.into(), Value::Str(value.into()))];
         }
@@ -1157,6 +1294,7 @@ impl UiState {
                 vec![Cmd::Param(id.into(), name.into(), Value::Bool(!cur))]
             }
             "ct" => Self::instance(ctx, rest).map(|c| vec![Cmd::ClickThrough(rest.into(), !c.click_through)]).unwrap_or_default(),
+            "lim" => Self::instance(ctx, rest).map(|c| vec![Cmd::SizeLimit(rest.into(), !c.size_limit)]).unwrap_or_default(),
             "reset" => vec![Cmd::ResetPos(rest.into())],
             "edit" => vec![Cmd::Edit(!ctx.edit)],
             "autostart" => vec![Cmd::Autostart(!ctx.ws.autostart)],
@@ -1233,12 +1371,26 @@ impl UiState {
                 }
                 vec![]
             }
-            "ovreset" => {
-                if rest == "*" {
-                    ctx.ws.overrides.keys().map(|k| Cmd::Override(k.clone(), None)).collect()
-                } else {
-                    vec![Cmd::Override(rest.into(), None)]
+            "sy" => {
+                let Some((scope, tok)) = rest.split_once('|').map(|(s, t)| (Scope::parse(s), t)) else { return vec![] };
+                let cur = Self::scope_theme(ctx, &scope).flag(tok);
+                vec![Cmd::Style(scope, tok.into(), Some(Value::Bool(!cur)))]
+            }
+            "syreset" => {
+                let Some((scope, tok)) = rest.split_once('|').map(|(s, t)| (Scope::parse(s), t)) else { return vec![] };
+                if tok != "*" {
+                    return vec![Cmd::Style(scope, tok.into(), None)];
                 }
+                let (set, picks): (Vec<String>, Vec<&str>) = match &scope {
+                    Scope::Global => (ctx.ws.style.keys().cloned().collect(), vec![]),
+                    Scope::Instance(id) => match Self::instance(ctx, id) {
+                        Some(c) => (c.style.keys().cloned().collect(), THEME_AXES.iter().map(|(a, _)| *a).filter(|a| picked(&c.theme, a).is_some()).collect()),
+                        None => (vec![], vec![]),
+                    },
+                };
+                let mut cmds: Vec<Cmd> = set.into_iter().map(|k| Cmd::Style(scope.clone(), k, None)).collect();
+                cmds.extend(picks.into_iter().map(|a| Cmd::ThemePick(scope.key().into(), a.into(), None)));
+                cmds
             }
             "openfolder" => vec![Cmd::OpenFolder],
             "reload" => vec![Cmd::Reload],
@@ -1359,6 +1511,11 @@ pub struct SettingsWin {
 }
 
 impl SettingsWin {
+    /// Rebuild on the next frame, e.g. after a change made outside the window.
+    pub fn invalidate(&mut self) {
+        self.redraw = true;
+    }
+
     pub fn open(el: &ActiveEventLoop, gpu: &mut Option<Gpu>, power: Power) -> Result<SettingsWin, String> {
         let pos = el.primary_monitor().or_else(|| el.available_monitors().next()).map(|m| {
             let (p, s, sc) = (m.position(), m.size(), m.scale_factor());
@@ -1572,7 +1729,7 @@ mod tests {
 
     fn world() -> World {
         let lib = Library::load(Path::new("no-such-dir"));
-        let theme = Theme::compose(&lib, &Selection::default(), &Default::default());
+        let theme = Theme::compose(&lib, &Selection::default(), &[]);
         let mut ws = Workspace::default();
         ws.instances.push(InstanceCfg { id: "clock-1".into(), widget: "clock".into(), monitor: MonitorRef { name: "\\\\.\\DISPLAY1".into(), width: 1920, height: 1080 }, ..Default::default() });
         let mut folder = InstanceCfg { id: "icon_folder-1".into(), widget: "icon_folder".into(), ..Default::default() };
@@ -1583,6 +1740,73 @@ mod tests {
 
     fn ctx(w: &World) -> Ctx<'_> {
         Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, parked: &[] }
+    }
+
+    #[test]
+    fn a_long_description_wraps_and_keeps_remove_in_the_window() {
+        let mut w = world();
+        w.ws.instances.push(InstanceCfg { id: "system_monitor-1".into(), widget: "system_monitor".into(), ..Default::default() });
+        let c = ctx(&w);
+        let mut ui = UiState::default();
+        ui.selected = Some("system_monitor-1".into());
+        let (root, _) = ui.build(&c, WIN);
+        let (mut text, mut anim) = (TextEngine::new(), Anim::default());
+        let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale: 1.0 };
+        let f = ui::layout(&root, WIN, &mut env);
+        let [x, _, bw, _] = f.rect_of("ip/system_monitor-1/del").unwrap();
+        assert!(x + bw <= WIN.0, "Remove ends at {} in a {} px window", x + bw, WIN.0);
+        let [_, _, _, dh] = f.rect_of("ip/system_monitor-1/hs").unwrap();
+        assert!(dh > 20.0, "the description wraps onto more lines ({dh} px tall)");
+        for (k, [x, _, w, _]) in f.rects.iter().filter(|(k, _)| k.starts_with("sr/system_monitor-1/") || k.starts_with("ip/system_monitor-1/tp")) {
+            assert!(x + w <= WIN.0, "`{k}` ends at {} in a {} px window", x + w, WIN.0);
+        }
+        assert!(f.rect_of("sr/system_monitor-1/anim-speed").is_some(), "the Style section is on the widget's panel");
+    }
+
+    #[test]
+    fn size_limit_toggles_per_widget() {
+        let mut w = world();
+        let c = ctx(&w);
+        assert_eq!(UiState::default().act("lim:clock-1", &c, None), vec![Cmd::SizeLimit("clock-1".into(), false)]);
+        w.ws.instances[0].size_limit = false;
+        let c = ctx(&w);
+        assert_eq!(UiState::default().act("lim:clock-1", &c, None), vec![Cmd::SizeLimit("clock-1".into(), true)]);
+    }
+
+    #[test]
+    fn a_widget_can_pick_its_own_palette_or_go_back_to_global() {
+        let w = world();
+        let c = ctx(&w);
+        let mut ui = UiState::default();
+        let items = ui.dropdown_items(&c, "tp:clock-1:palette");
+        assert_eq!(items[0], (String::new(), "Global (Midnight)".to_string()));
+        assert_eq!(ui.dropdown_label(&c, "tp:clock-1:palette"), "Global (Midnight)");
+        assert_eq!(ui.act("pick:tp:clock-1:palette|Daylight", &c, None), vec![Cmd::ThemePick("clock-1".into(), "palette".into(), Some("Daylight".into()))]);
+        assert_eq!(ui.act("pick:tp:clock-1:palette|", &c, None), vec![Cmd::ThemePick("clock-1".into(), "palette".into(), None)]);
+    }
+
+    #[test]
+    fn reset_style_on_a_widget_clears_its_overrides_and_its_own_theme() {
+        let mut w = world();
+        w.ws.instances[0].style.insert("blur".into(), serde_json::json!(true));
+        w.ws.instances[0].theme.palette = Some("Daylight".into());
+        let c = ctx(&w);
+        let cmds = UiState::default().act("syreset:clock-1|*", &c, None);
+        assert_eq!(cmds, vec![Cmd::Style(Scope::Instance("clock-1".into()), "blur".into(), None), Cmd::ThemePick("clock-1".into(), "palette".into(), None)]);
+    }
+
+    #[test]
+    fn style_toggles_and_resets_at_both_scopes() {
+        let mut w = world();
+        w.ws.style.insert("blur".into(), serde_json::json!(true));
+        let c = ctx(&w);
+        let mut ui = UiState::default();
+        assert_eq!(ui.act("sy:*|outlines", &c, None), vec![Cmd::Style(Scope::Global, "outlines".into(), Some(Value::Bool(false)))]);
+        assert_eq!(ui.act("sy:clock-1|blur", &c, None), vec![Cmd::Style(Scope::Instance("clock-1".into()), "blur".into(), Some(Value::Bool(false)))], "the instance starts from the inherited global value");
+        assert_eq!(ui.act("syreset:*|blur", &c, None), vec![Cmd::Style(Scope::Global, "blur".into(), None)]);
+        assert_eq!(ui.act("syreset:*|*", &c, None), vec![Cmd::Style(Scope::Global, "blur".into(), None)], "reset all resets what is set");
+        assert_eq!(ui.dropdown_items(&c, "sy:*:anim-speed")[0], ("off".to_string(), "Off".to_string()));
+        assert_eq!(ui.act("pick:sy:*:anim-speed|off", &c, None), vec![Cmd::Style(Scope::Global, "anim-speed".into(), Some(Value::Str("off".into())))]);
     }
 
     #[test]
@@ -1654,7 +1878,7 @@ mod tests {
         let w = world();
         let c = ctx(&w);
         let mut ui = UiState::default();
-        ui.focus_input(&c, "hx:ov:accent", Some(0));
+        ui.focus_input(&c, "hx:sy:*:accent", Some(0));
         // typing into a field that already holds a colour stays invalid until it parses
         ui.focus.as_mut().unwrap().text = String::new();
         assert_eq!(ui.on_key(&Key::Character("z".into()), Some("z"), &c), vec![], "'z' is not a hex digit");
@@ -1663,7 +1887,7 @@ mod tests {
         let cmds = ui.on_key(&Key::Named(NamedKey::Backspace), None, &c);
         assert_eq!(cmds, vec![], "ff880 is five digits: invalid");
         let cmds = ui.on_key(&Key::Character("0".into()), Some("0"), &c);
-        assert_eq!(cmds, vec![Cmd::Override("accent".into(), Some("#ff8800".into()))]);
+        assert_eq!(cmds, vec![Cmd::Style(Scope::Global, "accent".into(), Some(Value::Str("#ff8800".into())))]);
     }
 
     #[test]
@@ -1671,12 +1895,12 @@ mod tests {
         let w = world();
         let c = ctx(&w);
         let mut ui = UiState::default();
-        ui.act("cp:p:clock-1:accent", &c, None);
+        ui.act("cp:sy:clock-1:accent", &c, None);
         let cmds = ui.act(&format!("cpsv:{}:0", SV_N - 1), &c, None); // full saturation, full value
-        let Cmd::Param(id, name, Value::Str(hex)) = &cmds[0] else { panic!("{cmds:?}") };
+        let Cmd::Style(Scope::Instance(id), name, Some(Value::Str(hex))) = &cmds[0] else { panic!("{cmds:?}") };
         assert_eq!((id.as_str(), name.as_str()), ("clock-1", "accent"));
         assert!(Color::parse(hex).is_some());
-        assert_eq!(ui.act("cpset:#00ff00", &c, None), vec![Cmd::Param("clock-1".into(), "accent".into(), Value::Str("#00ff00".into()))]);
+        assert_eq!(ui.act("cpset:#00ff00", &c, None), vec![Cmd::Style(Scope::Instance("clock-1".into()), "accent".into(), Some(Value::Str("#00ff00".into())))]);
     }
 
     #[test]
@@ -1706,6 +1930,7 @@ mod tests {
         let (min, max, _, cur) = ui.slider_spec(&c, "p:icon_folder-1:icon_size").unwrap();
         assert_eq!((min, max, cur), (24.0, 72.0, 40.0));
         assert_eq!(UiState::slider_cmd("p:icon_folder-1:icon_size", 48.0), Some(Cmd::Param("icon_folder-1".into(), "icon_size".into(), Value::Num(48.0))));
-        assert_eq!(UiState::slider_cmd("ov:radius-lg", 30.0), Some(Cmd::Override("radius-lg".into(), Some("30".into()))));
+        assert_eq!(ui.slider_spec(&c, "sy:*:radius-lg"), Some((0.0, 40.0, 1.0, 22.0)));
+        assert_eq!(UiState::slider_cmd("sy:*:radius-lg", 30.0), Some(Cmd::Style(Scope::Global, "radius-lg".into(), Some(Value::Num(30.0)))));
     }
 }

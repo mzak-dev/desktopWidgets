@@ -134,13 +134,54 @@ pub struct WidgetDef {
     pub root: Elem,
 }
 
-const TOP: &[&str] = &["name", "description", "size", "min_size", "params", "state", "expand", "root"];
+const TOP: &[&str] = &["name", "description", "size", "min_size", "max_size", "params", "state", "expand", "root"];
 
 fn pair(v: Option<&toml::Value>, default: (f32, f32), what: &str) -> Result<(f32, f32), String> {
     let Some(v) = v else { return Ok(default) };
     let a = v.as_array().filter(|a| a.len() == 2).ok_or_else(|| format!("{what}: expected [width, height]"))?;
     let n = |x: &toml::Value| x.as_float().or_else(|| x.as_integer().map(|i| i as f64)).map(|f| f as f32);
     Ok((n(&a[0]).ok_or_else(|| format!("{what}: width is not a number"))?, n(&a[1]).ok_or_else(|| format!("{what}: height is not a number"))?))
+}
+
+/// A `[params]` table, in file order. Also parses the style schema (`assets/style.toml`).
+pub fn parse_params(pt: &toml::Table) -> Result<Vec<ParamDef>, String> {
+    let mut params = Vec::new();
+    for (name, v) in pt {
+        let p = v.as_table().ok_or_else(|| format!("params.{name}: expected a table"))?;
+        let ty = p.get("type").and_then(|v| v.as_str()).ok_or_else(|| format!("params.{name}: missing `type`"))?;
+        let ty = ParamType::parse(ty).ok_or_else(|| format!("params.{name}: unknown param type `{ty}`"))?;
+        let f = |k: &str| p.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+        let seed = match p.get("seed") {
+            None => None,
+            Some(v) => {
+                let s = v.as_str().ok_or_else(|| format!("params.{name}.seed: expected a string"))?;
+                let ids: Vec<&str> = Seed::ALL.iter().map(|x| x.id()).collect();
+                let seed = Seed::parse(s).ok_or_else(|| format!("params.{name}: unknown seed `{s}`{}", suggest(s, &[&ids])))?;
+                if seed.param_type() != ty {
+                    return Err(format!("params.{name}: seed `{s}` needs type = \"{}\"", seed.param_type().id()));
+                }
+                Some(seed)
+            }
+        };
+        params.push(ParamDef {
+            name: name.clone(),
+            ty,
+            default: p.get("default").map(Value::from).unwrap_or(match ty {
+                ParamType::Bool => Value::Bool(false),
+                ParamType::Number | ParamType::Duration => Value::Num(0.0),
+                ParamType::Shortcuts => Value::List(vec![]),
+                _ => Value::Str(String::new()),
+            }),
+            label: p.get("label").and_then(|v| v.as_str()).unwrap_or(name).to_string(),
+            help: p.get("help").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            min: f("min"),
+            max: f("max"),
+            step: f("step"),
+            choices: p.get("choices").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|c| c.as_str().map(String::from)).collect()).unwrap_or_default(),
+            seed,
+        });
+    }
+    Ok(params)
 }
 
 impl WidgetDef {
@@ -152,44 +193,10 @@ impl WidgetDef {
             }
         }
         let text = |k: &str| t.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
-        let mut params = Vec::new();
-        if let Some(pt) = t.get("params").and_then(|v| v.as_table()) {
-            for (name, v) in pt {
-                let p = v.as_table().ok_or_else(|| format!("params.{name}: expected a table"))?;
-                let ty = p.get("type").and_then(|v| v.as_str()).ok_or_else(|| format!("params.{name}: missing `type`"))?;
-                let ty = ParamType::parse(ty).ok_or_else(|| format!("params.{name}: unknown param type `{ty}`"))?;
-                let f = |k: &str| p.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
-                let seed = match p.get("seed") {
-                    None => None,
-                    Some(v) => {
-                        let s = v.as_str().ok_or_else(|| format!("params.{name}.seed: expected a string"))?;
-                        let ids: Vec<&str> = Seed::ALL.iter().map(|x| x.id()).collect();
-                        let seed = Seed::parse(s).ok_or_else(|| format!("params.{name}: unknown seed `{s}`{}", suggest(s, &[&ids])))?;
-                        if seed.param_type() != ty {
-                            return Err(format!("params.{name}: seed `{s}` needs type = \"{}\"", seed.param_type().id()));
-                        }
-                        Some(seed)
-                    }
-                };
-                params.push(ParamDef {
-                    name: name.clone(),
-                    ty,
-                    default: p.get("default").map(Value::from).unwrap_or(match ty {
-                        ParamType::Bool => Value::Bool(false),
-                        ParamType::Number | ParamType::Duration => Value::Num(0.0),
-                        ParamType::Shortcuts => Value::List(vec![]),
-                        _ => Value::Str(String::new()),
-                    }),
-                    label: p.get("label").and_then(|v| v.as_str()).unwrap_or(name).to_string(),
-                    help: p.get("help").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                    min: f("min"),
-                    max: f("max"),
-                    step: f("step"),
-                    choices: p.get("choices").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|c| c.as_str().map(String::from)).collect()).unwrap_or_default(),
-                    seed,
-                });
-            }
-        }
+        let params = match t.get("params").and_then(|v| v.as_table()) {
+            Some(pt) => parse_params(pt)?,
+            None => Vec::new(),
+        };
         let state = t.get("state").and_then(|v| v.as_table()).map(|s| s.iter().map(|(k, v)| (k.clone(), Value::from(v))).collect()).unwrap_or_default();
         let expand = match t.get("expand").and_then(|v| v.as_table()) {
             None => None,
@@ -201,12 +208,18 @@ impl WidgetDef {
             }
         };
         let root_t = t.get("root").and_then(|v| v.as_table()).ok_or("missing [root] table")?;
+        let min_card_size = pair(t.get("min_size"), (48.0, 48.0), "min_size")?;
+        let max_card_size = t.get("max_size").map(|v| pair(Some(v), (0.0, 0.0), "max_size")).transpose()?;
+        if max_card_size.is_some_and(|m| m.0 < min_card_size.0 || m.1 < min_card_size.1) {
+            return Err("max_size is smaller than min_size".into());
+        }
         let meta = WidgetMeta {
             id: id.to_string(),
             name: if text("name").is_empty() { id.to_string() } else { text("name") },
             description: text("description"),
             default_card_size: pair(t.get("size"), (200.0, 120.0), "size")?,
-            min_card_size: pair(t.get("min_size"), (48.0, 48.0), "min_size")?,
+            min_card_size,
+            max_card_size,
             params,
             initial_state: state,
         };
@@ -668,7 +681,7 @@ mod tests {
     use std::path::Path;
 
     fn theme() -> Theme {
-        Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &BTreeMap::new())
+        Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[])
     }
 
     fn build_src(src: &str, params: &[(&str, Value)]) -> Result<Built, String> {
@@ -687,6 +700,14 @@ mod tests {
             },
         };
         build(&def, &inp, &theme(), &|_| None)
+    }
+
+    #[test]
+    fn max_size_is_read_and_must_not_undercut_the_min() {
+        let d = WidgetDef::parse("t", "min_size = [100, 100]\nmax_size = [300, 200]\n[root]\ntype = 'box'").unwrap();
+        assert_eq!((d.meta.max_card_size, WidgetDef::parse("t", "[root]\ntype = 'box'").unwrap().meta.max_card_size), (Some((300.0, 200.0)), None));
+        let e = WidgetDef::parse("t", "min_size = [100, 100]\nmax_size = [80, 200]\n[root]\ntype = 'box'").err().unwrap();
+        assert!(e.contains("max_size"), "{e}");
     }
 
     #[test]
@@ -716,7 +737,7 @@ mod tests {
             assert!(k.own_attrs.iter().all(|a| !COMMON_ATTRS.contains(a)), "`{}` redeclares a common attribute", k.name);
         }
         let e = WidgetDef::parse("t", "[root]\ntype='nope'").unwrap_err();
-        assert!(e.contains("box, text, image, hand, ticks, arc, repeat"), "{e}");
+        assert!(e.contains("box, text, image, hand, ticks, arc, graph, repeat"), "{e}");
         assert!(WidgetDef::parse("t", "[root]\ntype='arc'\nsweep=90\nvalue=50").is_ok());
         let e = WidgetDef::parse("t", "[root]\ntype='arc'\nangle=90").unwrap_err();
         assert!(e.contains("unknown attribute `angle` on `arc`"), "an attribute of another kind is rejected: {e}");

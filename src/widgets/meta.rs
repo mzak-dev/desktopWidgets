@@ -12,6 +12,8 @@ pub struct WidgetMeta {
     /// Logical px, like every size here.
     pub default_card_size: (f32, f32),
     pub min_card_size: (f32, f32),
+    /// Resizing stops here unless the Instance switches its size limit off.
+    pub max_card_size: Option<(f32, f32)>,
     pub params: Vec<ParamDef>,
     pub initial_state: BTreeMap<String, Value>,
 }
@@ -19,10 +21,6 @@ pub struct WidgetMeta {
 impl WidgetMeta {
     pub fn effective_params(&self, saved: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
         self.params.iter().map(|p| (p.name.clone(), saved.get(&p.name).cloned().unwrap_or_else(|| p.default.clone()))).collect()
-    }
-
-    pub fn has_own_blur(&self) -> bool {
-        self.params.iter().any(|p| p.name == "blur")
     }
 
     pub fn seed_params(&self, cfg: &mut InstanceCfg) {

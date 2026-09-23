@@ -1,7 +1,8 @@
 name = "Digital Clock"
-description = "Large time with the date underneath. Text scales with the window."
+description = "Large time with the date underneath. Make it tall and it shows the time in other cities too."
 size = [300, 132]
 min_size = [120, 56]
+max_size = [720, 400]
 
 [params.hour24]
 type = "bool"
@@ -19,11 +20,14 @@ type = "bool"
 default = true
 label = "Show date"
 
-[params.accent]
-type = "color"
-default = "$accent"
-label = "AM/PM colour"
+[params.cities]
+type = "string"
+default = "New York, London, Tokyo"
+label = "World clocks"
+help = "Comma-separated cities, shown once the clock is 190 px tall or more."
 
+# Size tiers: the time scales with the card; the date shows from 70 px of height; from
+# 190 px a row of city chips joins underneath, and the time scales to what is left.
 [root]
 direction = "column"
 align = "center"
@@ -41,7 +45,7 @@ shadow = { blur = 14, dy = 5 }
     [[root.children.children]]
     type = "text"
     text = "{pad(param.hour24 ? clock.hour : clock.hour12, 2)}:{pad(clock.minute, 2)}{param.show_seconds ? ':' + pad(clock.second, 2) : ''}"
-    size = "{max(12, min(self.h * (param.show_date ? 0.42 : 0.6), self.w / (4.6 + (param.show_seconds ? 1.7 : 0) + (param.hour24 ? 0 : 1.4))))}"
+    size = "{max(12, min((self.h - ((self.h >= 190 && self.w >= 240 && len(clock.zones) > 0) ? 76 : 0)) * (param.show_date ? 0.42 : 0.6), self.w / (4.6 + (param.show_seconds ? 1.7 : 0) + (param.hour24 ? 0 : 1.4))))}"
     weight = 300
     color = "$text"
 
@@ -49,14 +53,55 @@ shadow = { blur = 14, dy = 5 }
     type = "text"
     when = "{!param.hour24}"
     text = "{clock.ampm}"
-    size = "{max(10, min(self.h * 0.13, self.w * 0.06))}"
+    size = "{max(10, min((self.h - ((self.h >= 190 && self.w >= 240 && len(clock.zones) > 0) ? 76 : 0)) * 0.13, self.w * 0.06))}"
     weight = 600
-    color = "{param.accent}"
+    color = "$accent"
 
   [[root.children]]
   type = "text"
-  when = "{param.show_date && self.h > 70}"
+  when = "{param.show_date && (self.h - ((self.h >= 190 && self.w >= 240 && len(clock.zones) > 0) ? 76 : 0)) > 70}"
   text = "{clock.date}"
-  size = "{max(11, min(self.h * 0.115, self.w * 0.052))}"
+  size = "{max(11, min((self.h - ((self.h >= 190 && self.w >= 240 && len(clock.zones) > 0) ? 76 : 0)) * 0.115, self.w * 0.052))}"
   weight = 500
   color = "$text-dim"
+
+  # ---- tall: a row of city chips ----
+  [[root.children]]
+  when = "{(self.h >= 190 && self.w >= 240 && len(clock.zones) > 0)}"
+  direction = "row"
+  justify = "center"
+  gap = 8
+  height = 58
+  margin = [10, 0, 0, 0]
+  shrink = 0
+    [[root.children.children]]
+    type = "repeat"
+    for = "{clock.zones}"
+    as = "z"
+      [[root.children.children.children]]
+      when = "{index < floor((self.w - 16) / 108)}"
+      direction = "column"
+      align = "center"
+      justify = "center"
+      width = 100
+      height = 58
+      radius = "$radius-sm"
+      fill = "$face"
+      enter = { ms = 220, dy = 6, stagger = 30 }
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{z.city}"
+        size = 11
+        weight = 600
+        color = "$text-dim"
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{param.hour24 ? z.time : z.hour12 + ':' + pad(z.minute, 2) + ' ' + z.ampm}{z.known && z.day != '' ? ' ' + z.day : ''}"
+        size = 16
+        weight = 600
+        color = "$text"
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{z.known ? z.offset : 'unknown'}"
+        size = 10
+        color = "$text-dim"

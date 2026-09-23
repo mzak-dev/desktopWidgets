@@ -1,7 +1,11 @@
 //! Renders the shipped widgets through the real pipeline (TOML -> bindings ->
 //! taffy -> wgpu) offscreen, composited over a backdrop, to a PNG contact sheet.
 //!
-//!   cargo run --release --example render_widgets -- out.png [palette]
+//!   cargo run --release --example render_widgets -- out.png [palette] [max]
+//!
+//! `max` renders every built-in widget at its `max_size` instead of the README cases;
+//! `edit` draws the Edit Mode overlay on each tile, every other one with its remove button armed;
+//! `tiers` renders each widget at the sizes where its content changes.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -9,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use wayfinder::anim::Anim;
 use wayfinder::card::Card;
-use wayfinder::data::{DataSources, Shortcut, Tm};
+use wayfinder::data::{DataSources, Shortcut, SourceCx, Tm};
 use wayfinder::gfx::{Gpu, Power};
 use wayfinder::icons::IconService;
 use wayfinder::text::TextEngine;
@@ -54,13 +58,41 @@ fn main() {
     let mut icons = IconService::new("iconpacks".into());
     let lib = Library::load(Path::new("nope"));
     let sel = Selection { palette: palette.clone(), ..Default::default() };
-    let theme = Theme::compose(&lib, &sel, &BTreeMap::new());
+    let theme = Theme::compose(&lib, &sel, &[]);
     let reg = Registry::load(Path::new("nope"));
-    let card = Card::new(&theme, false, true);
+    let card = Card::new(&theme);
     let sources = DataSources::builtin();
     let tm = Tm { year: 2026, month: 9, day: 21, dow: 1, hour: 15, minute: 42, second: 18, ms: 400 };
 
-    let cases = vec![
+    let at_max = std::env::args().nth(3).is_some_and(|a| a == "max");
+    let edit_overlay = std::env::args().nth(3).is_some_and(|a| a == "edit");
+    let max_case = |w: &'static str| {
+        let max = match reg.get(w) {
+            Some(Ok(d)) => d.meta().max_card_size.expect("every built-in has a max_size"),
+            _ => panic!("{w}"),
+        };
+        Case { widget: w, size: card.window_size(max), params: vec![], state: vec![], expanded: false }
+    };
+    let at_card = |w: &'static str, c: (f32, f32)| Case { widget: w, size: card.window_size(c), params: vec![], state: vec![], expanded: false };
+    let tiers = std::env::args().nth(3).is_some_and(|a| a == "tiers");
+    let cases = if tiers {
+        vec![
+            at_card("clock", (180.0, 180.0)),
+            at_card("clock", (330.0, 400.0)),
+            at_card("clock", (560.0, 240.0)),
+            at_card("digital_clock", (300.0, 132.0)),
+            at_card("digital_clock", (460.0, 230.0)),
+            at_card("system_monitor", (200.0, 96.0)),
+            at_card("system_monitor", (340.0, 190.0)),
+            at_card("system_monitor", (640.0, 400.0)),
+            at_card("icon_list", (150.0, 260.0)),
+            at_card("icon_list", (420.0, 300.0)),
+            at_card("icon_folder", (92.0, 112.0)),
+            at_card("icon_folder", (180.0, 220.0)),
+            at_card("drawer", (180.0, 220.0)),
+            at_card("drawer", (420.0, 260.0)),
+        ]
+    } else if at_max { ["clock", "digital_clock", "system_monitor", "icon_list", "icon_folder", "drawer"].map(max_case).into() } else { vec![
         Case { widget: "clock", size: (260.0, 260.0), params: vec![], state: vec![], expanded: false },
         Case { widget: "clock", size: (150.0, 150.0), params: vec![("smooth_seconds", true.into())], state: vec![], expanded: false },
         Case { widget: "digital_clock", size: (340.0, 172.0), params: vec![], state: vec![], expanded: false },
@@ -69,8 +101,17 @@ fn main() {
         Case { widget: "icon_list", size: (200.0, 180.0), params: vec![("icon_size", 24.into()), ("title", "".into())], state: vec![], expanded: false },
         Case { widget: "icon_folder", size: (132.0, 152.0), params: vec![("title", "Tools".into())], state: vec![], expanded: false },
         Case { widget: "icon_folder", size: (132.0, 152.0), params: vec![("title", "Tools".into())], state: vec![("expanded", true.into())], expanded: true },
-    ];
+    ] };
 
+    if tiers {
+        // a few seconds of samples, so the monitor's graphs have a history to draw
+        let (cfg, params) = (InstanceCfg::default(), BTreeMap::new());
+        let cx = SourceCx { cfg: &cfg, params: &params, tm, icon_pack: "Default" };
+        for _ in 0..8 {
+            sources.value("sys", &cx);
+            std::thread::sleep(Duration::from_millis(850));
+        }
+    }
     let mut tiles = Vec::new();
     let mut anim = Anim::default();
     for c in &cases {
@@ -95,7 +136,18 @@ fn main() {
             let now = base + Duration::from_millis(2000);
             let v = View { cfg: &cfg, state: &state, window_size: size, theme: &theme, icon_pack: "Default", tm, hover: None, scale, now, card };
             let mut sv = Services { gpu: &mut gpu, icons: &mut icons, text: &mut text, anim: &mut anim, sources: &sources };
-            let p = prepare(def, &v, &mut sv);
+            let mut p = prepare(def, &v, &mut sv);
+            if edit_overlay {
+                let ov = wayfinder::edit::overlay(&cfg.id, size, card.gutter, "60, 60   200x120", &theme, None, tiles.len() % 2 == 1);
+                let mut ov_anim = Anim::default();
+                for at in [base, now] {
+                    let mut env = wayfinder::ui::Env { text: &mut text, anim: &mut ov_anim, hover: None, now: at, scale };
+                    let of = wayfinder::ui::layout(&ov, size, &mut env);
+                    if at == now {
+                        p.frame.list.put_on_top(of.list);
+                    }
+                }
+            }
             if let Some(e) = &p.error {
                 println!("{}: ERROR {e}", c.widget);
             }
@@ -116,12 +168,13 @@ fn main() {
         }
     }
 
-    // contact sheet: two rows over a soft "wallpaper"
+    // contact sheet: rows of four over a soft "wallpaper"
     let pad = 24u32;
     let row_w = |r: &[(u32, u32, Vec<u8>)]| r.iter().map(|t| t.0 + pad).sum::<u32>() + pad;
-    let (top, bot) = tiles.split_at(4);
-    let (sw, rh1, rh2) = (row_w(top).max(row_w(bot)), top.iter().map(|t| t.1).max().unwrap() + pad, bot.iter().map(|t| t.1).max().unwrap() + pad);
-    let sh = rh1 + rh2 + pad;
+    let rows: Vec<&[(u32, u32, Vec<u8>)]> = tiles.chunks(4).collect();
+    let row_h: Vec<u32> = rows.iter().map(|r| r.iter().map(|t| t.1).max().unwrap() + pad).collect();
+    let sw = rows.iter().map(|r| row_w(r)).max().unwrap();
+    let sh = row_h.iter().sum::<u32>() + pad;
     let mut sheet = image::RgbaImage::new(sw, sh);
     for y in 0..sh {
         for x in 0..sw {
@@ -146,8 +199,11 @@ fn main() {
             x0 += w + pad;
         }
     };
-    blit(top, pad / 2);
-    blit(bot, rh1 + pad / 2);
+    let mut y0 = pad / 2;
+    for (r, h) in rows.iter().zip(&row_h) {
+        blit(r, y0);
+        y0 += h;
+    }
     sheet.save(&out).expect("save");
     println!("wrote {out} ({sw}x{sh})");
 }

@@ -37,19 +37,24 @@ impl App {
         self.mark_save();
     }
 
+    pub(super) fn remove_instance(&mut self, id: &str) {
+        let Some(i) = self.ws.instances.iter().position(|c| c.id == id) else { return };
+        self.ws.instances.remove(i);
+        self.wins.remove(i);
+        self.remove_armed = None;
+        self.sync_watchers();
+        self.mark_save();
+        if let Some(s) = &mut self.settings {
+            s.invalidate();
+        }
+        self.log(format!("removed {id}"));
+    }
+
     pub(super) fn apply(&mut self, el: &ActiveEventLoop, cmd: Cmd) {
         let find = |s: &Self, id: &str| s.ws.instances.iter().position(|c| c.id == id);
         match cmd {
             Cmd::Add(w) => self.add_instance(el, &w),
-            Cmd::Remove(id) => {
-                if let Some(i) = find(self, &id) {
-                    self.ws.instances.remove(i);
-                    self.wins.remove(i);
-                    self.sync_watchers();
-                    self.mark_save();
-                    self.log(format!("removed {id}"));
-                }
-            }
+            Cmd::Remove(id) => self.remove_instance(&id),
             Cmd::Param(id, name, v) => {
                 if let Some(i) = find(self, &id) {
                     let was = self.card(i);
@@ -84,6 +89,23 @@ impl App {
                     self.mark_save();
                 }
             }
+            Cmd::SizeLimit(id, on) => {
+                if let Some(i) = find(self, &id) {
+                    self.ws.instances[i].size_limit = on;
+                    let (card, s) = (self.card(i), self.scale_of(i));
+                    // switching it back on shrinks an oversized widget, keeping its top-left
+                    if let (Some(max), Some(r)) = (self.max_size_phys(i), self.wins[i].window.as_ref().and_then(|w| Self::outer_rect(w))) {
+                        let g = card.gutter_px(s);
+                        let mut c = card.card_of_window(r, s);
+                        (c.w, c.h) = (c.w.min(max.0 - 2 * g), c.h.min(max.1 - 2 * g));
+                        if card.window_of_card(c, s) != r {
+                            self.glide_window(i, card.window_of_card(c, s));
+                            self.save_rect_to_workspace(i);
+                        }
+                    }
+                    self.mark_save();
+                }
+            }
             Cmd::ClickThrough(id, on) => {
                 if let Some(i) = find(self, &id) {
                     self.ws.instances[i].click_through = on;
@@ -104,25 +126,36 @@ impl App {
                     }
                     if let Some(p) = workspace::resolve(&self.ws.instances[i], &self.monitors) {
                         let s = self.scale_of(i);
-                        self.set_window_rect(i, Rect::new(p.0, p.1, (w as f64 * s) as i32, (h as f64 * s) as i32));
+                        self.glide_window(i, Rect::new(p.0, p.1, (w as f64 * s) as i32, (h as f64 * s) as i32));
                     }
                     self.sync_windows(el);
                     self.mark_save();
                 }
             }
-            Cmd::Theme(sel) => {
-                self.ws.theme = sel;
-                self.rebuild_theme();
-                self.mark_save();
-            }
-            Cmd::Override(k, v) => {
-                match v {
-                    Some(v) => self.ws.overrides.insert(k, v),
-                    None => self.ws.overrides.remove(&k),
+            Cmd::Theme(sel) => self.restyle(|ws| ws.theme = sel),
+            Cmd::Style(scope, token, value) => self.restyle(|ws| {
+                let map = match &scope {
+                    Scope::Global => &mut ws.style,
+                    Scope::Instance(id) => match ws.instances.iter_mut().find(|c| &c.id == id) {
+                        Some(c) => &mut c.style,
+                        None => return,
+                    },
                 };
-                self.rebuild_theme();
-                self.mark_save();
-            }
+                match value {
+                    Some(v) => map.insert(token, (&v).into()),
+                    None => map.remove(&token),
+                };
+            }),
+            Cmd::ThemePick(id, axis, name) => self.restyle(|ws| {
+                let Some(c) = ws.instances.iter_mut().find(|c| c.id == id) else { return };
+                match axis.as_str() {
+                    "palette" => c.theme.palette = name,
+                    "fonts" => c.theme.fonts = name,
+                    "glyphs" => c.theme.glyphs = name,
+                    "pack" => c.theme.icon_pack = name,
+                    _ => {}
+                }
+            }),
             Cmd::Gpu(g) => {
                 self.ws.gpu = g;
                 self.mark_save();
@@ -136,14 +169,7 @@ impl App {
                 self.mark_save();
             }
             Cmd::Flag(flag, on) => {
-                let was: Vec<Card> = (0..self.wins.len()).map(|i| self.card(i)).collect();
                 self.ws.set_flag(flag, on);
-                for (i, w) in was.into_iter().enumerate() {
-                    if self.card(i).blur != w.blur {
-                        self.refit_window_around_card(i, w);
-                    }
-                    self.wins[i].redraw = true;
-                }
                 self.mark_save();
             }
             Cmd::Grid(g) => {

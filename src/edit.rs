@@ -108,7 +108,8 @@ impl Snap {
     }
 }
 
-pub fn dragged_rect(handle: Handle, start: Rect, dx: i32, dy: i32, min: (i32, i32), snap: &Snap) -> Rect {
+/// `max`, when given, bounds a resize the way `min` does; a move ignores both.
+pub fn dragged_rect(handle: Handle, start: Rect, dx: i32, dy: i32, min: (i32, i32), max: Option<(i32, i32)>, snap: &Snap) -> Rect {
     if handle == Handle::Move {
         let mut r = Rect { x: start.x + dx, y: start.y + dy, ..start };
         // try both edges of the box against the guide lines; the closer hit wins
@@ -140,11 +141,40 @@ pub fn dragged_rect(handle: Handle, start: Rect, dx: i32, dy: i32, min: (i32, i3
     if eb {
         b = snap.snap_coordinate(b + dy, &snap.ys, snap.origin.1).max(t + min.1);
     }
+    if let Some(m) = max {
+        if el {
+            l = l.max(rr - m.0);
+        }
+        if er {
+            rr = rr.min(l + m.0);
+        }
+        if et {
+            t = t.max(b - m.1);
+        }
+        if eb {
+            b = b.min(t + m.1);
+        }
+    }
     Rect { x: l, y: t, w: rr - l, h: b - t }
 }
 
-/// Outline, eight handles and a live position/size label.
-pub fn overlay(id: &str, window: (f32, f32), gutter: f32, label: &str, theme: &Theme, active: Option<Handle>) -> Node {
+/// Diameter of the Edit Mode remove button, logical px.
+pub const REMOVE_BUTTON: f32 = 24.0;
+
+/// Bottom-right, inside the card: clear of the position label and of every resize grip.
+pub fn remove_button_center(card: [f32; 4]) -> (f32, f32) {
+    let [x, y, w, h] = card;
+    (x + w - 22.0, y + h - 22.0)
+}
+
+pub fn over_remove_button(px: f32, py: f32, card: [f32; 4]) -> bool {
+    let (cx, cy) = remove_button_center(card);
+    (px - cx).hypot(py - cy) <= REMOVE_BUTTON / 2.0 + 2.0
+}
+
+/// Outline, eight handles, a live position/size label and the remove button, which
+/// asks "Remove?" once `remove_armed`.
+pub fn overlay(id: &str, window: (f32, f32), gutter: f32, label: &str, theme: &Theme, active: Option<Handle>, remove_armed: bool) -> Node {
     let accent = theme.color("accent");
     let card = (window.0 - 2.0 * gutter, window.1 - 2.0 * gutter);
     let mut root = Node::new(format!("{id}!ov")).wh(window.0, window.1);
@@ -189,12 +219,57 @@ pub fn overlay(id: &str, window: (f32, f32), gutter: f32, label: &str, theme: &T
         .child(Node::text(format!("{id}!ov/lt"), label, 12.0, Color([1.0, 1.0, 1.0, 1.0])).with_text(|t| t.family = theme.str("font-mono")));
     // centre the pill horizontally: an absolute node spans its own width, so wrap it
     let row = Node::new(format!("{id}!ov/lr")).abs(Some(gutter), Some(0.0), Some(gutter), None).center().child(pill);
-    root.child(row)
+    let (bx, by) = remove_button_center([gutter, gutter, card.0, card.1]);
+    let r = REMOVE_BUTTON / 2.0;
+    let danger = theme.color("danger");
+    let remove = if remove_armed {
+        Node::new(format!("{id}!ov/x"))
+            .h(REMOVE_BUTTON)
+            .abs(None, None, Some(window.0 - bx - r), Some(window.1 - by - r))
+            .center()
+            .pad_xy(10.0, 0.0)
+            .radius(r)
+            .fill(danger)
+            .child(Node::text(format!("{id}!ov/xt"), "Remove?", 12.0, Color([1.0; 4])).with_text(|t| t.weight = 700))
+    } else {
+        let glyph = Node::text(format!("{id}!ov/xg"), theme.str("glyph-close"), 11.0, Color([1.0; 4])).with_text(|t| t.family = theme.str("font-glyph"));
+        Node::new(format!("{id}!ov/x")).wh(REMOVE_BUTTON, REMOVE_BUTTON).abs(Some(bx - r), Some(by - r), None, None).center().radius(r).fill(Color([0.04, 0.05, 0.09, 0.86])).border(2.0, danger).enter(180, 6.0, 0).child(glyph)
+    };
+    root.child(row).child(remove)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::Kind;
+
+    fn theme() -> Theme {
+        Theme::compose(&crate::theme::Library::load(std::path::Path::new("nope")), &crate::theme::Selection::default(), &[])
+    }
+
+    #[test]
+    fn the_remove_button_sits_inside_the_card_and_never_steals_a_resize_grip() {
+        for card in [[20.0, 20.0, 220.0, 220.0], [0.0, 0.0, 72.0, 44.0], [20.0, 20.0, 48.0, 48.0]] {
+            let (cx, cy) = remove_button_center(card);
+            assert!(over_remove_button(cx, cy, card));
+            assert_eq!(hit_handle(cx, cy, card, 16.0), Handle::Move, "{card:?}: its centre is not a resize grip");
+            let [x, y, w, h] = card;
+            let r = REMOVE_BUTTON / 2.0;
+            assert!(cx - r >= x && cy - r >= y && cx + r <= x + w && cy + r <= y + h, "{card:?}: fully inside the card");
+        }
+        assert!(!over_remove_button(30.0, 30.0, [20.0, 20.0, 220.0, 220.0]));
+    }
+
+    #[test]
+    fn overlay_shows_a_remove_button_that_turns_into_a_confirm_pill() {
+        fn find<'a>(n: &'a Node, key: &str) -> Option<&'a Node> {
+            if n.key == key { Some(n) } else { n.children.iter().find_map(|c| find(c, key)) }
+        }
+        let plain = overlay("w", (140.0, 120.0), 20.0, "0, 0", &theme(), None, false);
+        assert!(find(&plain, "w!ov/x").is_some() && find(&plain, "w!ov/xt").is_none());
+        let armed = overlay("w", (140.0, 120.0), 20.0, "0, 0", &theme(), None, true);
+        assert!(matches!(&find(&armed, "w!ov/xt").unwrap().kind, Kind::Text(s) if s.text == "Remove?"));
+    }
 
     fn snap() -> Snap {
         Snap { xs: vec![0, 500, 1000], ys: vec![0, 300], threshold: 8, grid: 0, origin: (0, 0) }
@@ -215,13 +290,13 @@ mod tests {
     fn move_snaps_either_edge_to_a_guide_and_leaves_far_moves_alone() {
         let start = Rect::new(100, 100, 200, 100);
         // right edge lands 4px shy of x=500 -> snaps so right == 500
-        let r = dragged_rect(Handle::Move, start, 196, 0, (40, 40), &snap());
+        let r = dragged_rect(Handle::Move, start, 196, 0, (40, 40), None, &snap());
         assert_eq!((r.x, r.right()), (300, 500));
         // left edge near 0 wins when it is the closer hit
-        let r = dragged_rect(Handle::Move, start, -97, 0, (40, 40), &snap());
+        let r = dragged_rect(Handle::Move, start, -97, 0, (40, 40), None, &snap());
         assert_eq!(r.x, 0);
         // nothing within the threshold: unchanged
-        let r = dragged_rect(Handle::Move, start, 60, 0, (40, 40), &snap());
+        let r = dragged_rect(Handle::Move, start, 60, 0, (40, 40), None, &snap());
         assert_eq!(r.x, 160);
     }
 
@@ -229,24 +304,40 @@ mod tests {
     fn resize_keeps_the_opposite_edge_fixed_and_honours_the_minimum() {
         let start = Rect::new(400, 300, 200, 100);
         let free = Snap { threshold: 0, ..Default::default() };
-        let r = dragged_rect(Handle::E, start, 55, 0, (60, 40), &free);
+        let r = dragged_rect(Handle::E, start, 55, 0, (60, 40), None, &free);
         assert_eq!((r.x, r.w, r.y, r.h), (400, 255, 300, 100));
         // shrinking past the minimum stops at it, anchored on the far edge
-        let r = dragged_rect(Handle::W, start, 500, 0, (60, 40), &free);
+        let r = dragged_rect(Handle::W, start, 500, 0, (60, 40), None, &free);
         assert_eq!((r.w, r.right()), (60, 600));
-        let r = dragged_rect(Handle::NW, start, 500, 500, (60, 40), &free);
+        let r = dragged_rect(Handle::NW, start, 500, 500, (60, 40), None, &free);
         assert_eq!((r.w, r.h, r.right(), r.bottom()), (60, 40, 600, 400));
         // a corner moves two edges at once
-        let r = dragged_rect(Handle::SE, start, 10, 20, (60, 40), &free);
+        let r = dragged_rect(Handle::SE, start, 10, 20, (60, 40), None, &free);
         assert_eq!((r.w, r.h), (210, 120));
+    }
+
+    #[test]
+    fn resize_stops_at_the_max_only_while_a_max_is_given() {
+        let start = Rect::new(400, 300, 200, 100);
+        let free = Snap { threshold: 0, ..Default::default() };
+        let r = dragged_rect(Handle::SE, start, 500, 500, (60, 40), Some((300, 150)), &free);
+        assert_eq!((r.x, r.y, r.w, r.h), (400, 300, 300, 150));
+        let r = dragged_rect(Handle::NW, start, -500, -500, (60, 40), Some((300, 150)), &free);
+        assert_eq!((r.right(), r.bottom(), r.w, r.h), (600, 400, 300, 150), "anchored on the far edge");
+        let r = dragged_rect(Handle::E, start, 500, 0, (60, 40), None, &free);
+        assert_eq!(r.w, 700, "no limit");
+        let r = dragged_rect(Handle::W, start, 500, 0, (60, 40), Some((300, 150)), &free);
+        assert_eq!(r.w, 60, "the min holds either way");
+        let r = dragged_rect(Handle::Move, start, 30, 0, (60, 40), Some((100, 50)), &free);
+        assert_eq!((r.w, r.h), (200, 100), "moving never resizes");
     }
 
     #[test]
     fn grid_applies_only_when_no_guide_is_close() {
         let g = Snap { grid: 16, origin: (0, 0), threshold: 8, xs: vec![1000], ys: vec![] };
-        let r = dragged_rect(Handle::Move, Rect::new(0, 0, 100, 100), 21, 21, (40, 40), &g);
+        let r = dragged_rect(Handle::Move, Rect::new(0, 0, 100, 100), 21, 21, (40, 40), None, &g);
         assert_eq!((r.x, r.y), (16, 16));
-        let r = dragged_rect(Handle::Move, Rect::new(0, 0, 100, 100), 903, 0, (40, 40), &g); // right edge 1003 ~ guide 1000
+        let r = dragged_rect(Handle::Move, Rect::new(0, 0, 100, 100), 903, 0, (40, 40), None, &g); // right edge 1003 ~ guide 1000
         assert_eq!(r.right(), 1000);
     }
 }

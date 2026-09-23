@@ -18,6 +18,13 @@ impl App {
                 return;
             }
             let card = self.card_rect(i);
+            if edit::over_remove_button(x, y, card) {
+                self.wins[i].grab = None; // so leaving the button restores the grip cursor
+                if let Some(w) = &self.wins[i].window {
+                    w.set_cursor(CursorIcon::Pointer);
+                }
+                return;
+            }
             let h = edit::hit_handle(x, y, card, 16.0);
             if self.wins[i].grab != Some(h) {
                 self.wins[i].grab = Some(h);
@@ -56,6 +63,21 @@ impl App {
             match state {
                 ElementState::Pressed => {
                     let (x, y) = self.wins[i].mouse;
+                    let id = self.ws.instances[i].id.clone();
+                    let armed = self.remove_armed.take();
+                    if let Some(j) = armed.as_ref().and_then(|a| self.ws.instances.iter().position(|c| &c.id == a)) {
+                        self.wins[j].redraw = true;
+                    }
+                    if edit::over_remove_button(x, y, self.card_rect(i)) {
+                        // a second click on the armed button removes; the first only asks
+                        if armed.as_deref() == Some(id.as_str()) {
+                            self.remove_instance(&id);
+                        } else {
+                            self.remove_armed = Some(id);
+                            self.wins[i].redraw = true;
+                        }
+                        return;
+                    }
                     let handle = edit::hit_handle(x, y, self.card_rect(i), 16.0);
                     self.begin_drag(i, handle, win32::cursor_pos());
                 }

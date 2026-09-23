@@ -30,7 +30,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
-use crate::anim::{Anim, Ease};
+use crate::anim::{self, Anim, Ease};
 use crate::card::Card;
 use crate::data::{self, DataSources};
 use crate::draw::DrawList;
@@ -38,7 +38,7 @@ use crate::edit::{self, Handle, Rect, Snap};
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
 use crate::platform::win32::{self, ZMode};
-use crate::settings::{self, Cmd, SettingsWin};
+use crate::settings::{self, Cmd, Scope, SettingsWin};
 use crate::text::TextEngine;
 use crate::theme::{Library, Theme};
 use crate::ui::{self, Env, Frame};
@@ -49,7 +49,7 @@ use crate::workspace::{self, InstanceCfg, MonitorInfo, Workspace};
 use self::edit_mode::UndoEntry;
 use self::first_run::{default_instances, write_missing_guides};
 use self::host::AppHost;
-use self::instance::{Drag, Instance, VerbOutcome, SizeTween, engine_action, expand_target, scrolled_offset};
+use self::instance::{Drag, EXPAND_SECS, GLIDE_SECS, Instance, VerbOutcome, SizeTween, base_size_after_edit, engine_action, expand_target, scrolled_offset, snap_offset};
 use self::selftest::SelfTest;
 
 #[derive(Debug)]
@@ -83,6 +83,8 @@ pub struct App {
     wins: Vec<Instance>,
     settings: Option<SettingsWin>,
     edit: bool,
+    /// The Instance whose Edit Mode remove button was clicked once and now asks "Remove?".
+    remove_armed: Option<String>,
     undo: Vec<UndoEntry>,
     mods: ModifiersState,
     monitors: Vec<MonitorInfo>,
@@ -116,8 +118,7 @@ impl App {
         let guide_errors = write_missing_guides(&dir);
         let (ws, ws_err) = Workspace::load(&dir);
         let lib = Library::load(&dir);
-        let overrides = ws.overrides.iter().map(|(k, v)| (k.clone(), Value::Str(v.clone()))).collect();
-        let theme = Theme::compose(&lib, &ws.theme, &overrides);
+        let theme = Theme::default(); // composed by `rebuild_theme` below
         let reg = Registry::load(&dir.join("widgets"));
         let mut text = TextEngine::new();
         let fonts = text.load_font_dir(&dir.join("fonts"));
@@ -135,6 +136,7 @@ impl App {
             wins: Vec::new(),
             settings: None,
             edit: false,
+            remove_armed: None,
             undo: Vec::new(),
             mods: ModifiersState::empty(),
             monitors: Vec::new(),
@@ -159,6 +161,7 @@ impl App {
             forced_software: false,
             families: Vec::new(),
         };
+        app.rebuild_theme();
         app.families = app.text.family_names();
         app.selftest = app.opts.selftest.then(|| SelfTest { step: 0, at: Instant::now() + Duration::from_millis(2200), checks: Vec::new(), rect: None, collapsed: None, configures0: 0, fake: None });
         if let Some(e) = ws_err {
@@ -198,9 +201,10 @@ impl App {
     }
 
     fn rebuild_theme(&mut self) {
-        let ov = self.ws.overrides.iter().map(|(k, v)| (k.clone(), Value::Str(v.clone()))).collect();
-        self.theme = Theme::compose(&self.lib, &self.ws.theme, &ov);
-        for f in self.lib.fonts(&self.ws.theme.fonts).files.clone() {
+        self.theme = self.ws.global_theme(&self.lib);
+        let sets = std::iter::once(self.ws.theme.fonts.clone()).chain(self.ws.instances.iter().filter_map(|c| c.theme.fonts.clone()));
+        let files: Vec<PathBuf> = sets.flat_map(|n| self.lib.fonts(&n).files.clone()).collect();
+        for f in files {
             self.text.load_font_file(&f);
         }
         self.redraw_all();
@@ -216,12 +220,30 @@ impl App {
         self.save_at = Some(Instant::now() + Duration::from_millis(400));
     }
 
+    /// ponytail: composed per call (a few map merges, never while idle); cache on Instance if drags ever profile slow.
+    fn theme_of(&self, i: usize) -> Theme {
+        self.ws.theme_for(&self.lib, &self.ws.instances[i])
+    }
+
+    /// Applies a style change, then refits every window whose blur (and so gutter) changed.
+    fn restyle(&mut self, change: impl FnOnce(&mut Workspace)) {
+        let was: Vec<Card> = (0..self.wins.len()).map(|i| self.card(i)).collect();
+        change(&mut self.ws);
+        for (i, w) in was.into_iter().enumerate() {
+            if self.card(i).blur != w.blur {
+                self.refit_window_around_card(i, w);
+            }
+        }
+        self.rebuild_theme();
+        self.mark_save();
+    }
+
     fn card(&self, i: usize) -> Card {
-        Card::of(&self.ws, &self.ws.instances[i], &self.theme)
+        Card::new(&self.theme_of(i))
     }
 
     fn new_card(&self) -> Card {
-        Card::of(&self.ws, &InstanceCfg::default(), &self.theme)
+        Card::new(&self.theme)
     }
 
     fn monitor_of(&self, cfg: &InstanceCfg) -> Option<&MonitorInfo> {

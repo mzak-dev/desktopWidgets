@@ -12,6 +12,6 @@ The working directory is Wayfinder's data folder (`%APPDATA%\Wayfinder`). Wayfin
 3. Write one file per part, e.g. `palettes/sunset.toml`, starting from the complete example in `THEMES.md`. Give it a `name` no other file uses. Reusing a built-in's name replaces that built-in, so only do it when asked.
 4. Define every token of that part. Colours are `#rrggbbaa`. Keep surfaces slightly translucent, `text` on `surface` at a contrast ratio of 4.5:1 or more, and `accent-text` readable on `accent`.
 5. For a custom font, copy the `.ttf` / `.otf` into `fonts/` and list it in `files` above `[tokens]`. Use the family name inside the font, not the file name.
-6. Tell the user to pick it in Settings → Appearance (left-click the tray icon). If it isn't listed, read `wayfinder.log`. If the accent looks wrong, an override is winning: **Clear all overrides**.
+6. Tell the user to pick it in Settings → Appearance (left-click the tray icon). If it isn't listed, read `wayfinder.log`. If the accent looks wrong, a Style setting is winning: **Reset all style** in Settings → Appearance, or **Reset style** on that widget.
 
 Do not edit `workspace.json`. The running app owns it and overwrites edits.

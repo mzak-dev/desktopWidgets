@@ -15,7 +15,7 @@ Move and resize them in real time, restyle everything, and pay nothing while the
 [![DirectX 12](https://img.shields.io/badge/DirectX_12-DirectComposition-107C10?style=for-the-badge&logo=xbox&logoColor=white)](docs/adr/0001-dx12-dcomp-presentation.md)
 
 ![Status](https://img.shields.io/badge/status-alpha-F5A623?style=flat-square)
-![Tests](https://img.shields.io/badge/unit_tests-45_passing-2EA44F?style=flat-square)
+![Tests](https://img.shields.io/badge/unit_tests-114_passing-2EA44F?style=flat-square)
 ![Idle](https://img.shields.io/badge/idle_CPU-0%25-2EA44F?style=flat-square)
 ![Layout](https://img.shields.io/badge/layout-taffy_flexbox-8A63D2?style=flat-square)
 ![Text](https://img.shields.io/badge/text-glyphon-3B82F6?style=flat-square)
@@ -46,11 +46,12 @@ Rainmeter and the Windows Vista/7 sidebar showed how good widgets on a desktop c
 |  |  |
 |---|---|
 | 🪟 **Real transparency** | One borderless window per widget with true per-pixel alpha (DirectComposition), soft shadows and rounded corners. No opaque backdrop, no colour-key tricks. |
-| ✋ **Edit in place** | Drag a widget to move it, drag an edge or corner to resize it. Text and icons **reflow live** through a flexbox layout engine, with snapping to the grid, monitor edges and other widgets. |
+| ✋ **Edit in place** | Drag a widget to move it, drag an edge or corner to resize it. Text and icons **reflow live** through a flexbox layout engine, with snapping to the grid, monitor edges and other widgets. Snaps glide instead of jumping, and elements slide to their new place when a widget reflows. |
+| 📐 **Size-aware** | Widgets change what they show with their size, not just how big it is: a large clock adds other cities' times, a large system monitor adds every drive and a minute of history graphs, a narrow list drops to icons. |
 | 😴 **Free when idle** | A widget redraws only when something it displays *can* have changed: the next minute, the next second, an animation frame, a click. A desktop of clocks sits at 0% CPU. |
 | 📄 **Widgets are text files** | Describe a widget in TOML with bindings like `{clock.hour}` and design tokens like `$accent`. Save the file and it reloads instantly. Mistakes show a red error card in place. |
 | 🎛️ **Settings for free** | Declare a typed option once (`color`, `number`, `bool`, `font`, `shortcuts`...) and Wayfinder builds the settings form for it: sliders, toggles, colour picker, dropdowns. |
-| 🎨 **Themeable end to end** | Swap palette, font set, glyph set and icon pack independently. Drop in your own `.ttf` fonts, palettes and app icons. |
+| 🎨 **Themeable end to end** | Swap palette, font set, glyph set and icon pack independently, for all widgets or just one. Transparency, blur, shadow, outlines, roundness, text size and animation speed are global settings any widget can override. Drop in your own `.ttf` fonts, palettes and app icons. |
 | 🛡️ **Hard to break** | The binding language cannot loop or hang. A broken widget file never crashes the desktop, and a GPU reset rebuilds the renderer instead of taking widgets down. |
 
 <br>
@@ -98,7 +99,8 @@ Press **`Ctrl` + `Alt` + `E`** (or use the tray menu) to enter Edit Mode. Every 
 | | |
 |---|---|
 | Drag the body | move |
-| Drag an edge / corner | resize, with live reflow |
+| Drag an edge / corner | resize, with live reflow, within the widget's size limits |
+| The × in the bottom-right corner | remove (click twice) |
 | `Shift` while dragging | ignore snapping |
 | Arrow keys | nudge 1 px (`Shift`: 10 px) |
 | `Ctrl` + `Z` | undo |
@@ -125,10 +127,12 @@ Your arrangement is saved to `workspace.json`. Unplug a monitor and its widgets 
 
 | Widget | What it does | Notable options |
 |---|---|---|
-| 🕰️ **Analog Clock** | Round face with tick marks and hands. Scales cleanly to any size. | second hand on/off, **smooth** second hand, tick marks, accent colour |
-| 🔢 **Digital Clock** | Large time with the date beneath, in your Windows language. Text scales with the window. | 24 h / 12 h, seconds, date, AM/PM colour |
-| 📋 **Icon List** | A vertical list of app shortcuts that scrolls when it overflows. | shortcuts, mirror a folder, icon size, labels |
-| 📁 **Icon Folder** | A tile with a 2×2 preview that **expands in place** into an icon grid, growing away from the screen edge. | shortcuts, mirror a folder, columns, icon size |
+| 🕰️ **Analog Clock** | Round face with tick marks and hands. **Wide**, it lists other cities beside the face; **tall or large**, it shows them as chips under it. | second hand on/off, **smooth** second hand, tick marks, cities |
+| 🔢 **Digital Clock** | Large time with the date beneath, in your Windows language. **Tall**, it adds other cities' times. | 24 h / 12 h, seconds, date, cities |
+| 📊 **System Monitor** | CPU, memory, drives and battery. **Small**: bars. **Medium**: ring gauges that shrink to fit. **Large**: every drive, memory commit and a minute of CPU, memory and download graphs. | which gauges, graphs, colours, warn level |
+| 📋 **Icon List** | App shortcuts that scroll when they overflow. **Narrow**: icons only. **Wide**: a grid of tiles. | shortcuts, mirror a folder, icon size, labels |
+| 📁 **Icon Folder** | A tile with a preview (2×2, or 3×3 when large) that **expands in place** into an icon grid, growing away from the screen edge. | shortcuts, mirror a folder, columns, icon size |
+| 🗄️ **Drawer** | A collapsible drawer of app shortcuts with its own folder. **Narrow**: icons only. | title, icon size |
 
 <br>
 
@@ -166,6 +170,8 @@ Wayfinder writes `THEMES.md` and the `wayfinder-theme` skill at startup when the
 ```toml
 name = "My Clock"
 size = [240, 120]
+min_size = [160, 80]            # Edit Mode resizes within these;
+max_size = [480, 240]           # a widget's "Size limit" switch lifts the max
 
 [params.accent]                 # becomes a colour picker in Settings
 type = "color"
@@ -190,7 +196,7 @@ justify = "center"
 
 <br>
 
-**Elements:** `box` · `text` · `image` · `hand` · `ticks` · `repeat` (one child per list item).
+**Elements:** `box` · `text` · `image` · `hand` · `ticks` · `arc` · `graph` (a line through `values`, `span` slots wide) · `repeat` (one child per list item).
 
 | Group | Attributes |
 |---|---|
@@ -199,7 +205,9 @@ justify = "center"
 | Text | `text` `size` `color` `font` `weight` `text_align` `text_wrap` `line_height` |
 | Behaviour | `on_click` (`launch <path>` · `toggle <state>`) `hover` `transition` `enter` `scroll` `when` |
 
-**Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands) · `shortcuts.items` · `param.*` · `state.*` · `self.w` / `self.h`.
+**Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `param.*` · `state.*` · `self.w` / `self.h`.
+
+**Size tiers** are plain `when` conditions on `self.w` and `self.h`: show more when there is room. The engine animates the change.
 
 **Expressions** are total: arithmetic, comparison, `&&` `||` `!`, `? :`, strings and the functions `min` `max` `abs` `round` `floor` `ceil` `clamp` `len` `upper` `lower` `pad`. There are no loops and no side effects, so evaluating one can never hang a redraw. Interpolate with `{expr}` or format with `{expr|02}` / `{expr|.1}`.
 
@@ -268,7 +276,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 
 **✅ Verified**
 
-- 45 unit tests (`cargo test --lib`)
+- 114 unit tests (`cargo test --lib`)
 - All four widgets and the settings window rendered offscreen
 - A 35-check scripted run of the live app, on the **software** renderer: drag, live resize, undo, saving, folder expand and z-raise, hot reload with error cards, the settings commands, and Show Desktop detection and response (against a stand-in host window)
 
@@ -293,7 +301,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 ## 🛠️ Development
 
 ```powershell
-cargo test --lib                     # 45 unit tests, pure logic, no GPU
+cargo test --lib                     # 114 unit tests, pure logic, no GPU
 cargo run --release -- --selftest --gpu software --data $env:TEMP\wf-test
 ```
 

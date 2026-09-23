@@ -88,6 +88,33 @@ Every theme inherits these numbers. Any palette, font set or glyph set can chang
 | `stroke` | 1 |
 | `gutter` | 20 (room for the shadow around each card; best left alone) |
 
+## Style
+
+These live in **Settings → Appearance → Style** and apply to every widget. Each widget can override any of them, and can pick its own palette, font set, glyph set and icon pack, in the *Style* section of its panel on the Widgets page.
+
+| Token | Values | Default | What it does |
+|---|---|---|---|
+| `accent` | colour | the palette's | selection, gauges, highlights |
+| `radius-lg` | 0–40 | 22 | corner roundness of cards; with blur on it snaps to square, small (4) or standard (8), the only corners Windows can blur |
+| `outlines` | true / false | true | thin borders around widgets and their parts |
+| `blur` | true / false | false | blurs the desktop behind the widget and drops its shadow |
+| `transparent` | true / false | false | makes the card background see-through |
+| `bg-opacity` | 0–100 | 60 | background opacity, in percent, while `transparent` is on |
+| `tint` | true / false | true | off swaps the palette's surface colour for a neutral dark glass |
+| `shadow` | 0–100 | 100 | shadow strength in percent; 0 removes it |
+| `text-scale` | 80–140 | 100 | text size in percent |
+| `anim-speed` | `off`, `fast`, `normal`, `relaxed` | `normal` | hover, appear and resize animations |
+
+A palette, font set or glyph set may set any of these in its `[tokens]`, as its own defaults. Settings still win over them. A glass palette might ship:
+
+```toml
+[tokens]
+transparent = true
+bg-opacity = 45
+```
+
+Booleans and numbers go without quotes.
+
 ## Font set
 
 ```toml
@@ -140,6 +167,6 @@ Widget files (`widgets/*.toml`) refer to any token with `$name`, for example `co
 ## When it doesn't look right
 
 - **The palette isn't listed:** the file failed to load. Read `wayfinder.log`.
-- **The accent or roundness ignores your palette:** Settings → Appearance → *Accent colour* and *Card roundness* are overrides, and they win over every palette. Click **Clear all overrides**.
+- **The accent or roundness ignores your palette:** a Style value set in Settings wins over every palette. Click **Reset** next to it, or **Reset all style** in Settings → Appearance. A widget with its own value shows a dot and **Reset** in its panel; **Reset style** there clears all of them.
 - **Something is magenta:** a colour value is invalid, or a widget uses a token the palette doesn't define.
 - **Switching themes:** use Settings. `workspace.json` belongs to the running app, and it overwrites edits made while it runs.

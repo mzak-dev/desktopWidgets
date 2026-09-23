@@ -1,7 +1,8 @@
 name = "Icon List"
-description = "A vertical list of application shortcuts. Scrolls when it overflows."
+description = "A list of app shortcuts. Narrow: icons only. Wide: a grid of tiles with names. Scrolls when it overflows."
 size = [240, 320]
 min_size = [140, 96]
+max_size = [480, 900]
 
 [params.title]
 type = "string"
@@ -46,9 +47,11 @@ padding = 10
 gap = 6
 clip = true
 
+  # Size tiers: under 170 px wide icons only; from 360 px a grid of tiles; the title
+  # shows when there is height for it.
   [[root.children]]
   type = "text"
-  when = "{param.title != ''}"
+  when = "{param.title != '' && self.h >= 130}"
   text = "{param.title}"
   size = 13
   weight = 600
@@ -73,12 +76,14 @@ clip = true
 
     [[root.children.children]]
     type = "repeat"
+    when = "{self.w < 360}"
     for = "{shortcuts.items}"
     as = "item"
 
       [[root.children.children.children]]
       direction = "row"
       align = "center"
+      justify = "{self.w < 170 ? 'center' : 'start'}"
       gap = 10
       padding = [6, 8]
       radius = "$radius-sm"
@@ -96,8 +101,44 @@ clip = true
 
         [[root.children.children.children.children]]
         type = "text"
-        when = "{param.show_labels}"
+        when = "{param.show_labels && self.w >= 170}"
         text = "{item.name}"
         size = "{max(11, param.icon_size * 0.42)}"
         color = "$text"
         grow = 1
+
+    # ---- wide: a grid of tiles ----
+    [[root.children.children]]
+    when = "{self.w >= 360}"
+    direction = "row"
+    wrap = true
+    gap = 6
+    align = "start"
+      [[root.children.children.children]]
+      type = "repeat"
+      for = "{shortcuts.items}"
+      as = "item"
+        [[root.children.children.children.children]]
+        direction = "column"
+        align = "center"
+        gap = 4
+        padding = 6
+        width = "{param.icon_size + 44}"
+        radius = "$radius-sm"
+        on_click = "launch {item.target}"
+        hover = { fill = "$surface-hover" }
+        transition = 140
+        enter = { ms = 240, dy = 6, stagger = 22 }
+          [[root.children.children.children.children.children]]
+          type = "image"
+          src = "{item.icon_id}"
+          width = "{param.icon_size + 8}"
+          height = "{param.icon_size + 8}"
+          [[root.children.children.children.children.children]]
+          type = "text"
+          when = "{param.show_labels}"
+          text = "{item.name}"
+          size = 11
+          color = "$text"
+          text_align = "center"
+          text_wrap = true

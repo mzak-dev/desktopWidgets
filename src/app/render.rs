@@ -3,8 +3,9 @@ use super::*;
 impl App {
     pub(super) fn render(&mut self, i: usize) {
         let now = Instant::now();
-        let card = self.card(i);
-        let App { gpu, text, icons, theme, reg, sources, ws, wins, edit, .. } = self;
+        let theme = self.theme_of(i);
+        let card = Card::new(&theme);
+        let App { gpu, text, icons, theme: chrome, reg, sources, ws, wins, edit, remove_armed, .. } = self;
         let (Some(gpu), Some(iw)) = (gpu.as_mut(), wins.get_mut(i)) else { return };
         let (Some(window), Some(target)) = (iw.window.clone(), iw.target.as_mut()) else { return };
         let cfg = &ws.instances[i];
@@ -24,32 +25,30 @@ impl App {
             gpu.fit(target, phys.width, phys.height);
         }
         let scale = window.scale_factor() as f32;
-        let blur = card.blur;
-        if blur != iw.blur_applied {
-            if let Some(h) = win32::hwnd_of(&window) {
-                win32::set_blur(h, blur);
-                iw.blur_applied = blur;
-            }
+        // a roundness change under blur re-applies too: DWM clips the blur to the corners
+        let blur = card.blur.then(|| card.blur_corner_pref());
+        if let Some(h) = win32::hwnd_of(&window).filter(|_| blur != iw.blur_applied) {
+            win32::set_blur(h, blur.is_some(), blur.unwrap_or(0));
+            iw.blur_applied = blur;
         }
         let size = (phys.width as f32 / scale, phys.height as f32 / scale);
         let missing: Def = Err(format!("unknown widget `{}`", cfg.widget));
         let def = reg.get(&cfg.widget).unwrap_or(&missing);
         let tm = data::now_local();
-        let pack = ws.theme.icon_pack.clone();
-        let v = View { cfg, state: &iw.state, window_size: size, theme, icon_pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };
+        let pack = cfg.theme.resolve(&ws.theme).icon_pack;
+        iw.anim.duration_factor = anim::duration_factor(&theme.str("anim-speed"));
+        let v = View { cfg, state: &iw.state, window_size: size, theme: &theme, icon_pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };
         let mut sv = Services { gpu, icons, text, anim: &mut iw.anim, sources };
         let mut p = widgets::prepare(def, &v, &mut sv);
 
         if *edit {
             let (cw, ch) = card.card_size(size);
             let label = format!("{}, {}   {}x{}", cfg.x as i32, cfg.y as i32, cw as i32, ch as i32);
-            let ov = edit::overlay(&cfg.id, size, card.gutter, &label, theme, iw.drag.as_ref().map(|d| d.handle));
+            let armed = remove_armed.as_deref() == Some(cfg.id.as_str());
+            let ov = edit::overlay(&cfg.id, size, card.gutter, &label, chrome, iw.drag.as_ref().map(|d| d.handle), armed);
             let mut env = Env { text, anim: &mut iw.ov_anim, hover: None, now, scale };
             let of = ui::layout(&ov, size, &mut env);
-            let [l0, _] = of.list.layers;
-            p.frame.list.layers[1].shapes.extend(l0.shapes);
-            p.frame.list.layers[1].images.extend(l0.images);
-            p.frame.list.layers[1].texts.extend(l0.texts);
+            p.frame.list.put_on_top(of.list);
             p.frame.animating |= of.animating;
         }
         let mut lost = None;
@@ -84,6 +83,7 @@ impl App {
 
     /// Decision 23; an open expand also sits above sibling widgets.
     pub(super) fn apply_expand(&mut self, i: usize, expand: Option<ExpandInfo>) {
+        self.wins[i].expand = expand;
         let Some(window) = self.wins[i].window.clone() else { return };
         let cfg = self.ws.instances[i].clone();
         let Some(mon) = self.monitor_of(&cfg).cloned() else { return };
@@ -102,7 +102,11 @@ impl App {
         if first && !active {
             return; // first layout: nothing to animate
         }
-        self.wins[i].tween = Some(SizeTween { from: cur, to: target, start: Instant::now() });
+        let secs = EXPAND_SECS * anim::duration_factor(&self.theme_of(i).str("anim-speed"));
+        self.wins[i].tween = (secs > 0.0).then(|| SizeTween { from: cur, to: target, start: Instant::now(), secs });
+        if secs <= 0.0 {
+            self.set_window_rect(i, target);
+        }
         // one reconfigure up front; the animation itself then only moves the window
         if let (Some(g), Some(t)) = (self.gpu.as_ref(), self.wins[i].target.as_mut()) {
             g.fit(t, target.w.max(1) as u32, target.h.max(1) as u32);
