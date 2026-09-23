@@ -116,6 +116,11 @@ const CITY_ZONES: &[(&str, &str)] = &[
 
 type Zone = windows::Win32::System::Time::DYNAMIC_TIME_ZONE_INFORMATION;
 
+/// A C string in a fixed buffer: Windows may leave garbage after the terminator.
+fn wide_until_nul(buf: &[u16]) -> String {
+    String::from_utf16_lossy(&buf[..buf.iter().position(|&c| c == 0).unwrap_or(buf.len())])
+}
+
 /// Every zone Windows knows, by key name; enumerated once.
 fn zones() -> &'static [(String, Zone)] {
     static ZONES: std::sync::OnceLock<Vec<(String, Zone)>> = std::sync::OnceLock::new();
@@ -127,7 +132,7 @@ fn zones() -> &'static [(String, Zone)] {
             if unsafe { EnumDynamicTimeZoneInformation(i, &mut z) } != 0 {
                 break; // ERROR_NO_MORE_ITEMS
             }
-            let key = String::from_utf16_lossy(&z.TimeZoneKeyName).trim_end_matches('\0').to_string();
+            let key = wide_until_nul(&z.TimeZoneKeyName);
             out.push((key, z));
         }
         out
@@ -253,6 +258,14 @@ mod tests {
         let late = zone_times("Tokyo", &utc(2026, 1, 15, 20, 30), &Tm { hour: 20, minute: 30, ..here });
         assert_eq!((late[0].get("time").unwrap().to_string(), late[0].get("day").unwrap().to_string()), ("05:30".into(), "+1".into()));
         assert!(zone_times("", &utc(2026, 1, 15, 12, 0), &here).is_empty());
+    }
+
+    #[test]
+    fn a_zone_key_ends_at_its_terminator_not_at_the_buffer() {
+        let mut buf = [0u16; 16];
+        buf[..3].copy_from_slice(&[b'G' as u16, b'M' as u16, b'T' as u16]);
+        buf[4..6].copy_from_slice(&[0x5b70, 0x87b3]); // what a release build found after the NUL
+        assert_eq!(wide_until_nul(&buf), "GMT");
     }
 
     #[test]
