@@ -47,7 +47,7 @@ use crate::widgets::{self, ActionCx, Def, ExpandInfo, Host, Registry, Services, 
 use crate::workspace::{self, InstanceCfg, MonitorInfo, Workspace};
 
 use self::edit_mode::UndoEntry;
-use self::first_run::default_instances;
+use self::first_run::{default_instances, write_missing_guides};
 use self::host::AppHost;
 use self::instance::{Drag, Instance, VerbOutcome, SizeTween, engine_action, expand_target, scrolled_offset};
 use self::selftest::SelfTest;
@@ -113,6 +113,7 @@ impl App {
         let dir = opts.dir.clone();
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::remove_file(dir.join("wayfinder.log")); // one log per run
+        let guide_errors = write_missing_guides(&dir);
         let (ws, ws_err) = Workspace::load(&dir);
         let lib = Library::load(&dir);
         let overrides = ws.overrides.iter().map(|(k, v)| (k.clone(), Value::Str(v.clone()))).collect();
@@ -166,7 +167,7 @@ impl App {
         if fonts > 0 {
             app.log(format!("loaded {fonts} user font faces"));
         }
-        for e in app.lib.errors.clone().into_iter().chain(app.reg.errors()) {
+        for e in guide_errors.into_iter().chain(app.lib.errors.clone()).chain(app.reg.errors()) {
             app.log(e);
         }
         app

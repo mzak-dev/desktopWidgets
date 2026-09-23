@@ -143,8 +143,12 @@ Wayfinder/
 ├─ palettes/             *.toml  colour sets
 ├─ fonts/                *.toml font sets, plus .ttf / .otf files to make selectable
 ├─ glyphs/               *.toml  icon sets for buttons and chrome
-└─ iconpacks/<name>/     chrome.png ...  replaces the icon of a matching app
+├─ iconpacks/<name>/     chrome.png ...  replaces the icon of a matching app
+├─ THEMES.md             how to make palettes, font sets, glyph sets and icon packs
+└─ .claude/skills/       a Claude Code skill for making themes
 ```
+
+Wayfinder writes `THEMES.md` and the `wayfinder-theme` skill at startup when they are missing, and never overwrites your edits. Run `claude` in the data folder and ask for a theme ("a warm sunset palette") to have Claude Code write the files for you.
 
 <table>
 <tr>
