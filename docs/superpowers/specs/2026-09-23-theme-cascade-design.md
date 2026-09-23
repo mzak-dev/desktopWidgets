@@ -123,6 +123,28 @@ For one Instance, later wins:
 - `CONTEXT.md`: add **Style** (the token subset `style.toml` declares, overridable per Instance) and adjust **Theme**'s entry, since "Avoid: style" no longer holds.
 - Guides are only written when missing, so existing data folders keep the old guide. Accepted.
 
+## Also in this plan: blur-off outline fix
+
+Reported: turning blur off, on, then off again leaves an outline a few pixels outside the widget's border.
+
+Root cause: `win32::set_blur` sets `DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND` on every call, including `on = false`, and nothing ever resets it. Popup windows are not rounded by default, so an Instance that never had blur gets no DWM corners and no DWM border. After the first blur-on, DWM keeps rounding the window and drawing its system border along the window's edge. With blur off again the window grows back by the shadow gutter, so that border now sits outside the card. That explains why it needs off, on, off: the first "off" never called `set_blur`.
+
+Fix: `DWMWCP_ROUND` while blur is on, `DWMWCP_DEFAULT` when it goes off, which is the never-blurred state. The choice of attributes moves into a pure `blur_window_attributes(on)` with a unit test; the live check is manual (off, on, off: no outline). This is independent of the cascade and lands first, as its own commit.
+
+## Also in this plan: size limits
+
+Every Widget gets a maximum card size next to its minimum, and both are tested so a Widget never breaks within them.
+
+- **Declared:** `max_size = [w, h]` in a TOML Widget, next to `min_size`; `WidgetMeta.max_card_size`. A Rust Widget sets it in its meta. The built-in values are chosen per Widget from renders at that size.
+- **Enforced:** Edit Mode resize clamps the card between min and max (`edit::dragged_rect` takes the max as well). Moving is unaffected. An `[expand]` state is not clamped by the max; it is the Widget's own open size and is already clamped to the work area.
+- **Switch:** a per-Instance **Size limit** toggle in the Placement section, on by default. Off lifts the maximum only; the minimum always holds, because below it the layout really does break. Turning it back on shrinks an oversized Instance to its max, keeping its top-left.
+- **Tested** (`cargo test --lib`: layout needs only `TextEngine`, which is CPU-side). For every built-in Widget, at its min, default and max size, with default params and with every bool param on:
+  - it builds with no warnings or error card;
+  - every text node's rect lies inside the card, except inside a scroll container, which scrolls by design;
+  - no text node with non-empty text is laid out at zero width or height.
+  
+  A current Widget that fails gets its `min_size` raised. The harness stays in place and guards the redesign in sub-project 3.
+
 ## Testing
 
 All in `cargo test --lib`, no GPU.
@@ -132,7 +154,10 @@ All in `cargo test --lib`, no GPU.
 - `card`: `transparent` + `bg-opacity`; `tint` off; `shadow` 0 and 50; `text-scale` 120 on nested text; all of it on a Rust Widget too; blur cap vs `transparent`.
 - `ui` / `anim`: factor 0 never reports animating; factor 1.6 stretches a 100 ms transition to 160 ms.
 - `settings`: set and reset a style token at both scopes; a Theme row dropdown lists "Global (...)" first and picking it sends `name: None`.
-- Visual: `examples/render_widgets` and `examples/render_settings`, on the software adapter.
+- `platform`: `blur_window_attributes(false)` gives `DWMWCP_DEFAULT`, `(true)` gives `DWMWCP_ROUND`.
+- `edit`: a resize stops at the max with the limit on and passes it with the limit off; the min holds either way.
+- `widgets`: the min/max layout harness above.
+- Visual: `examples/render_widgets` and `examples/render_settings`, on the software adapter, including each Widget at its max size.
 
 ## Out of scope
 
