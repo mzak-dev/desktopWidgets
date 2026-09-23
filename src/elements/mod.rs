@@ -2,6 +2,7 @@
 //! its `Shape`. Box, text and image are drawn by the engine itself.
 
 mod arc;
+mod graph;
 mod hand;
 mod image;
 mod text;
@@ -15,6 +16,7 @@ use crate::format::Attrs;
 use crate::ui::Kind;
 
 pub use self::arc::ArcSpec;
+pub use self::graph::GraphSpec;
 pub use self::hand::HandSpec;
 pub use self::ticks::TicksSpec;
 
@@ -51,7 +53,7 @@ fn build_box(_: &mut Attrs) -> Result<Kind, String> {
 pub const BOX: ElementKind = ElementKind { name: "box", own_attrs: &[], fills_parent_when_unsized: false, build: build_box };
 
 /// In the order error messages list them.
-pub static KINDS: &[ElementKind] = &[BOX, self::text::KIND, self::image::KIND, self::hand::KIND, self::ticks::KIND, self::arc::KIND];
+pub static KINDS: &[ElementKind] = &[BOX, self::text::KIND, self::image::KIND, self::hand::KIND, self::ticks::KIND, self::arc::KIND, self::graph::KIND];
 
 pub fn find(name: &str) -> Option<&'static ElementKind> {
     KINDS.iter().find(|k| k.name == name)
