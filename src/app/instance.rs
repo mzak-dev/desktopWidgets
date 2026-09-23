@@ -38,7 +38,8 @@ pub(super) const ANIMATION_FRAME: Duration = Duration::from_micros(16_667);
 
 pub(super) struct Instance {
     pub(super) window: Option<Arc<Window>>,
-    pub(super) blur_applied: bool,
+    /// The DWM corner preference while blurred, `None` while not.
+    pub(super) blur_applied: Option<i32>,
     pub(super) target: Option<Target>,
     pub(super) state: BTreeMap<String, Value>,
     pub(super) anim: Anim,
@@ -81,7 +82,7 @@ impl Instance {
             grab: None,
             mouse: (-1.0, -1.0),
             tween: None,
-            blur_applied: false,
+            blur_applied: None,
             want: None,
             raised: false,
             error: None,

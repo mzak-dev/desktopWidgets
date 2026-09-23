@@ -149,16 +149,17 @@ pub fn open(target: &str) -> bool {
     r.0 as isize > 32
 }
 
+/// (corner preference, accent state). `corners` is the card's DWMWCP value
+/// (`card::blur_corners`). Rounding is only for the blur: left on, DWM keeps drawing
+/// its border at the window edge, outside the card once the shadow gutter is back.
+pub fn blur_window_attributes(on: bool, corners: i32) -> (i32, u32) {
+    if on { (corners, 3) } else { (0, 0) } // ACCENT_ENABLE_BLURBEHIND, or DWMWCP_DEFAULT + disabled
+}
+
 /// Accent-policy blur (Rainmeter's): unlike DwmEnableBlurBehindWindow it also
 /// blurs wallpaper and icons, but ignores SetWindowRgn, so the window must be
 /// exactly the card.
-/// (corner preference, accent state). Rounding is only for the blur: left on, DWM keeps
-/// drawing its border at the window edge, outside the card once the shadow gutter is back.
-pub fn blur_window_attributes(on: bool) -> (i32, u32) {
-    if on { (2, 3) } else { (0, 0) } // DWMWCP_ROUND + ACCENT_ENABLE_BLURBEHIND, or DWMWCP_DEFAULT + disabled
-}
-
-pub fn set_blur(hwnd: HWND, on: bool) {
+pub fn set_blur(hwnd: HWND, on: bool, corners: i32) {
     use windows::Win32::Graphics::Dwm::DwmSetWindowAttribute;
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
     #[repr(C)]
@@ -175,7 +176,7 @@ pub fn set_blur(hwnd: HWND, on: bool) {
         size: usize,
     }
     type SetWca = unsafe extern "system" fn(HWND, *mut CompositionAttrib) -> BOOL;
-    let (corners, accent) = blur_window_attributes(on);
+    let (corners, accent) = blur_window_attributes(on, corners);
     unsafe {
         let _ = DwmSetWindowAttribute(hwnd, windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE(33), &corners as *const _ as *const _, size_of::<i32>() as u32);
         let Ok(user32) = LoadLibraryW(w!("user32.dll")) else { return };
@@ -511,8 +512,8 @@ mod tests {
 
     #[test]
     fn blur_off_returns_to_the_never_blurred_corners() {
-        assert_eq!(blur_window_attributes(true), (2, 3)); // DWMWCP_ROUND, ACCENT_ENABLE_BLURBEHIND
-        assert_eq!(blur_window_attributes(false), (0, 0)); // DWMWCP_DEFAULT, ACCENT_DISABLED
+        assert_eq!(blur_window_attributes(true, 3), (3, 3)); // the card's corners, ACCENT_ENABLE_BLURBEHIND
+        assert_eq!(blur_window_attributes(false, 3), (0, 0)); // DWMWCP_DEFAULT, ACCENT_DISABLED
     }
 
     #[test]

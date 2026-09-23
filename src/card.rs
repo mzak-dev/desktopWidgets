@@ -7,8 +7,19 @@ use crate::theme::Theme;
 use crate::ui::{Kind, Node};
 use crate::widgets::ExpandInfo;
 
-const WIN11_BLUR_RADIUS: f32 = 8.0;
 const MAX_FILL_ALPHA_OVER_BLUR: f32 = 0.6;
+
+/// (DWM corner preference, card radius) for a roundness under blur. DWM clips the
+/// blur to square, small (4 px) or standard (8 px) corners only; both scale with DPI.
+pub fn blur_corners(radius: f32) -> (i32, f32) {
+    if radius < 2.0 {
+        (1, 0.0) // DWMWCP_DONOTROUND
+    } else if radius < 6.0 {
+        (3, 4.0) // DWMWCP_ROUNDSMALL
+    } else {
+        (2, 8.0) // DWMWCP_ROUND
+    }
+}
 const NEUTRAL_GLASS: &str = "#141414";
 
 /// The Style tokens the engine applies to every Widget's card, read from the Instance's Theme.
@@ -41,6 +52,10 @@ impl Card {
             shadow: (theme.num("shadow") / 100.0).clamp(0.0, 1.0),
             text_scale: (theme.num("text-scale") / 100.0).max(0.1),
         }
+    }
+
+    pub fn blur_corner_pref(&self) -> i32 {
+        blur_corners(self.radius).0
     }
 
     pub fn gutter_px(&self, scale: f64) -> i32 {
@@ -95,7 +110,7 @@ impl Card {
         look.fill = look.fill.with_alpha(alpha(look.fill.0[3]));
         look.gradient_bottom = look.gradient_bottom.map(|c: Color| c.with_alpha(alpha(c.0[3])));
         if self.blur {
-            look.radius = WIN11_BLUR_RADIUS;
+            look.radius = blur_corners(self.radius).1;
         }
         look.shadow = look.shadow.filter(|_| self.shadow > 0.0).map(|mut s| {
             s.color = s.color.mul_alpha(self.shadow);
@@ -176,9 +191,19 @@ mod tests {
         let big = root(&[("text-scale", Value::Num(120.0))]);
         assert!(matches!(&big.children[0].kind, Kind::Text(t) if (t.size - 12.0).abs() < 1e-4));
         let blurred = root(&[("blur", Value::Bool(true))]);
-        assert_eq!((blurred.look.radius, blurred.look.fill.0[3]), (WIN11_BLUR_RADIUS, MAX_FILL_ALPHA_OVER_BLUR));
+        assert_eq!((blurred.look.radius, blurred.look.fill.0[3]), (8.0, MAX_FILL_ALPHA_OVER_BLUR), "the default roundness is Windows' standard corner");
         let blurred_see_through = root(&[("blur", Value::Bool(true)), ("transparent", Value::Bool(true)), ("bg-opacity", Value::Num(20.0))]);
         assert!((blurred_see_through.look.fill.0[3] - 0.2).abs() < 1e-6, "transparent wins over the blur cap");
+    }
+
+    #[test]
+    fn roundness_under_blur_snaps_to_what_windows_can_draw() {
+        assert_eq!(blur_corners(0.0), (1, 0.0));
+        assert_eq!(blur_corners(4.0), (3, 4.0));
+        assert_eq!(blur_corners(22.0), (2, 8.0));
+        let c = Card::new(&theme_with(&[("blur", Value::Bool(true)), ("radius-lg", Value::Num(3.0))]));
+        let n = c.window_node("k", (100.0, 100.0), Node::new("c").radius(22.0)).children.remove(0);
+        assert_eq!((n.look.radius, c.blur_corner_pref()), (4.0, 3));
     }
 
     #[test]

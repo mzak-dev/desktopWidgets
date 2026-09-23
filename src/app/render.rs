@@ -25,12 +25,11 @@ impl App {
             gpu.fit(target, phys.width, phys.height);
         }
         let scale = window.scale_factor() as f32;
-        let blur = card.blur;
-        if blur != iw.blur_applied {
-            if let Some(h) = win32::hwnd_of(&window) {
-                win32::set_blur(h, blur);
-                iw.blur_applied = blur;
-            }
+        // a roundness change under blur re-applies too: DWM clips the blur to the corners
+        let blur = card.blur.then(|| card.blur_corner_pref());
+        if let Some(h) = win32::hwnd_of(&window).filter(|_| blur != iw.blur_applied) {
+            win32::set_blur(h, blur.is_some(), blur.unwrap_or(0));
+            iw.blur_applied = blur;
         }
         let size = (phys.width as f32 / scale, phys.height as f32 / scale);
         let missing: Def = Err(format!("unknown widget `{}`", cfg.widget));
