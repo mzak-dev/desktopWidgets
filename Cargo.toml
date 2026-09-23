@@ -43,6 +43,7 @@ notify = "8.2.0"
 global-hotkey = "0.8.0"
 tray-icon = "0.24.1"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
+velopack = "1.2.158"
 
 [profile.release]
 debug = 1

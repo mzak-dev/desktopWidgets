@@ -20,7 +20,25 @@ jobs:
         run: cargo test --locked --lib
       - name: Build
         run: cargo build --locked --release
+      - name: Check tag matches Cargo.toml version
+        run: |
+          $tagVersion = "$env:GITHUB_REF_NAME".TrimStart('v')
+          $cargoVersion = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches.Groups[1].Value
+          if ($tagVersion -ne $cargoVersion) {
+            Write-Error "Tag $env:GITHUB_REF_NAME does not match Cargo.toml version $cargoVersion"
+            exit 1
+          }
+          echo "APP_VERSION=$cargoVersion" >> $env:GITHUB_ENV
+      - name: Install vpk
+        run: dotnet tool update -g vpk
+      - name: Stage package contents
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/wayfinder.exe dist/
+          Copy-Item -Recurse -Force assets/guides dist/guides
+      - name: Pack
+        run: vpk pack -u Wayfinder -v $env:APP_VERSION -p dist -e wayfinder.exe
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$env:GITHUB_REF_NAME" target/release/wayfinder.exe --title "Wayfinder $env:GITHUB_REF_NAME" --generate-notes
+        run: vpk upload github --repoUrl "https://github.com/${{ github.repository }}" --token $env:GH_TOKEN --publish --tag $env:GITHUB_REF_NAME
