@@ -250,6 +250,7 @@ shadow = { blur = 14, dy = 5 }
     type = "graph"
     grow = 1
     values = "{sys.cpu_history}"
+    span = 60
     stroke = 1.5
     color = "{param.cpu_color}"
     area = "{param.cpu_color}"
@@ -284,6 +285,7 @@ shadow = { blur = 14, dy = 5 }
     type = "graph"
     grow = 1
     values = "{sys.ram_history}"
+    span = 60
     stroke = 1.5
     color = "{param.ram_color}"
     area = "{param.ram_color}"
@@ -318,6 +320,7 @@ shadow = { blur = 14, dy = 5 }
     type = "graph"
     grow = 1
     values = "{sys.net_history}"
+    span = 60
     stroke = 1.5
     color = "{param.disk_color}"
     area = "{param.disk_color}"

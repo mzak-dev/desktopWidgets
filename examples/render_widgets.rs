@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use wayfinder::anim::Anim;
 use wayfinder::card::Card;
-use wayfinder::data::{DataSources, Shortcut, Tm};
+use wayfinder::data::{DataSources, Shortcut, SourceCx, Tm};
 use wayfinder::gfx::{Gpu, Power};
 use wayfinder::icons::IconService;
 use wayfinder::text::TextEngine;
@@ -103,6 +103,15 @@ fn main() {
         Case { widget: "icon_folder", size: (132.0, 152.0), params: vec![("title", "Tools".into())], state: vec![("expanded", true.into())], expanded: true },
     ] };
 
+    if tiers {
+        // a few seconds of samples, so the monitor's graphs have a history to draw
+        let (cfg, params) = (InstanceCfg::default(), BTreeMap::new());
+        let cx = SourceCx { cfg: &cfg, params: &params, tm, icon_pack: "Default" };
+        for _ in 0..8 {
+            sources.value("sys", &cx);
+            std::thread::sleep(Duration::from_millis(850));
+        }
+    }
     let mut tiles = Vec::new();
     let mut anim = Anim::default();
     for c in &cases {
