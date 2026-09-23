@@ -81,6 +81,7 @@ impl App {
                 self.begin_drag(i, Handle::SE, (0, 0));
                 self.drag_update(i, (70, 50));
                 self.end_drag(i);
+                self.settle_glide(i);
                 let r1 = self.rect_now(i).unwrap();
                 check(&mut st, "SE handle resizes live, top-left fixed", r1.x == r0.x && r1.y == r0.y && r1.w >= r0.w + 60 && r1.h >= r0.h + 40, format!("({}x{} -> {}x{})", r0.w, r0.h, r1.w, r1.h));
                 self.render(i);
@@ -92,6 +93,7 @@ impl App {
                 self.undo_last();
                 self.undo_last();
                 let i = clock.unwrap();
+                self.settle_glide(i);
                 let r = self.rect_now(i).unwrap();
                 let want = st.rect;
                 check(&mut st, "two undos restore the original rect", Some(r) == want, format!("({r:?} vs {want:?})"));
@@ -267,6 +269,17 @@ impl App {
         st.step += 1;
         st.at = now + Duration::from_millis(next);
         self.selftest = Some(st);
+    }
+
+    /// Renders until a snap, resize or undo glide has landed, as the event loop would.
+    fn settle_glide(&mut self, i: usize) {
+        for _ in 0..40 {
+            if self.wins[i].tween.is_none() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(16));
+            self.render(i);
+        }
     }
 
     pub(super) fn selftest_abort(&mut self, el: &ActiveEventLoop, st: SelfTest, why: &str) {
