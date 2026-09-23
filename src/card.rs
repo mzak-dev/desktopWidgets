@@ -90,11 +90,10 @@ impl Card {
 mod tests {
     use super::*;
     use crate::theme::{Library, Selection};
-    use std::collections::BTreeMap;
     use std::path::Path;
 
     fn theme() -> Theme {
-        Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &BTreeMap::new())
+        Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[])
     }
 
     #[test]

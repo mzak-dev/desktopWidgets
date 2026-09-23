@@ -117,7 +117,7 @@ impl App {
         let (ws, ws_err) = Workspace::load(&dir);
         let lib = Library::load(&dir);
         let overrides = ws.overrides.iter().map(|(k, v)| (k.clone(), Value::Str(v.clone()))).collect();
-        let theme = Theme::compose(&lib, &ws.theme, &overrides);
+        let theme = Theme::compose(&lib, &ws.theme, &[&overrides]);
         let reg = Registry::load(&dir.join("widgets"));
         let mut text = TextEngine::new();
         let fonts = text.load_font_dir(&dir.join("fonts"));
@@ -199,7 +199,7 @@ impl App {
 
     fn rebuild_theme(&mut self) {
         let ov = self.ws.overrides.iter().map(|(k, v)| (k.clone(), Value::Str(v.clone()))).collect();
-        self.theme = Theme::compose(&self.lib, &self.ws.theme, &ov);
+        self.theme = Theme::compose(&self.lib, &self.ws.theme, &[&ov]);
         for f in self.lib.fonts(&self.ws.theme.fonts).files.clone() {
             self.text.load_font_file(&f);
         }

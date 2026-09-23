@@ -1,13 +1,25 @@
 //! Design tokens (decision 19): palette, font set and glyph set over built-in
-//! defaults, overrides on top. An undefined token is loud magenta (decision 14).
+//! defaults, style layers on top. An undefined token is loud magenta (decision 14).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
 use crate::color::{Color, MAGENTA};
 use crate::value::Value;
+use crate::widgets::ParamDef;
+
+/// The Style tokens, declared in `assets/style.toml`: set globally, overridable per Instance.
+pub fn style_schema() -> &'static [ParamDef] {
+    static SCHEMA: OnceLock<Vec<ParamDef>> = OnceLock::new();
+    SCHEMA.get_or_init(|| {
+        let t: toml::Table = include_str!("../assets/style.toml").parse().expect("style.toml is valid TOML");
+        let params = t.get("params").and_then(|v| v.as_table()).expect("style.toml has [params]");
+        crate::format::parse_params(params).expect("built-in style schema is valid")
+    })
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct Axis {
@@ -48,6 +60,31 @@ pub struct Selection {
 impl Default for Selection {
     fn default() -> Self {
         Self { palette: "Midnight".into(), fonts: "System".into(), glyphs: "Fluent".into(), icon_pack: "Default".into() }
+    }
+}
+
+/// An Instance's own axes; `None` uses the global one.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ThemePick {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub palette: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fonts: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glyphs: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon_pack: Option<String>,
+}
+
+impl ThemePick {
+    pub fn resolve(&self, global: &Selection) -> Selection {
+        let or = |mine: &Option<String>, g: &String| mine.clone().unwrap_or_else(|| g.clone());
+        Selection { palette: or(&self.palette, &global.palette), fonts: or(&self.fonts, &global.fonts), glyphs: or(&self.glyphs, &global.glyphs), icon_pack: or(&self.icon_pack, &global.icon_pack) }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        *self == ThemePick::default()
     }
 }
 
@@ -134,9 +171,10 @@ impl Library {
     }
 }
 
-/// Size/spacing tokens every theme inherits.
-fn base_sizes() -> BTreeMap<String, Value> {
-    [
+/// Size/spacing tokens every theme inherits, then the Style defaults (`accent` has
+/// none, so it stays the palette's).
+fn base_tokens() -> BTreeMap<String, Value> {
+    let sizes = [
         ("radius-sm", 8.0),
         ("radius-md", 14.0),
         ("radius-lg", 22.0),
@@ -151,10 +189,9 @@ fn base_sizes() -> BTreeMap<String, Value> {
         ("font-size-2xl", 48.0),
         ("stroke", 1.0),
         ("gutter", 20.0),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), Value::Num(v)))
-    .collect()
+    ];
+    let defaults = style_schema().iter().filter(|p| p.default != Value::Str(String::new())).map(|p| (p.name.clone(), p.default.clone()));
+    sizes.into_iter().map(|(k, v)| (k.to_string(), Value::Num(v))).chain(defaults).collect()
 }
 
 #[derive(Clone, Debug, Default)]
@@ -163,9 +200,9 @@ pub struct Theme {
 }
 
 impl Theme {
-    /// overrides > palette > fonts > glyphs > sizes/base (decision 19's fallback chain).
-    pub fn compose(lib: &Library, sel: &Selection, overrides: &BTreeMap<String, Value>) -> Theme {
-        let mut tokens = base_sizes();
+    /// style layers (later wins) > palette > fonts > glyphs > base (decision 19's fallback chain).
+    pub fn compose(lib: &Library, sel: &Selection, layers: &[&BTreeMap<String, Value>]) -> Theme {
+        let mut tokens = base_tokens();
         // Base colours/fonts come from the first (built-in) entry of each axis.
         for axis in [&lib.glyphs[0], &lib.fonts[0], &lib.palettes[0]] {
             tokens.extend(axis.tokens.clone());
@@ -173,8 +210,20 @@ impl Theme {
         for axis in [lib.glyphs(&sel.glyphs), lib.fonts(&sel.fonts), lib.palette(&sel.palette)] {
             tokens.extend(axis.tokens.clone());
         }
-        tokens.extend(overrides.clone());
+        for layer in layers {
+            tokens.extend(layer.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
         Theme { tokens }
+    }
+
+    /// A bool token; the string "false" (an old override) is false, unlike `Value::truthy`.
+    pub fn flag(&self, name: &str) -> bool {
+        match self.tokens.get(name) {
+            Some(Value::Bool(b)) => *b,
+            Some(Value::Num(n)) => *n != 0.0,
+            Some(Value::Str(s)) => s == "true",
+            _ => false,
+        }
     }
 
     pub fn get(&self, name: &str) -> Option<&Value> {
@@ -212,28 +261,60 @@ mod tests {
     fn builtins_load_and_fallback_chain_holds() {
         let lib = Library::load(Path::new("definitely-not-a-dir"));
         assert!(lib.palettes.len() >= 4 && lib.fonts.len() >= 3 && lib.glyphs.len() >= 3);
-        let t = Theme::compose(&lib, &Selection::default(), &BTreeMap::new());
+        let t = Theme::compose(&lib, &Selection::default(), &[]);
         assert_eq!(t.num("radius-md"), 14.0);
         assert_eq!(t.str("glyph-gear"), "\u{E713}");
 
         // override beats palette beats base
         let mut ov = BTreeMap::new();
         ov.insert("accent".to_string(), Value::Str("#123456".into()));
-        let t = Theme::compose(&lib, &Selection { palette: "Daylight".into(), ..Default::default() }, &ov);
+        let t = Theme::compose(&lib, &Selection { palette: "Daylight".into(), ..Default::default() }, &[&ov]);
         assert_eq!(t.color("accent").to_hex(), "#123456");
         assert_eq!(t.color("text").to_hex(), "#141a2a");
 
         // a token nobody defines is magenta, never a default
         assert_eq!(t.color("no-such-token"), MAGENTA);
         // an unknown axis name falls back to the built-in rather than failing
-        let t = Theme::compose(&lib, &Selection { palette: "Nope".into(), ..Default::default() }, &BTreeMap::new());
+        let t = Theme::compose(&lib, &Selection { palette: "Nope".into(), ..Default::default() }, &[]);
         assert_eq!(t.color("surface"), lib.palettes[0].tokens.get("surface").map(|v| Color::parse(&v.to_string()).unwrap()).unwrap());
+    }
+
+    #[test]
+    fn style_layers_cascade_over_palette_and_base() {
+        let lib = Library::load(Path::new("nope"));
+        let v = |s: &str| Value::Str(s.into());
+        assert!(Theme::compose(&lib, &Selection::default(), &[]).flag("outlines"), "schema default");
+        assert_eq!(Theme::compose(&lib, &Selection::default(), &[]).num("bg-opacity"), 60.0);
+        let global = BTreeMap::from([("accent".to_string(), v("#111111")), ("blur".to_string(), Value::Bool(true))]);
+        let mine = BTreeMap::from([("accent".to_string(), v("#222222"))]);
+        let t = Theme::compose(&lib, &Selection::default(), &[&global, &mine]);
+        assert_eq!(t.color("accent").to_hex(), "#222222", "instance beats global");
+        assert!(t.flag("blur"), "global beats base");
+        assert!(!Theme::compose(&lib, &Selection::default(), &[&BTreeMap::from([("blur".to_string(), v("false"))])]).flag("blur"));
+    }
+
+    #[test]
+    fn a_palette_can_set_style_defaults_and_a_pick_overrides_the_global_axes() {
+        let mut lib = Library::load(Path::new("nope"));
+        lib.palettes.push(Axis::parse("name = 'Glass'\n[tokens]\ntransparent = true\nbg-opacity = 30", None).unwrap());
+        let pick = ThemePick { palette: Some("Glass".into()), ..Default::default() };
+        let t = Theme::compose(&lib, &pick.resolve(&Selection::default()), &[]);
+        assert!(t.flag("transparent"));
+        assert_eq!(t.num("bg-opacity"), 30.0);
+        assert!(ThemePick::default().is_empty() && !pick.is_empty());
+        assert_eq!(ThemePick::default().resolve(&Selection::default()), Selection::default());
+    }
+
+    #[test]
+    fn the_style_schema_keeps_its_file_order() {
+        let names: Vec<&str> = style_schema().iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["accent", "radius-lg", "outlines", "blur", "transparent", "bg-opacity", "tint", "shadow", "text-scale", "anim-speed"]);
     }
 
     #[test]
     fn axes_swap_independently() {
         let lib = Library::load(Path::new("definitely-not-a-dir"));
-        let a = Theme::compose(&lib, &Selection { glyphs: "Symbols".into(), ..Default::default() }, &BTreeMap::new());
+        let a = Theme::compose(&lib, &Selection { glyphs: "Symbols".into(), ..Default::default() }, &[]);
         assert_eq!(a.str("font-glyph"), "Segoe UI Symbol");
         assert_eq!(a.color("accent").to_hex(), "#6ea8ff"); // palette untouched
     }

@@ -54,7 +54,7 @@ fn main() {
     let mut icons = IconService::new("iconpacks".into());
     let lib = Library::load(Path::new("nope"));
     let sel = Selection { palette: palette.clone(), ..Default::default() };
-    let theme = Theme::compose(&lib, &sel, &BTreeMap::new());
+    let theme = Theme::compose(&lib, &sel, &[]);
     let reg = Registry::load(Path::new("nope"));
     let card = Card::new(&theme, false, true);
     let sources = DataSources::builtin();

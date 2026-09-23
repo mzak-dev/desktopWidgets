@@ -88,7 +88,7 @@ mod tests {
     fn system_monitor_builds_with_live_data_and_hides_what_is_off() {
         let r = Registry::load(Path::new("no-such-dir"));
         let Some(Ok(w)) = r.get("system_monitor") else { panic!("system_monitor") };
-        let theme = Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &BTreeMap::new());
+        let theme = Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[]);
         let arcs = |params: BTreeMap<String, Value>| {
             let st = BTreeMap::new();
             let sys = Sys::default();

@@ -1,0 +1,73 @@
+# Style: the Theme tokens that are set globally (Settings > Appearance) and can be
+# overridden per widget (its Settings panel). The engine applies them to every card.
+# Same syntax as a widget's [params]; the order here is the order in Settings.
+
+[params.accent]
+type = "color"
+label = "Accent colour"
+help = "Selection, gauges and highlights. Empty uses the palette's."
+
+[params.radius-lg]
+type = "number"
+default = 22
+min = 0
+max = 40
+step = 1
+label = "Corner roundness"
+help = "With blur on, Windows only draws square, small or standard corners, so this snaps to the nearest."
+
+[params.outlines]
+type = "bool"
+default = true
+label = "Outlines"
+help = "A thin border around widgets and their parts."
+
+[params.blur]
+type = "bool"
+default = false
+label = "Blur behind"
+help = "Blurs the desktop behind the widget. Drops the shadow."
+
+[params.transparent]
+type = "bool"
+default = false
+label = "Transparent background"
+
+[params.bg-opacity]
+type = "number"
+default = 60
+min = 0
+max = 100
+step = 5
+label = "Background opacity (%)"
+help = "Used while the background is transparent."
+
+[params.tint]
+type = "bool"
+default = true
+label = "Tint from theme"
+help = "Off gives a neutral dark glass."
+
+[params.shadow]
+type = "number"
+default = 100
+min = 0
+max = 100
+step = 10
+label = "Shadow (%)"
+help = "0 removes it."
+
+[params.text-scale]
+type = "number"
+default = 100
+min = 80
+max = 140
+step = 5
+label = "Text size (%)"
+
+[params.anim-speed]
+type = "enum"
+choices = ["off", "fast", "normal", "relaxed"]
+default = "normal"
+label = "Animations"
+help = "Hover, appear and resize animations. Off switches them off."

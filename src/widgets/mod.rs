@@ -180,7 +180,7 @@ mod tests {
     use std::sync::Arc;
 
     fn theme() -> Theme {
-        Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &BTreeMap::new())
+        Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[])
     }
 
     struct Badge(WidgetMeta);

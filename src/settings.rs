@@ -1575,7 +1575,7 @@ mod tests {
 
     fn world() -> World {
         let lib = Library::load(Path::new("no-such-dir"));
-        let theme = Theme::compose(&lib, &Selection::default(), &Default::default());
+        let theme = Theme::compose(&lib, &Selection::default(), &[]);
         let mut ws = Workspace::default();
         ws.instances.push(InstanceCfg { id: "clock-1".into(), widget: "clock".into(), monitor: MonitorRef { name: "\\\\.\\DISPLAY1".into(), width: 1920, height: 1080 }, ..Default::default() });
         let mut folder = InstanceCfg { id: "icon_folder-1".into(), widget: "icon_folder".into(), ..Default::default() };

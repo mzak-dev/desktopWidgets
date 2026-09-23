@@ -25,7 +25,7 @@ fn main() {
     let mut text = TextEngine::new();
     let mut icons = IconService::new("iconpacks".into());
     let lib = Library::load(Path::new("nope"));
-    let theme = Theme::compose(&lib, &Selection::default(), &Default::default());
+    let theme = Theme::compose(&lib, &Selection::default(), &[]);
     let reg = Registry::load(Path::new("nope"));
     let families = text.family_names();
 

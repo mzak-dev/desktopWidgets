@@ -72,6 +72,16 @@ impl Tween {
     }
 }
 
+/// The `anim-speed` style token as a multiplier on every duration; 0 means no animation.
+pub fn duration_factor(speed: &str) -> f32 {
+    match speed {
+        "off" => 0.0,
+        "fast" => 0.6,
+        "relaxed" => 1.6,
+        _ => 1.0,
+    }
+}
+
 #[derive(Default)]
 pub struct Anim {
     map: HashMap<(String, &'static str), (Tween, u64)>,
@@ -140,6 +150,11 @@ impl Anim {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn anim_speed_names_map_to_duration_factors() {
+        assert_eq!((duration_factor("off"), duration_factor("fast"), duration_factor("normal"), duration_factor("relaxed"), duration_factor("?")), (0.0, 0.6, 1.0, 1.6, 1.0));
+    }
 
     #[test]
     fn idle_when_nothing_moves_and_animating_while_a_tween_runs() {
