@@ -70,12 +70,36 @@ pub struct DrawList {
     pub layers: [Layer; 2],
 }
 
+impl DrawList {
+    /// Draws all of `other` above this list's own layer 1 (the Edit Mode overlay).
+    pub fn put_on_top(&mut self, other: DrawList) {
+        for l in other.layers {
+            self.layers[1].shapes.extend(l.shapes);
+            self.layers[1].images.extend(l.images);
+            self.layers[1].texts.extend(l.texts);
+        }
+    }
+}
+
 pub fn intersect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]).max(a[0].max(b[0])), a[3].min(b[3]).max(a[1].max(b[1]))]
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn an_overlay_on_top_keeps_both_of_its_layers() {
+        let mut base = DrawList::default();
+        let mut top = DrawList::default();
+        top.layers[0].shapes.push(Inst::default());
+        top.layers[1].shapes.push(Inst::default()); // an `overlay` node lands in layer 1
+        top.layers[1].shapes.push(Inst::default());
+        base.put_on_top(top);
+        assert_eq!((base.layers[0].shapes.len(), base.layers[1].shapes.len()), (0, 3));
+    }
+
     /// The shader only compiles for real at pipeline creation; catch WGSL errors without a GPU.
     #[test]
     fn shader_is_valid_wgsl() {

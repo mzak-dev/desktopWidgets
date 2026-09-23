@@ -3,7 +3,8 @@
 //!
 //!   cargo run --release --example render_widgets -- out.png [palette] [max]
 //!
-//! `max` renders every built-in widget at its `max_size` instead of the README cases.
+//! `max` renders every built-in widget at its `max_size` instead of the README cases;
+//! `edit` draws the Edit Mode overlay on each tile, every other one with its remove button armed.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -63,6 +64,7 @@ fn main() {
     let tm = Tm { year: 2026, month: 9, day: 21, dow: 1, hour: 15, minute: 42, second: 18, ms: 400 };
 
     let at_max = std::env::args().nth(3).is_some_and(|a| a == "max");
+    let edit_overlay = std::env::args().nth(3).is_some_and(|a| a == "edit");
     let max_case = |w: &'static str| {
         let max = match reg.get(w) {
             Some(Ok(d)) => d.meta().max_card_size.expect("every built-in has a max_size"),
@@ -105,7 +107,18 @@ fn main() {
             let now = base + Duration::from_millis(2000);
             let v = View { cfg: &cfg, state: &state, window_size: size, theme: &theme, icon_pack: "Default", tm, hover: None, scale, now, card };
             let mut sv = Services { gpu: &mut gpu, icons: &mut icons, text: &mut text, anim: &mut anim, sources: &sources };
-            let p = prepare(def, &v, &mut sv);
+            let mut p = prepare(def, &v, &mut sv);
+            if edit_overlay {
+                let ov = wayfinder::edit::overlay(&cfg.id, size, card.gutter, "60, 60   200x120", &theme, None, tiles.len() % 2 == 1);
+                let mut ov_anim = Anim::default();
+                for at in [base, now] {
+                    let mut env = wayfinder::ui::Env { text: &mut text, anim: &mut ov_anim, hover: None, now: at, scale };
+                    let of = wayfinder::ui::layout(&ov, size, &mut env);
+                    if at == now {
+                        p.frame.list.put_on_top(of.list);
+                    }
+                }
+            }
             if let Some(e) = &p.error {
                 println!("{}: ERROR {e}", c.widget);
             }

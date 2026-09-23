@@ -48,10 +48,7 @@ impl App {
             let ov = edit::overlay(&cfg.id, size, card.gutter, &label, chrome, iw.drag.as_ref().map(|d| d.handle), armed);
             let mut env = Env { text, anim: &mut iw.ov_anim, hover: None, now, scale };
             let of = ui::layout(&ov, size, &mut env);
-            let [l0, _] = of.list.layers;
-            p.frame.list.layers[1].shapes.extend(l0.shapes);
-            p.frame.list.layers[1].images.extend(l0.images);
-            p.frame.list.layers[1].texts.extend(l0.texts);
+            p.frame.list.put_on_top(of.list);
             p.frame.animating |= of.animating;
         }
         let mut lost = None;
