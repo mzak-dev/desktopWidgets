@@ -84,6 +84,15 @@ Wayfinder can render on the CPU (the "Microsoft Basic Render Driver"). It is slo
 
 </details>
 
+<details>
+<summary><b>Prefer an installer?</b></summary>
+
+<br>
+
+Each [release](https://github.com/mzak-dev/desktopWidgets/releases) also has a `Setup.exe`, built with [Velopack](https://velopack.io) ([ADR-007](docs/adr/0007-velopack-installer-and-autoupdate.md)). It installs to `%LocalAppData%\Wayfinder` with a Start Menu shortcut and an uninstaller, and the app checks for updates in the background and applies them silently the next time it starts — no prompts, nothing to run by hand. `%APPDATA%\Wayfinder` (your widgets, themes, settings) is untouched by installs or updates.
+
+</details>
+
 <br>
 
 ## 🖱️ Using it
@@ -149,10 +158,11 @@ Wayfinder/
 ├─ glyphs/               *.toml  icon sets for buttons and chrome
 ├─ iconpacks/<name>/     chrome.png ...  replaces the icon of a matching app
 ├─ THEMES.md             how to make palettes, font sets, glyph sets and icon packs
+├─ WIDGETS.md            how to write or override a widget
 └─ .claude/skills/       a Claude Code skill for making themes
 ```
 
-Wayfinder writes `THEMES.md` and the `wayfinder-theme` skill at startup when they are missing, and never overwrites your edits. Run `claude` in the data folder and ask for a theme ("a warm sunset palette") to have Claude Code write the files for you.
+Wayfinder writes `THEMES.md`, `WIDGETS.md` and the `wayfinder-theme` skill at startup when they are missing, and never overwrites your edits. Run `claude` in the data folder and ask for a theme ("a warm sunset palette") or a widget to have Claude Code write the files for you.
 
 <table>
 <tr>
@@ -294,7 +304,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 </tr>
 </table>
 
-**Ideas, not promises:** scripted widgets in Lua (the Widget seam is in place: a Widget supplies an element tree and never draws), shader widgets, more data sources (network, media), an installer.
+**Ideas, not promises:** scripted widgets in Lua (the Widget seam is in place: a Widget supplies an element tree and never draws), shader widgets, more data sources (network, media).
 
 <br>
 
