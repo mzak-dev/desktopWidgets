@@ -82,10 +82,17 @@ pub fn duration_factor(speed: &str) -> f32 {
     }
 }
 
-#[derive(Default)]
 pub struct Anim {
     map: HashMap<(String, &'static str), (Tween, u64)>,
     frame: u64,
+    /// Scales every duration and delay (`duration_factor` of `anim-speed`); 0 jumps to the target.
+    pub duration_factor: f32,
+}
+
+impl Default for Anim {
+    fn default() -> Self {
+        Self { map: HashMap::new(), frame: 0, duration_factor: 1.0 }
+    }
 }
 
 impl Anim {
@@ -116,6 +123,8 @@ impl Anim {
         now: Instant,
     ) -> [f32; 4] {
         let id = (key.to_string(), prop);
+        let ms = (ms as f32 * self.duration_factor).round() as u32;
+        let delay_ms = (delay_ms as f32 * self.duration_factor).round() as u32;
         if ms == 0 {
             self.map.remove(&id);
             return target;
@@ -150,6 +159,20 @@ impl Anim {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn duration_factor_stretches_or_skips_animation() {
+        let t0 = Instant::now();
+        let mut a = Anim { duration_factor: 1.6, ..Default::default() };
+        a.begin_frame();
+        a.value("k", "x", [1.0; 4], 100, Ease::Linear, 0, Some([0.0; 4]), t0);
+        let v = a.value("k", "x", [1.0; 4], 100, Ease::Linear, 0, None, t0 + Duration::from_millis(80));
+        assert!((v[0] - 0.5).abs() < 1e-3, "80 of 160 ms: {v:?}");
+        let mut off = Anim { duration_factor: 0.0, ..Default::default() };
+        off.begin_frame();
+        assert_eq!(off.value("k", "x", [1.0; 4], 100, Ease::Linear, 0, Some([0.0; 4]), t0), [1.0; 4]);
+        assert!(!off.animating(t0));
+    }
 
     #[test]
     fn anim_speed_names_map_to_duration_factors() {

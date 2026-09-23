@@ -21,10 +21,6 @@ impl WidgetMeta {
         self.params.iter().map(|p| (p.name.clone(), saved.get(&p.name).cloned().unwrap_or_else(|| p.default.clone()))).collect()
     }
 
-    pub fn has_own_blur(&self) -> bool {
-        self.params.iter().any(|p| p.name == "blur")
-    }
-
     pub fn seed_params(&self, cfg: &mut InstanceCfg) {
         for p in &self.params {
             if let Some(s) = p.seed {

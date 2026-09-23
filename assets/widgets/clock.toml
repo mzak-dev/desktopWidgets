@@ -19,14 +19,9 @@ default = false
 label = "Smooth second hand"
 help = "Redraws every frame. Costs GPU time; leave off and the desktop stays idle between ticks."
 
-[params.accent]
-type = "color"
-default = "$accent"
-label = "Second hand colour"
-
 [root]
 fill = ["$surface", "$surface-2"]
-radius = "{min(self.w, self.h) * 0.14}"
+radius = "$radius-lg"
 border = 1
 shadow = { blur = 16, dy = 5 }
 
@@ -74,7 +69,7 @@ shadow = { blur = 16, dy = 5 }
   length = 0.86
   tail = 0.16
   stroke = "{max(1, min(self.w, self.h) * 0.008)}"
-  color = "{param.accent}"
+  color = "$accent"
 
   [[root.children]]
   inset = 0
@@ -84,4 +79,4 @@ shadow = { blur = 16, dy = 5 }
     width = "{max(5, min(self.w, self.h) * 0.045)}"
     height = "{max(5, min(self.w, self.h) * 0.045)}"
     radius = 9999
-    fill = "{param.accent}"
+    fill = "$accent"

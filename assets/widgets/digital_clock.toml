@@ -19,11 +19,6 @@ type = "bool"
 default = true
 label = "Show date"
 
-[params.accent]
-type = "color"
-default = "$accent"
-label = "AM/PM colour"
-
 [root]
 direction = "column"
 align = "center"
@@ -51,7 +46,7 @@ shadow = { blur = 14, dy = 5 }
     text = "{clock.ampm}"
     size = "{max(10, min(self.h * 0.13, self.w * 0.06))}"
     weight = 600
-    color = "{param.accent}"
+    color = "$accent"
 
   [[root.children]]
   type = "text"

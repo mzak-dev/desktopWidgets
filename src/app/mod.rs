@@ -30,7 +30,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
-use crate::anim::{Anim, Ease};
+use crate::anim::{self, Anim, Ease};
 use crate::card::Card;
 use crate::data::{self, DataSources};
 use crate::draw::DrawList;
@@ -116,8 +116,7 @@ impl App {
         let guide_errors = write_missing_guides(&dir);
         let (ws, ws_err) = Workspace::load(&dir);
         let lib = Library::load(&dir);
-        let overrides = ws.overrides.iter().map(|(k, v)| (k.clone(), Value::Str(v.clone()))).collect();
-        let theme = Theme::compose(&lib, &ws.theme, &[&overrides]);
+        let theme = Theme::default(); // composed by `rebuild_theme` below
         let reg = Registry::load(&dir.join("widgets"));
         let mut text = TextEngine::new();
         let fonts = text.load_font_dir(&dir.join("fonts"));
@@ -159,6 +158,7 @@ impl App {
             forced_software: false,
             families: Vec::new(),
         };
+        app.rebuild_theme();
         app.families = app.text.family_names();
         app.selftest = app.opts.selftest.then(|| SelfTest { step: 0, at: Instant::now() + Duration::from_millis(2200), checks: Vec::new(), rect: None, collapsed: None, configures0: 0, fake: None });
         if let Some(e) = ws_err {
@@ -198,8 +198,7 @@ impl App {
     }
 
     fn rebuild_theme(&mut self) {
-        let ov = self.ws.overrides.iter().map(|(k, v)| (k.clone(), Value::Str(v.clone()))).collect();
-        self.theme = Theme::compose(&self.lib, &self.ws.theme, &[&ov]);
+        self.theme = Theme::compose(&self.lib, &self.ws.theme, &[&self.global_style()]);
         for f in self.lib.fonts(&self.ws.theme.fonts).files.clone() {
             self.text.load_font_file(&f);
         }
@@ -216,12 +215,25 @@ impl App {
         self.save_at = Some(Instant::now() + Duration::from_millis(400));
     }
 
+    /// ponytail: shim until style moves into the Workspace; reads the legacy fields.
+    fn global_style(&self) -> BTreeMap<String, Value> {
+        let mut m: BTreeMap<String, Value> = self.ws.overrides.iter().map(|(k, v)| (k.clone(), Value::Str(v.clone()))).collect();
+        m.insert("blur".into(), self.ws.blur.into());
+        m.insert("outlines".into(), self.ws.outlines.into());
+        m
+    }
+
+    /// ponytail: composed per call (a few map merges, never while idle); cache on Instance if drags ever profile slow.
+    fn theme_of(&self, _i: usize) -> Theme {
+        Theme::compose(&self.lib, &self.ws.theme, &[&self.global_style()])
+    }
+
     fn card(&self, i: usize) -> Card {
-        Card::of(&self.ws, &self.ws.instances[i], &self.theme)
+        Card::new(&self.theme_of(i))
     }
 
     fn new_card(&self) -> Card {
-        Card::of(&self.ws, &InstanceCfg::default(), &self.theme)
+        Card::new(&self.theme)
     }
 
     fn monitor_of(&self, cfg: &InstanceCfg) -> Option<&MonitorInfo> {

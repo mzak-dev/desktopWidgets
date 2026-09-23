@@ -56,7 +56,7 @@ fn main() {
     let sel = Selection { palette: palette.clone(), ..Default::default() };
     let theme = Theme::compose(&lib, &sel, &[]);
     let reg = Registry::load(Path::new("nope"));
-    let card = Card::new(&theme, false, true);
+    let card = Card::new(&theme);
     let sources = DataSources::builtin();
     let tm = Tm { year: 2026, month: 9, day: 21, dow: 1, hour: 15, minute: 42, second: 18, ms: 400 };
 

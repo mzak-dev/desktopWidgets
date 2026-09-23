@@ -22,32 +22,6 @@ max = 72
 step = 2
 label = "Icon size"
 
-[params.transparent]
-type = "bool"
-default = false
-label = "Transparent background"
-
-[params.opacity]
-type = "number"
-default = 60
-min = 0
-max = 100
-step = 1
-label = "Background opacity (%)"
-help = "Used when the background is transparent."
-
-[params.blur]
-type = "bool"
-default = false
-label = "Blur behind"
-help = "Blurs the wallpaper and icons under the drawer. Drops the shadow and rounds the corners to the Windows 11 default."
-
-[params.tint]
-type = "bool"
-default = true
-label = "Tint from theme"
-help = "Colour the transparent background with the theme's surface colour. Off gives a neutral dark glass."
-
 [state]
 collapsed = false
 scroll = 0
@@ -59,9 +33,8 @@ height = "44"
 
 [root]
 direction = "column"
-fill = ["{param.tint ? '$surface' : '#141414'}", "{param.tint ? '$surface-2' : '#141414'}"]
-fill_alpha = "{param.transparent ? param.opacity / 100 : -1}"
-radius = "{param.blur ? 8 : '$radius-lg'}"
+fill = ["$surface", "$surface-2"]
+radius = "$radius-lg"
 border = 1
 shadow = { blur = 14, dy = 5 }
 padding = [8, 10]

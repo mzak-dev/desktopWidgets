@@ -3,8 +3,9 @@ use super::*;
 impl App {
     pub(super) fn render(&mut self, i: usize) {
         let now = Instant::now();
-        let card = self.card(i);
-        let App { gpu, text, icons, theme, reg, sources, ws, wins, edit, .. } = self;
+        let theme = self.theme_of(i);
+        let card = Card::new(&theme);
+        let App { gpu, text, icons, theme: chrome, reg, sources, ws, wins, edit, .. } = self;
         let (Some(gpu), Some(iw)) = (gpu.as_mut(), wins.get_mut(i)) else { return };
         let (Some(window), Some(target)) = (iw.window.clone(), iw.target.as_mut()) else { return };
         let cfg = &ws.instances[i];
@@ -36,14 +37,15 @@ impl App {
         let def = reg.get(&cfg.widget).unwrap_or(&missing);
         let tm = data::now_local();
         let pack = ws.theme.icon_pack.clone();
-        let v = View { cfg, state: &iw.state, window_size: size, theme, icon_pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };
+        iw.anim.duration_factor = anim::duration_factor(&theme.str("anim-speed"));
+        let v = View { cfg, state: &iw.state, window_size: size, theme: &theme, icon_pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };
         let mut sv = Services { gpu, icons, text, anim: &mut iw.anim, sources };
         let mut p = widgets::prepare(def, &v, &mut sv);
 
         if *edit {
             let (cw, ch) = card.card_size(size);
             let label = format!("{}, {}   {}x{}", cfg.x as i32, cfg.y as i32, cw as i32, ch as i32);
-            let ov = edit::overlay(&cfg.id, size, card.gutter, &label, theme, iw.drag.as_ref().map(|d| d.handle));
+            let ov = edit::overlay(&cfg.id, size, card.gutter, &label, chrome, iw.drag.as_ref().map(|d| d.handle));
             let mut env = Env { text, anim: &mut iw.ov_anim, hover: None, now, scale };
             let of = ui::layout(&ov, size, &mut env);
             let [l0, _] = of.list.layers;

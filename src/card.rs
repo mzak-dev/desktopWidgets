@@ -4,32 +4,43 @@
 use crate::color::Color;
 use crate::edit::Rect;
 use crate::theme::Theme;
-use crate::ui::Node;
+use crate::ui::{Kind, Node};
 use crate::widgets::ExpandInfo;
-use crate::workspace::{InstanceCfg, Workspace};
 
 const WIN11_BLUR_RADIUS: f32 = 8.0;
 const MAX_FILL_ALPHA_OVER_BLUR: f32 = 0.6;
+const NEUTRAL_GLASS: &str = "#141414";
 
+/// The Style tokens the engine applies to every Widget's card, read from the Instance's Theme.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Card {
     /// Logical px.
     pub gutter: f32,
     pub blur: bool,
     pub outlines: bool,
+    /// `radius-lg`, logical px.
+    pub radius: f32,
+    /// The fill alpha while the background is transparent.
+    pub bg_alpha: Option<f32>,
+    pub tint: bool,
+    /// 0..=1, times the shadow's own alpha.
+    pub shadow: f32,
+    pub text_scale: f32,
 }
 
 impl Card {
-    pub fn new(theme: &Theme, blur: bool, outlines: bool) -> Card {
-        Card { gutter: if blur { 0.0 } else { theme.num("gutter").max(0.0) }, blur, outlines }
-    }
-
-    pub fn of(ws: &Workspace, cfg: &InstanceCfg, theme: &Theme) -> Card {
-        Card::new(theme, Self::blurs(ws, cfg), ws.outlines)
-    }
-
-    pub fn blurs(ws: &Workspace, cfg: &InstanceCfg) -> bool {
-        ws.blur || cfg.params.get("blur").and_then(|v| v.as_bool()).unwrap_or(false)
+    pub fn new(theme: &Theme) -> Card {
+        let blur = theme.flag("blur");
+        Card {
+            gutter: if blur { 0.0 } else { theme.num("gutter").max(0.0) },
+            blur,
+            outlines: theme.flag("outlines"),
+            radius: theme.num("radius-lg").max(0.0),
+            bg_alpha: theme.flag("transparent").then(|| (theme.num("bg-opacity") / 100.0).clamp(0.0, 1.0)),
+            tint: theme.flag("tint"),
+            shadow: (theme.num("shadow") / 100.0).clamp(0.0, 1.0),
+            text_scale: (theme.num("text-scale") / 100.0).max(0.1),
+        }
     }
 
     pub fn gutter_px(&self, scale: f64) -> i32 {
@@ -69,19 +80,37 @@ impl Card {
         ExpandInfo { active: e.active, width: e.width.map(|w| w + g), height: e.height.map(|h| h + g) }
     }
 
-    pub fn window_node(&self, key: &str, window: (f32, f32), mut card: Node, widget_styles_blur: bool) -> Node {
-        if self.blur && !widget_styles_blur {
-            card.look.radius = WIN11_BLUR_RADIUS;
-            card.look.fill = card.look.fill.with_alpha(card.look.fill.0[3].min(MAX_FILL_ALPHA_OVER_BLUR));
-            card.look.gradient_bottom = card.look.gradient_bottom.map(|c: Color| c.with_alpha(c.0[3].min(MAX_FILL_ALPHA_OVER_BLUR)));
+    pub fn window_node(&self, key: &str, window: (f32, f32), mut card: Node) -> Node {
+        let look = &mut card.look;
+        if !self.tint {
+            let glass = Color::parse(NEUTRAL_GLASS).expect("valid colour");
+            look.fill = glass.with_alpha(look.fill.0[3]);
+            look.gradient_bottom = look.gradient_bottom.map(|c| glass.with_alpha(c.0[3]));
         }
-        if !self.outlines {
-            fn strip_borders(n: &mut Node) {
+        let alpha = |a: f32| match self.bg_alpha {
+            Some(bg) => bg,
+            None if self.blur => a.min(MAX_FILL_ALPHA_OVER_BLUR),
+            None => a,
+        };
+        look.fill = look.fill.with_alpha(alpha(look.fill.0[3]));
+        look.gradient_bottom = look.gradient_bottom.map(|c: Color| c.with_alpha(alpha(c.0[3])));
+        if self.blur {
+            look.radius = WIN11_BLUR_RADIUS;
+        }
+        look.shadow = look.shadow.filter(|_| self.shadow > 0.0).map(|mut s| {
+            s.color = s.color.mul_alpha(self.shadow);
+            s
+        });
+        fn walk(n: &mut Node, outlines: bool, text_scale: f32) {
+            if !outlines {
                 n.look.border = 0.0;
-                n.children.iter_mut().for_each(strip_borders);
             }
-            strip_borders(&mut card);
+            if let Kind::Text(t) = &mut n.kind {
+                t.size *= text_scale;
+            }
+            n.children.iter_mut().for_each(|c| walk(c, outlines, text_scale));
         }
+        walk(&mut card, self.outlines, self.text_scale);
         Node::new(format!("{key}~")).wh(window.0, window.1).pad(self.gutter).child(card)
     }
 }
@@ -90,15 +119,23 @@ impl Card {
 mod tests {
     use super::*;
     use crate::theme::{Library, Selection};
+    use crate::ui::Kind;
+    use crate::value::Value;
+    use std::collections::BTreeMap;
     use std::path::Path;
 
+    fn theme_with(pairs: &[(&str, Value)]) -> Theme {
+        let layer: BTreeMap<String, Value> = pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[&layer])
+    }
+
     fn theme() -> Theme {
-        Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[])
+        theme_with(&[])
     }
 
     #[test]
     fn window_and_card_rects_round_trip_at_any_scale() {
-        let c = Card::new(&theme(), false, true);
+        let c = Card::new(&theme());
         assert_eq!(c.gutter, 20.0);
         for scale in [1.0, 1.5] {
             let win = Rect::new(100, 50, 300, 200);
@@ -110,39 +147,43 @@ mod tests {
     }
 
     #[test]
-    fn blur_removes_the_gutter_and_comes_from_the_workspace_or_the_instance() {
-        let t = theme();
-        assert_eq!(Card::new(&t, true, true).gutter, 0.0);
-        let mut ws = Workspace::default();
-        let mut cfg = InstanceCfg::default();
-        assert!(!Card::of(&ws, &cfg, &t).blur);
-        cfg.params.insert("blur".into(), serde_json::Value::Bool(true));
-        assert!(Card::of(&ws, &cfg, &t).blur);
-        cfg.params.insert("blur".into(), serde_json::Value::Bool(false));
-        ws.blur = true;
-        assert!(Card::of(&ws, &cfg, &t).blur, "the Workspace switch wins over an Instance's saved `false`");
+    fn blur_removes_the_gutter() {
+        assert_eq!(Card::new(&theme_with(&[("blur", Value::Bool(true))])).gutter, 0.0);
+        assert_eq!(Card::new(&theme()).gutter, 20.0);
     }
 
     #[test]
-    fn window_node_adds_the_gutter_and_applies_the_style_switches() {
-        let t = theme();
+    fn window_node_adds_the_gutter_and_strips_outlines() {
         let card = || Node::new("c").border(1.0, Color([1.0; 4])).fill(Color([0.1, 0.1, 0.1, 1.0])).child(Node::new("c/0").border(2.0, Color([1.0; 4])));
-        let w = Card::new(&t, false, true).window_node("k", (140.0, 100.0), card(), false);
+        let w = Card::new(&theme()).window_node("k", (140.0, 100.0), card());
         assert_eq!((w.key.as_str(), w.children.len()), ("k~", 1));
         assert_eq!(w.children[0].look.border, 1.0);
 
-        let flat = Card::new(&t, false, false).window_node("k", (140.0, 100.0), card(), false);
+        let flat = Card::new(&theme_with(&[("outlines", Value::Bool(false))])).window_node("k", (140.0, 100.0), card());
         assert_eq!((flat.children[0].look.border, flat.children[0].children[0].look.border), (0.0, 0.0));
+    }
 
-        let blurred = Card::new(&t, true, true).window_node("k", (140.0, 100.0), card(), false);
-        assert_eq!((blurred.children[0].look.radius, blurred.children[0].look.fill.0[3]), (WIN11_BLUR_RADIUS, MAX_FILL_ALPHA_OVER_BLUR));
-        let own = Card::new(&t, true, true).window_node("k", (140.0, 100.0), card(), true);
-        assert_eq!(own.children[0].look.fill.0[3], 1.0, "a Widget that styles blur itself is left alone");
+    #[test]
+    fn style_tokens_reach_the_card_and_its_text() {
+        let card = || Node::new("c").fill(Color([0.2, 0.3, 0.4, 0.9])).shadow(14.0, 5.0, Color([0.0, 0.0, 0.0, 0.5])).child(Node::text("c/t", "hi", 10.0, Color([1.0; 4])));
+        let root = |pairs: &[(&str, Value)]| Card::new(&theme_with(pairs)).window_node("k", (100.0, 100.0), card()).children.remove(0);
+        let see_through = root(&[("transparent", Value::Bool(true)), ("bg-opacity", Value::Num(40.0))]);
+        assert!((see_through.look.fill.0[3] - 0.4).abs() < 1e-6);
+        let glass = root(&[("tint", Value::Bool(false))]);
+        assert_eq!((glass.look.fill.with_alpha(1.0).to_hex(), glass.look.fill.0[3]), ("#141414".to_string(), 0.9));
+        assert!(root(&[("shadow", Value::Num(0.0))]).look.shadow.is_none());
+        assert!((root(&[("shadow", Value::Num(50.0))]).look.shadow.unwrap().color.0[3] - 0.25).abs() < 1e-6);
+        let big = root(&[("text-scale", Value::Num(120.0))]);
+        assert!(matches!(&big.children[0].kind, Kind::Text(t) if (t.size - 12.0).abs() < 1e-4));
+        let blurred = root(&[("blur", Value::Bool(true))]);
+        assert_eq!((blurred.look.radius, blurred.look.fill.0[3]), (WIN11_BLUR_RADIUS, MAX_FILL_ALPHA_OVER_BLUR));
+        let blurred_see_through = root(&[("blur", Value::Bool(true)), ("transparent", Value::Bool(true)), ("bg-opacity", Value::Num(20.0))]);
+        assert!((blurred_see_through.look.fill.0[3] - 0.2).abs() < 1e-6, "transparent wins over the blur cap");
     }
 
     #[test]
     fn expand_sizes_gain_the_gutter() {
-        let c = Card::new(&theme(), false, true);
+        let c = Card::new(&theme());
         let e = c.expand_in_window_units(ExpandInfo { active: true, width: Some(100.0), height: None });
         assert_eq!((e.width, e.height), (Some(140.0), None));
     }

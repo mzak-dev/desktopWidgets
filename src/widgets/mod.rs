@@ -131,10 +131,7 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
         let outcome = match def {
             Err(e) => Err(format!("{}: {e}", v.cfg.widget)),
             Ok(w) => {
-                let mut params = v.cfg.params_map();
-                if v.card.blur {
-                    params.insert("blur".into(), true.into());
-                }
+                let params = v.cfg.params_map();
                 let inp = Inputs { params: &params, state: v.state, card_size, key_prefix: &v.cfg.id, read_source: &read };
                 let gpu = &*sv.gpu;
                 w.build(&inp, v.theme, &|id| gpu.image_size(id).map(|(w, h)| (w as f32, h as f32)))
@@ -160,8 +157,7 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
     }
     let (root, deps, warnings, expand, error) = match result.expect("at least one build ran") {
         Ok(b) => {
-            let own_blur = def.as_ref().is_ok_and(|w| w.meta().has_own_blur());
-            let root = v.card.window_node(&v.cfg.id, v.window_size, b.root, own_blur);
+            let root = v.card.window_node(&v.cfg.id, v.window_size, b.root);
             (root, b.deps, b.warnings, b.expand.map(|e| v.card.expand_in_window_units(e)), None)
         }
         Err(e) => (format::error_card(&e, v.window_size, v.theme), BTreeSet::new(), vec![], None, Some(e)),
@@ -210,8 +206,9 @@ mod tests {
         let b = w.build(&inp, &t, &|_| None).unwrap();
         assert!(b.deps.contains("clock.minute"), "{:?}", b.deps);
 
-        let card = Card::new(&t, false, false);
-        let window = card.window_node("b-1", card.window_size((100.0, 40.0)), b.root, w.meta().has_own_blur());
+        let flat = BTreeMap::from([("outlines".to_string(), Value::Bool(false))]);
+        let card = Card::new(&Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[&flat]));
+        let window = card.window_node("b-1", card.window_size((100.0, 40.0)), b.root);
         assert_eq!((window.key.as_str(), window.children[0].look.border), ("b-1~", 0.0), "outlines off reaches Rust Widgets too");
         assert_eq!(b.expand.map(|e| card.expand_in_window_units(e).width), Some(Some(340.0)));
     }
