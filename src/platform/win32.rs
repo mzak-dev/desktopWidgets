@@ -152,6 +152,12 @@ pub fn open(target: &str) -> bool {
 /// Accent-policy blur (Rainmeter's): unlike DwmEnableBlurBehindWindow it also
 /// blurs wallpaper and icons, but ignores SetWindowRgn, so the window must be
 /// exactly the card.
+/// (corner preference, accent state). Rounding is only for the blur: left on, DWM keeps
+/// drawing its border at the window edge, outside the card once the shadow gutter is back.
+pub fn blur_window_attributes(on: bool) -> (i32, u32) {
+    if on { (2, 3) } else { (0, 0) } // DWMWCP_ROUND + ACCENT_ENABLE_BLURBEHIND, or DWMWCP_DEFAULT + disabled
+}
+
 pub fn set_blur(hwnd: HWND, on: bool) {
     use windows::Win32::Graphics::Dwm::DwmSetWindowAttribute;
     use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
@@ -169,14 +175,14 @@ pub fn set_blur(hwnd: HWND, on: bool) {
         size: usize,
     }
     type SetWca = unsafe extern "system" fn(HWND, *mut CompositionAttrib) -> BOOL;
+    let (corners, accent) = blur_window_attributes(on);
     unsafe {
-        let round = 2i32; // DWMWCP_ROUND
-        let _ = DwmSetWindowAttribute(hwnd, windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE(33), &round as *const _ as *const _, size_of::<i32>() as u32);
+        let _ = DwmSetWindowAttribute(hwnd, windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE(33), &corners as *const _ as *const _, size_of::<i32>() as u32);
         let Ok(user32) = LoadLibraryW(w!("user32.dll")) else { return };
         let Some(f) = GetProcAddress(user32, windows::core::s!("SetWindowCompositionAttribute")) else { return };
         let f: SetWca = std::mem::transmute(f);
-        // 3 = ACCENT_ENABLE_BLURBEHIND, 0 = disabled; WCA_ACCENT_POLICY = 19
-        let mut policy = AccentPolicy { state: if on { 3 } else { 0 }, flags: 0, gradient: 0, animation: 0 };
+        // WCA_ACCENT_POLICY = 19
+        let mut policy = AccentPolicy { state: accent, flags: 0, gradient: 0, animation: 0 };
         let mut data = CompositionAttrib { attrib: 19, data: &mut policy, size: size_of::<AccentPolicy>() };
         let _ = f(hwnd, &mut data);
     }
@@ -501,7 +507,13 @@ pub fn z_index(hwnd: HWND) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_desktop_shown;
+    use super::{blur_window_attributes, is_desktop_shown};
+
+    #[test]
+    fn blur_off_returns_to_the_never_blurred_corners() {
+        assert_eq!(blur_window_attributes(true), (2, 3)); // DWMWCP_ROUND, ACCENT_ENABLE_BLURBEHIND
+        assert_eq!(blur_window_attributes(false), (0, 0)); // DWMWCP_DEFAULT, ACCENT_DISABLED
+    }
 
     #[test]
     fn shown_exactly_when_the_host_is_above_the_sentinel() {
