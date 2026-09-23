@@ -150,6 +150,23 @@ impl Anim {
         e.0.at(now)
     }
 
+    /// A laid-out value (a node's rect) that glides when it jumps by more than `jump`
+    /// in one frame, as on a reflow, and tracks smaller steps directly, as during a
+    /// live resize. The first sight of a key is never animated.
+    pub fn follow(&mut self, key: &str, prop: &'static str, target: [f32; 4], ms: u32, jump: f32, now: Instant) -> [f32; 4] {
+        let ms = ms as f32 * self.duration_factor;
+        let frame = self.frame;
+        let settled = |v: [f32; 4]| Tween { from: v, to: v, start: now, delay: 0.0, dur: 0.0, ease: Ease::Out };
+        let e = self.map.entry((key.to_string(), prop)).or_insert_with(|| (settled(target), frame));
+        e.1 = frame;
+        if e.0.to != target {
+            let cur = e.0.at(now);
+            let jumped = (0..4).any(|k| (target[k] - cur[k]).abs() > jump);
+            e.0 = if ms >= 1.0 && (jumped || !e.0.done(now)) { Tween { from: cur, to: target, start: now, delay: 0.0, dur: ms, ease: Ease::Out } } else { settled(target) };
+        }
+        e.0.at(now)
+    }
+
     pub fn animating(&self, now: Instant) -> bool {
         self.map.values().any(|(t, _)| !t.done(now))
     }
@@ -159,6 +176,33 @@ impl Anim {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn follow_glides_on_a_jump_and_tracks_a_creep() {
+        let t0 = Instant::now();
+        let mut a = Anim::default();
+        a.begin_frame();
+        assert_eq!(a.follow("k", "rect", [0.0, 0.0, 50.0, 50.0], 200, 6.0, t0), [0.0, 0.0, 50.0, 50.0], "first sight: no animation");
+        assert!(!a.animating(t0));
+        a.begin_frame();
+        assert_eq!(a.follow("k", "rect", [3.0, 0.0, 50.0, 50.0], 200, 6.0, t0), [3.0, 0.0, 50.0, 50.0], "a small step (a live resize) is followed directly");
+        assert!(!a.animating(t0));
+        a.begin_frame();
+        let mid = a.follow("k", "rect", [103.0, 0.0, 50.0, 50.0], 200, 6.0, t0);
+        assert_eq!(mid[0], 3.0, "a reflow jump starts where it was");
+        assert!(a.animating(t0));
+        let t1 = t0 + Duration::from_millis(100);
+        let mid = a.follow("k", "rect", [103.0, 0.0, 50.0, 50.0], 200, 6.0, t1);
+        assert!(mid[0] > 53.0 && mid[0] < 103.0, "{mid:?}");
+        let end = t0 + Duration::from_millis(250);
+        assert_eq!(a.follow("k", "rect", [103.0, 0.0, 50.0, 50.0], 200, 6.0, end)[0], 103.0);
+        assert!(!a.animating(end));
+
+        let mut off = Anim { duration_factor: 0.0, ..Default::default() };
+        off.begin_frame();
+        off.follow("k", "rect", [0.0; 4], 200, 6.0, t0);
+        assert_eq!(off.follow("k", "rect", [100.0, 0.0, 0.0, 0.0], 200, 6.0, t0)[0], 100.0, "animations off: it jumps");
+    }
 
     #[test]
     fn duration_factor_stretches_or_skips_animation() {

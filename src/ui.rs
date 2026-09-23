@@ -350,7 +350,15 @@ struct Ctx {
     clip: [f32; 4],
     opacity: f32,
     layer: usize,
+    /// 0 = the window node, 1 = the card.
+    depth: u32,
 }
+
+/// A reflow (a tier switch, a gauge wrapping) that moves or resizes a node by more
+/// than this in one frame glides for `REFLOW_MS`; smaller steps, like a live resize,
+/// are followed directly.
+const REFLOW_JUMP: f32 = 6.0;
+const REFLOW_MS: u32 = 220;
 
 fn is_hovered(hover: Option<&str>, key: &str) -> bool {
     hover.is_some_and(|h| h == key || (h.starts_with(key) && h.as_bytes().get(key.len()) == Some(&b'/')))
@@ -425,7 +433,7 @@ pub fn layout(root: &Node, size: (f32, f32), env: &mut Env) -> Frame {
 
     let mut frame = Frame::default();
     let mut next = 0usize;
-    let ctx = Ctx { clip: NO_CLIP, opacity: 1.0, layer: 0 };
+    let ctx = Ctx { clip: NO_CLIP, opacity: 1.0, layer: 0, depth: 0 };
     emit(root, &ids, &mut next, &tree, (0.0, 0.0), &ctx, env, &mut frame);
     let l = tree.layout(rid).expect("root");
     frame.content_size = (l.size.width, l.size.height);
@@ -457,8 +465,13 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
         let v = env.anim.value(key, "off", [ox, oy, 0.0, 0.0], n.transition.ms, n.transition.ease, 0, None, now);
         off = (v[0], v[1]);
     }
-    let (x, y) = (origin.0 + l.location.x + off.0, origin.1 + l.location.y + enter_dy + off.1);
-    let (w, h) = (l.size.width, l.size.height);
+    // the window and its card always fill the window; absolute nodes follow their parent
+    let laid = [l.location.x, l.location.y, l.size.width, l.size.height];
+    let flows = ctx.depth >= 2 && n.style.position == Position::Relative;
+    let [lx, ly, lw, lh] = if flows { env.anim.follow(key, "rect", laid, REFLOW_MS, REFLOW_JUMP, now) } else { laid };
+    let (x, y) = (origin.0 + lx + off.0, origin.1 + ly + enter_dy + off.1);
+    // text keeps its laid-out box: a gliding width would re-wrap it every frame
+    let (w, h) = if matches!(n.kind, Kind::Text(_)) { (l.size.width, l.size.height) } else { (lw, lh) };
     let hov = is_hovered(env.hover, key);
     let tr = n.transition;
 
@@ -568,7 +581,7 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
     }
     out.rects.push((key.to_string(), rect));
 
-    let mut child_ctx = Ctx { clip, opacity: op, layer };
+    let mut child_ctx = Ctx { clip, opacity: op, layer, depth: ctx.depth + 1 };
     let mut child_origin = (x, y);
     if let Some(off) = n.scroll_offset {
         child_ctx.clip = intersect(clip, [x * s, y * s, (x + w) * s, (y + h) * s]);
@@ -579,5 +592,38 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
     }
     for c in &n.children {
         emit(c, ids, next, tree, child_origin, &child_ctx, env, out);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A window node, a card and a wrapping row of three 80 px "gauges".
+    fn gauges(w: f32) -> Node {
+        let row = Node::new("w/c/row").row().wrap().gap(10.0).kids((0..3).map(|i| Node::new(format!("w/c/row/{i}")).wh(80.0, 80.0)));
+        Node::new("w").wh(w, 300.0).child(Node::new("w/c").grow(1.0).child(row))
+    }
+
+    #[test]
+    fn a_gauge_that_wraps_to_a_new_row_glides_there() {
+        let (mut text, mut anim) = (TextEngine::new(), Anim::default());
+        let t0 = Instant::now();
+        let mut at = |w: f32, now: Instant| {
+            let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now, scale: 1.0 };
+            let f = layout(&gauges(w), (w, 300.0), &mut env);
+            (f.rect_of("w/c/row/2").unwrap(), f.animating)
+        };
+        let (wide, _) = at(300.0, t0);
+        assert_eq!((wide[0], wide[1]), (180.0, 0.0), "all three in one row");
+        let (mid, animating) = at(200.0, t0 + Duration::from_millis(16));
+        assert!(animating && mid[1] < 90.0, "the third gauge is on its way down, not already there: {mid:?}");
+        let (end, animating) = at(200.0, t0 + Duration::from_millis(400));
+        let mut fresh = Anim::default();
+        let mut env = Env { text: &mut TextEngine::new(), anim: &mut fresh, hover: None, now: t0, scale: 1.0 };
+        let settled = layout(&gauges(200.0), (200.0, 300.0), &mut env).rect_of("w/c/row/2").unwrap();
+        assert!(settled[1] > 80.0, "sanity: 200 px wraps it onto a second row");
+        assert_eq!((end, animating), (settled, false), "and lands where a fresh layout puts it");
     }
 }
