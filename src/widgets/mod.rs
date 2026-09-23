@@ -2,6 +2,8 @@
 //! (code); both implement `Widget`. Rust Widgets register in `registry.rs`.
 
 mod drawer;
+#[cfg(test)]
+mod fits;
 mod meta;
 mod registry;
 mod toml_widget;

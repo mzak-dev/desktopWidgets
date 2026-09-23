@@ -1,7 +1,9 @@
 //! Renders the shipped widgets through the real pipeline (TOML -> bindings ->
 //! taffy -> wgpu) offscreen, composited over a backdrop, to a PNG contact sheet.
 //!
-//!   cargo run --release --example render_widgets -- out.png [palette]
+//!   cargo run --release --example render_widgets -- out.png [palette] [max]
+//!
+//! `max` renders every built-in widget at its `max_size` instead of the README cases.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -60,7 +62,15 @@ fn main() {
     let sources = DataSources::builtin();
     let tm = Tm { year: 2026, month: 9, day: 21, dow: 1, hour: 15, minute: 42, second: 18, ms: 400 };
 
-    let cases = vec![
+    let at_max = std::env::args().nth(3).is_some_and(|a| a == "max");
+    let max_case = |w: &'static str| {
+        let max = match reg.get(w) {
+            Some(Ok(d)) => d.meta().max_card_size.expect("every built-in has a max_size"),
+            _ => panic!("{w}"),
+        };
+        Case { widget: w, size: card.window_size(max), params: vec![], state: vec![], expanded: false }
+    };
+    let cases = if at_max { ["clock", "digital_clock", "system_monitor", "icon_list", "icon_folder", "drawer"].map(max_case).into() } else { vec![
         Case { widget: "clock", size: (260.0, 260.0), params: vec![], state: vec![], expanded: false },
         Case { widget: "clock", size: (150.0, 150.0), params: vec![("smooth_seconds", true.into())], state: vec![], expanded: false },
         Case { widget: "digital_clock", size: (340.0, 172.0), params: vec![], state: vec![], expanded: false },
@@ -69,7 +79,7 @@ fn main() {
         Case { widget: "icon_list", size: (200.0, 180.0), params: vec![("icon_size", 24.into()), ("title", "".into())], state: vec![], expanded: false },
         Case { widget: "icon_folder", size: (132.0, 152.0), params: vec![("title", "Tools".into())], state: vec![], expanded: false },
         Case { widget: "icon_folder", size: (132.0, 152.0), params: vec![("title", "Tools".into())], state: vec![("expanded", true.into())], expanded: true },
-    ];
+    ] };
 
     let mut tiles = Vec::new();
     let mut anim = Anim::default();
