@@ -108,7 +108,8 @@ fn every_builtin_fits_every_size_it_allows() {
 fn texts_at(id: &str, size: (f32, f32)) -> Vec<String> {
     let reg = Registry::load(Path::new("no-such-dir"));
     let Some(Ok(w)) = reg.get(id) else { panic!("{id}") };
-    let cfg = InstanceCfg { id: format!("{id}-1"), widget: id.into(), ..Default::default() };
+    let mut cfg = InstanceCfg { id: format!("{id}-1"), widget: id.into(), ..Default::default() };
+    w.meta().seed_params(&mut cfg);
     let params = w.meta().effective_params(&cfg.params_map());
     let sources = DataSources::builtin();
     let tm = Tm { year: 2026, month: 9, day: 23, dow: 3, hour: 12, minute: 0, second: 0, ms: 0 };
@@ -150,4 +151,10 @@ fn the_monitor_trades_detail_for_room() {
     assert!(normal.iter().any(|t| t.starts_with("Up ")) && !normal.iter().any(|t| t == "Commit" || t == "Download"), "normal: gauges and uptime: {normal:?}");
     let large = texts_at("system_monitor", (620.0, 380.0));
     assert!(["Commit", "Download", "Memory"].iter().all(|w| large.iter().any(|t| t == w)), "large: more gauges and history: {large:?}");
+}
+
+#[test]
+fn the_icon_list_goes_from_icons_to_rows_to_a_grid() {
+    let names = |w: f32| texts_at("icon_list", (w, 320.0)).into_iter().filter(|t| t == "Notepad").count();
+    assert_eq!((names(150.0), names(260.0), names(420.0)), (0, 1, 1), "narrow: icons only; then a named row; then a named tile");
 }

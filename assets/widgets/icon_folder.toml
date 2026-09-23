@@ -54,7 +54,7 @@ border = 1
 shadow = { blur = 14, dy = 5 }
 clip = true
 
-  # ---- collapsed: a tile with a 2x2 preview ----
+  # ---- collapsed: a tile with a preview, 2x2 or 3x3 from 150 px, and a count when tall ----
   [[root.children]]
   when = "{!state.expanded}"
   grow = 1
@@ -82,10 +82,10 @@ clip = true
       type = "repeat"
       for = "{shortcuts.items}"
         [[root.children.children.children.children]]
-        when = "{index < 4}"
+        when = "{index < (min(self.w, self.h) >= 150 ? 9 : 4)}"
         type = "image"
         src = "{item.icon_id}"
-        width = "44%"
+        width = "{min(self.w, self.h) >= 150 ? '29%' : '44%'}"
         aspect = 1
 
     [[root.children.children]]
@@ -94,6 +94,13 @@ clip = true
     size = "{max(10, min(self.w * 0.14, 14))}"
     weight = 600
     color = "$text"
+
+    [[root.children.children]]
+    type = "text"
+    when = "{self.h >= 170 && shortcuts.count > 0}"
+    text = "{shortcuts.count} apps"
+    size = 11
+    color = "$text-dim"
 
   # ---- expanded: header + icon grid ----
   [[root.children]]

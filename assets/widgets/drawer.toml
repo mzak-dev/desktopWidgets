@@ -59,6 +59,14 @@ clip = true
     padding = [0, 6]
 
     [[root.children.children]]
+    type = "text"
+    when = "{self.w >= 280 && shortcuts.count > 0}"
+    text = "{shortcuts.count} apps"
+    size = 11
+    color = "$text-dim"
+    padding = [0, 4]
+
+    [[root.children.children]]
     width = 28
     height = 28
     radius = 14
@@ -125,7 +133,7 @@ clip = true
       align = "center"
       gap = 4
       padding = 6
-      width = "{param.icon_size + 30}"
+      width = "{self.w >= 200 ? param.icon_size + 30 : param.icon_size + 12}"
       radius = "$radius-sm"
       on_click = "launch {item.target}"
       hover = { fill = "$surface-hover" }
@@ -139,6 +147,7 @@ clip = true
 
         [[root.children.children.children.children]]
         type = "text"
+        when = "{self.w >= 200}"
         text = "{item.name}"
         size = 11
         color = "$text"
