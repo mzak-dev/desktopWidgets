@@ -215,7 +215,20 @@ impl DataSource for Clock {
         // world clocks for the Instance's `cities` param, if its Widget has one
         let cities = cx.params.get("cities").map(|c| c.to_string()).unwrap_or_default();
         if let Value::Obj(m) = &mut v {
-            let utc = unsafe { windows::Win32::System::SystemInformation::GetSystemTime() };
+            // the instant the clock shows, so city times always agree with the face
+            let local = windows::Win32::Foundation::SYSTEMTIME {
+                wYear: cx.tm.year as u16,
+                wMonth: cx.tm.month as u16,
+                wDay: cx.tm.day as u16,
+                wHour: cx.tm.hour as u16,
+                wMinute: cx.tm.minute as u16,
+                wSecond: cx.tm.second as u16,
+                ..Default::default()
+            };
+            let mut utc = windows::Win32::Foundation::SYSTEMTIME::default();
+            if unsafe { windows::Win32::System::Time::TzSpecificLocalTimeToSystemTimeEx(None, &local, &mut utc) }.is_err() {
+                utc = unsafe { windows::Win32::System::SystemInformation::GetSystemTime() };
+            }
             m.insert("zones".into(), Value::List(zone_times(&cities, &utc, &cx.tm)));
         }
         v
@@ -258,6 +271,20 @@ mod tests {
         let late = zone_times("Tokyo", &utc(2026, 1, 15, 20, 30), &Tm { hour: 20, minute: 30, ..here });
         assert_eq!((late[0].get("time").unwrap().to_string(), late[0].get("day").unwrap().to_string()), ("05:30".into(), "+1".into()));
         assert!(zone_times("", &utc(2026, 1, 15, 12, 0), &here).is_empty());
+    }
+
+    #[test]
+    fn world_clocks_follow_the_time_the_clock_shows_not_the_system_clock() {
+        // a moment far from now: the zones must be relative to it, so offsets stay within a day
+        let cfg = crate::workspace::InstanceCfg::default();
+        let params = std::collections::BTreeMap::from([("cities".to_string(), Value::Str("Tokyo, New York".into()))]);
+        let cx = SourceCx { cfg: &cfg, params: &params, tm: tm(15, 42, 0, 0), icon_pack: "Default" };
+        let Some(Value::List(z)) = Clock.value(&cx).get("zones").cloned() else { panic!("no zones") };
+        for zone in &z {
+            let off = zone.get("offset").unwrap().to_string();
+            let hours: i32 = off.trim_start_matches(['+', '-']).split('h').next().unwrap_or("0").parse().unwrap_or(0);
+            assert!(off == "same time" || hours <= 14, "{off}");
+        }
     }
 
     #[test]
