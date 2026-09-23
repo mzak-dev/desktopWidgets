@@ -208,10 +208,10 @@ impl DataSource for Clock {
     fn value(&self, cx: &SourceCx) -> Value {
         let mut v = clock_value(&cx.tm);
         // world clocks for the Instance's `cities` param, if its Widget has one
-        let cities = cx.cfg.params.get("cities").and_then(|c| c.as_str()).unwrap_or("");
+        let cities = cx.params.get("cities").map(|c| c.to_string()).unwrap_or_default();
         if let Value::Obj(m) = &mut v {
             let utc = unsafe { windows::Win32::System::SystemInformation::GetSystemTime() };
-            m.insert("zones".into(), Value::List(zone_times(cities, &utc, &cx.tm)));
+            m.insert("zones".into(), Value::List(zone_times(&cities, &utc, &cx.tm)));
         }
         v
     }

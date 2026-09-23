@@ -14,7 +14,7 @@ pub struct GraphSpec {
     pub max: f32,
     pub stroke: f32,
     pub color: Color,
-    /// Fills under the line, fading down; `None` draws the line only.
+    /// Fills under the line, fading from 35% to 5% of this colour; `None` draws the line only.
     pub area: Option<Color>,
 }
 
@@ -58,8 +58,8 @@ impl Shape for GraphSpec {
                     a: [x, (y + bottom) / 2.0],
                     b: [col_w / 2.0 + 0.5, ((bottom - y) / 2.0).max(0.0)],
                     kind: KIND_RECT,
-                    fill_top: rgba_with_opacity(area, op),
-                    fill_bot: rgba_with_opacity(area.mul_alpha(0.15), op),
+                    fill_top: rgba_with_opacity(area.mul_alpha(0.35), op),
+                    fill_bot: rgba_with_opacity(area.mul_alpha(0.05), op),
                     clip: cx.clip_px,
                     ..Default::default()
                 });

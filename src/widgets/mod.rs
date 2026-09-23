@@ -124,7 +124,11 @@ pub struct View<'a> {
 
 pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
     let card_size = v.card.card_size(v.window_size);
-    let cx = SourceCx { cfg: v.cfg, tm: v.tm, icon_pack: v.icon_pack };
+    let params = match def {
+        Ok(w) => w.meta().effective_params(&v.cfg.params_map()),
+        Err(_) => v.cfg.params_map(),
+    };
+    let cx = SourceCx { cfg: v.cfg, params: &params, tm: v.tm, icon_pack: v.icon_pack };
     let sources = sv.sources;
     let read = |name: &str| sources.value(name, &cx);
     let mut icons_uploaded = false;
@@ -133,7 +137,6 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
         let outcome = match def {
             Err(e) => Err(format!("{}: {e}", v.cfg.widget)),
             Ok(w) => {
-                let params = v.cfg.params_map();
                 let inp = Inputs { params: &params, state: v.state, card_size, key_prefix: &v.cfg.id, read_source: &read };
                 let gpu = &*sv.gpu;
                 w.build(&inp, v.theme, &|id| gpu.image_size(id).map(|(w, h)| (w as f32, h as f32)))

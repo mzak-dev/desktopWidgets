@@ -1,8 +1,8 @@
 name = "Analog Clock"
-description = "A classic round clock face that scales with its window."
+description = "A round clock face. Make it wide or tall and it shows the time in other cities too."
 size = [220, 220]
 min_size = [96, 96]
-max_size = [520, 520]
+max_size = [760, 560]
 
 [params.ticks]
 type = "bool"
@@ -20,64 +20,169 @@ default = false
 label = "Smooth second hand"
 help = "Redraws every frame. Costs GPU time; leave off and the desktop stays idle between ticks."
 
+[params.cities]
+type = "string"
+default = "New York, London, Tokyo"
+label = "World clocks"
+help = "Comma-separated cities, shown once the clock is wide or tall enough. Most capitals and big cities work."
+
+# Size tiers. Small: a face. Wide (width >= height + 170): the face and a list of
+# cities beside it. Tall or large (240 x 300 and up): the face and a row of cities below.
 [root]
+direction = "{(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? 'row' : 'column'}"
+align = "center"
+justify = "center"
+padding = "{(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) || (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? 12 : 0}"
+gap = "{(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? 14 : 10}"
 fill = ["$surface", "$surface-2"]
 radius = "$radius-lg"
 border = 1
 shadow = { blur = 16, dy = 5 }
 
-  # the face is a true circle even when the window is not square
+  # the face: hands and ticks fill this box, so it stays a circle at any size
   [[root.children]]
-  inset = 0
-  align = "center"
-  justify = "center"
+  width = "{((self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? self.h - 24 : (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? min(self.w - 24, self.h - 92) : min(self.w, self.h) * 0.9)}"
+  height = "{((self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? self.h - 24 : (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? min(self.w - 24, self.h - 92) : min(self.w, self.h) * 0.9)}"
+  shrink = 0
+
     [[root.children.children]]
-    width = "{min(self.w, self.h) * 0.9}"
-    height = "{min(self.w, self.h) * 0.9}"
+    inset = 0
     radius = 9999
     fill = "$face"
     border = 1
 
-  [[root.children]]
-  type = "ticks"
-  when = "{param.ticks && min(self.w, self.h) > 100}"
-  count = 60
-  major_every = 5
-  tick_inset = "{min(self.w, self.h) * 0.075}"
-  tick_length = "{min(self.w, self.h) * 0.022}"
-  major_length = "{min(self.w, self.h) * 0.045}"
-  tick_width = "{max(0.6, min(self.w, self.h) * 0.0055)}"
-  major_width = "{max(1.2, min(self.w, self.h) * 0.011)}"
-
-  [[root.children]]
-  type = "hand"
-  angle = "{clock.hour_angle}"
-  length = 0.5
-  tail = 0.1
-  stroke = "{max(2.5, min(self.w, self.h) * 0.026)}"
-
-  [[root.children]]
-  type = "hand"
-  angle = "{clock.minute_angle}"
-  length = 0.76
-  tail = 0.1
-  stroke = "{max(1.8, min(self.w, self.h) * 0.017)}"
-
-  [[root.children]]
-  type = "hand"
-  when = "{param.show_seconds}"
-  angle = "{param.smooth_seconds ? clock.second_smooth : clock.second_angle}"
-  length = 0.86
-  tail = 0.16
-  stroke = "{max(1, min(self.w, self.h) * 0.008)}"
-  color = "$accent"
-
-  [[root.children]]
-  inset = 0
-  align = "center"
-  justify = "center"
     [[root.children.children]]
-    width = "{max(5, min(self.w, self.h) * 0.045)}"
-    height = "{max(5, min(self.w, self.h) * 0.045)}"
-    radius = 9999
-    fill = "$accent"
+    type = "ticks"
+    when = "{param.ticks && ((self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? self.h - 24 : (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? min(self.w - 24, self.h - 92) : min(self.w, self.h) * 0.9) > 90}"
+    count = 60
+    major_every = 5
+    tick_inset = "{((self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? self.h - 24 : (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? min(self.w - 24, self.h - 92) : min(self.w, self.h) * 0.9) * 0.028}"
+    tick_length = "{((self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? self.h - 24 : (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? min(self.w - 24, self.h - 92) : min(self.w, self.h) * 0.9) * 0.0244}"
+    major_length = "{((self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? self.h - 24 : (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? min(self.w - 24, self.h - 92) : min(self.w, self.h) * 0.9) * 0.05}"
+    tick_width = "{max(0.6, ((self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? self.h - 24 : (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? min(self.w - 24, self.h - 92) : min(self.w, self.h) * 0.9) * 0.0061)}"
+    major_width = "{max(1.2, ((self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? self.h - 24 : (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? min(self.w - 24, self.h - 92) : min(self.w, self.h) * 0.9) * 0.0122)}"
+
+    [[root.children.children]]
+    type = "hand"
+    angle = "{clock.hour_angle}"
+    length = 0.556
+    tail = 0.111
+    stroke = "{max(2.5, ((self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? self.h - 24 : (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? min(self.w - 24, self.h - 92) : min(self.w, self.h) * 0.9) * 0.0289)}"
+
+    [[root.children.children]]
+    type = "hand"
+    angle = "{clock.minute_angle}"
+    length = 0.844
+    tail = 0.111
+    stroke = "{max(1.8, ((self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? self.h - 24 : (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? min(self.w - 24, self.h - 92) : min(self.w, self.h) * 0.9) * 0.0189)}"
+
+    [[root.children.children]]
+    type = "hand"
+    when = "{param.show_seconds}"
+    angle = "{param.smooth_seconds ? clock.second_smooth : clock.second_angle}"
+    length = 0.956
+    tail = 0.178
+    stroke = "{max(1, ((self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? self.h - 24 : (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? min(self.w - 24, self.h - 92) : min(self.w, self.h) * 0.9) * 0.0089)}"
+    color = "$accent"
+
+    [[root.children.children]]
+    inset = 0
+    align = "center"
+    justify = "center"
+      [[root.children.children.children]]
+      width = "{max(5, ((self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? self.h - 24 : (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? min(self.w - 24, self.h - 92) : min(self.w, self.h) * 0.9) * 0.05)}"
+      height = "{max(5, ((self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) ? self.h - 24 : (!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0) ? min(self.w - 24, self.h - 92) : min(self.w, self.h) * 0.9) * 0.05)}"
+      radius = 9999
+      fill = "$accent"
+
+  # ---- wide: one row per city beside the face ----
+  [[root.children]]
+  when = "{(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0)}"
+  direction = "column"
+  justify = "center"
+  gap = 6
+  grow = 1
+  min_width = 0
+    [[root.children.children]]
+    type = "repeat"
+    for = "{clock.zones}"
+    as = "z"
+      [[root.children.children.children]]
+      when = "{index < floor((self.h - 18) / 48)}"
+      direction = "row"
+      align = "center"
+      gap = 8
+      height = 42
+      padding = [0, 10]
+      radius = "$radius-sm"
+      fill = "$face"
+      shrink = 0
+      enter = { ms = 220, dy = 6, stagger = 30 }
+        [[root.children.children.children.children]]
+        direction = "column"
+        grow = 1
+        min_width = 0
+          [[root.children.children.children.children.children]]
+          type = "text"
+          text = "{z.city}"
+          size = 12
+          weight = 600
+          color = "$text"
+          [[root.children.children.children.children.children]]
+          type = "text"
+          text = "{z.known ? z.offset : 'unknown city'}"
+          size = 10.5
+          color = "$text-dim"
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{z.time}"
+        size = "{min(20, max(14, self.h * 0.09))}"
+        weight = 600
+        color = "$text"
+        [[root.children.children.children.children]]
+        type = "text"
+        when = "{z.known && z.day != ''}"
+        text = "{z.day}"
+        size = 10
+        weight = 700
+        color = "$accent"
+
+  # ---- tall or large: a row of city chips under the face ----
+  [[root.children]]
+  when = "{(!(self.w >= self.h + 170 && self.h >= 120 && len(clock.zones) > 0) && self.w >= 240 && self.h >= 300 && len(clock.zones) > 0)}"
+  direction = "row"
+  justify = "center"
+  gap = 8
+  height = 58
+  shrink = 0
+    [[root.children.children]]
+    type = "repeat"
+    for = "{clock.zones}"
+    as = "z"
+      [[root.children.children.children]]
+      when = "{index < floor((self.w - 16) / 108)}"
+      direction = "column"
+      align = "center"
+      justify = "center"
+      width = 100
+      height = 58
+      radius = "$radius-sm"
+      fill = "$face"
+      enter = { ms = 220, dy = 6, stagger = 30 }
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{z.city}"
+        size = 11
+        weight = 600
+        color = "$text-dim"
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{z.time}{z.known && z.day != '' ? ' ' + z.day : ''}"
+        size = 17
+        weight = 600
+        color = "$text"
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{z.known ? z.offset : 'unknown'}"
+        size = 10
+        color = "$text-dim"

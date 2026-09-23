@@ -26,6 +26,8 @@ pub enum Cadence {
 
 pub struct SourceCx<'a> {
     pub cfg: &'a InstanceCfg,
+    /// The Instance's params with its Widget's defaults filled in.
+    pub params: &'a std::collections::BTreeMap<String, Value>,
     pub tm: Tm,
     pub icon_pack: &'a str,
 }
@@ -151,7 +153,8 @@ mod tests {
         }
         let src = DataSources::new(vec![Box::new(Weather)]);
         let cfg = InstanceCfg::default();
-        let cx = SourceCx { cfg: &cfg, tm: tm(1, 2, 3, 0), icon_pack: "Default" };
+        let params = cfg.params_map();
+        let cx = SourceCx { cfg: &cfg, params: &params, tm: tm(1, 2, 3, 0), icon_pack: "Default" };
         assert_eq!(src.value("weather", &cx).and_then(|v| v.get("temp").cloned()), Some(Value::Num(21.0)));
         assert_eq!(src.next_wake(&deps(&["weather.temp"]), &tm(12, 0, 0, 0)), Some(Duration::from_millis(60_002)));
     }
