@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::data::Shortcut;
-use crate::theme::Selection;
+use crate::theme::{Library, Selection, Theme, ThemePick};
 use crate::value::Value;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,6 +34,12 @@ pub struct InstanceCfg {
     pub z: String,
     pub click_through: bool,
     pub params: BTreeMap<String, serde_json::Value>,
+    /// Its own palette, fonts, glyphs or icon pack; unset uses the global one.
+    #[serde(skip_serializing_if = "ThemePick::is_empty")]
+    pub theme: ThemePick,
+    /// Its Style overrides, over the Workspace's.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub style: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for InstanceCfg {
@@ -49,6 +55,8 @@ impl Default for InstanceCfg {
             z: "desktop".into(),
             click_through: false,
             params: BTreeMap::new(),
+            theme: ThemePick::default(),
+            style: BTreeMap::new(),
         }
     }
 }
@@ -78,6 +86,10 @@ impl InstanceCfg {
         self.params.insert(name.into(), serde_json::Value::Array(list));
     }
 
+    pub fn style_map(&self) -> BTreeMap<String, Value> {
+        self.style.iter().map(|(k, v)| (k.clone(), Value::from(v))).collect()
+    }
+
     pub fn folder(&self) -> String {
         self.params.get("folder").and_then(|v| v.as_str()).unwrap_or("").to_string()
     }
@@ -90,38 +102,51 @@ pub struct Workspace {
     /// "low" (default) | "high" | "software": ADR-005.
     pub gpu: String,
     pub theme: Selection,
-    /// Theme token overrides.
-    pub overrides: BTreeMap<String, String>,
+    /// Style tokens (`assets/style.toml`) for every Instance; each may override them.
+    pub style: BTreeMap<String, serde_json::Value>,
     /// Snap grid in logical px (0 = off).
     pub grid: f32,
     pub autostart: bool,
-    pub blur: bool,
-    pub outlines: bool,
     pub header_drag: bool,
     pub instances: Vec<InstanceCfg>,
+    /// Version 1 fields, folded into `style` by `migrate`; read, never written.
+    #[serde(skip_serializing)]
+    overrides: BTreeMap<String, String>,
+    #[serde(skip_serializing)]
+    blur: Option<bool>,
+    #[serde(skip_serializing)]
+    outlines: Option<bool>,
 }
 
 impl Default for Workspace {
     fn default() -> Self {
-        Self { version: 1, gpu: "low".into(), theme: Selection::default(), overrides: BTreeMap::new(), grid: 8.0, autostart: false, blur: false, outlines: true, header_drag: false, instances: Vec::new() }
+        Self {
+            version: 2,
+            gpu: "low".into(),
+            theme: Selection::default(),
+            style: BTreeMap::new(),
+            grid: 8.0,
+            autostart: false,
+            header_drag: false,
+            instances: Vec::new(),
+            overrides: BTreeMap::new(),
+            blur: None,
+            outlines: None,
+        }
     }
 }
 
 /// Adding one: a variant, its `Workspace` field and a `settings::flag_row`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flag {
-    Blur,
-    Outlines,
     HeaderDrag,
 }
 
 impl Flag {
-    pub const ALL: [Flag; 3] = [Flag::Blur, Flag::Outlines, Flag::HeaderDrag];
+    pub const ALL: [Flag; 1] = [Flag::HeaderDrag];
 
     pub fn id(self) -> &'static str {
         match self {
-            Flag::Blur => "blur",
-            Flag::Outlines => "outlines",
             Flag::HeaderDrag => "header_drag",
         }
     }
@@ -132,20 +157,23 @@ impl Flag {
 
     pub fn label(self) -> &'static str {
         match self {
-            Flag::Blur => "Blur behind",
-            Flag::Outlines => "Outlines",
             Flag::HeaderDrag => "Move by header",
         }
     }
 
     pub fn help(self) -> &'static str {
         match self {
-            Flag::Blur => "Blurs the desktop behind every widget. Drops shadows and rounds corners to the Windows 11 default.",
-            Flag::Outlines => "Draw a thin border around widgets and their parts",
             Flag::HeaderDrag => "Drag the top strip of any widget to move it, without Edit layout",
         }
     }
 }
+
+/// Per built-in Widget, its old style params and the Style token each became.
+const MOVED_TO_STYLE: &[(&str, &[(&str, &str)])] = &[
+    ("drawer", &[("transparent", "transparent"), ("opacity", "bg-opacity"), ("blur", "blur"), ("tint", "tint")]),
+    ("clock", &[("accent", "accent")]),
+    ("digital_clock", &[("accent", "accent")]),
+];
 
 pub fn data_dir() -> PathBuf {
     let base = std::env::var_os("APPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
@@ -162,7 +190,12 @@ impl Workspace {
         let p = Self::path(dir);
         let Ok(text) = std::fs::read_to_string(&p) else { return (Workspace::default(), None) };
         match serde_json::from_str::<Workspace>(&text) {
-            Ok(w) => (w, None),
+            Ok(mut w) => {
+                if w.version < 2 {
+                    w.migrate();
+                }
+                (w, None)
+            }
             Err(e) => {
                 let bak = p.with_extension("json.broken");
                 let _ = std::fs::rename(&p, &bak);
@@ -181,18 +214,48 @@ impl Workspace {
         std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
     }
 
+    /// Version 1 kept style in `overrides`, two switches and some Widgets' params.
+    fn migrate(&mut self) {
+        let old = std::mem::take(&mut self.overrides);
+        self.style.extend(old.into_iter().map(|(k, v)| (k, serde_json::Value::String(v))));
+        if self.blur.take() == Some(true) {
+            self.style.insert("blur".into(), true.into());
+        }
+        if self.outlines.take() == Some(false) {
+            self.style.insert("outlines".into(), false.into());
+        }
+        for cfg in &mut self.instances {
+            let moved = MOVED_TO_STYLE.iter().find(|(w, _)| *w == cfg.widget).map_or(&[][..], |(_, m)| *m);
+            for (param, token) in moved {
+                if let Some(v) = cfg.params.remove(*param) {
+                    cfg.style.insert(token.to_string(), v);
+                }
+            }
+        }
+        self.version = 2;
+    }
+
+    pub fn style_map(&self) -> BTreeMap<String, Value> {
+        self.style.iter().map(|(k, v)| (k.clone(), Value::from(v))).collect()
+    }
+
+    pub fn global_theme(&self, lib: &Library) -> Theme {
+        Theme::compose(lib, &self.theme, &[&self.style_map()])
+    }
+
+    /// base < axes (its own pick, else global) < global style < its own style.
+    pub fn theme_for(&self, lib: &Library, cfg: &InstanceCfg) -> Theme {
+        Theme::compose(lib, &cfg.theme.resolve(&self.theme), &[&self.style_map(), &cfg.style_map()])
+    }
+
     pub fn flag(&self, f: Flag) -> bool {
         match f {
-            Flag::Blur => self.blur,
-            Flag::Outlines => self.outlines,
             Flag::HeaderDrag => self.header_drag,
         }
     }
 
     pub fn set_flag(&mut self, f: Flag, on: bool) {
         match f {
-            Flag::Blur => self.blur = on,
-            Flag::Outlines => self.outlines = on,
             Flag::HeaderDrag => self.header_drag = on,
         }
     }
@@ -307,14 +370,56 @@ mod tests {
     }
 
     #[test]
-    fn flags_read_and_write_the_saved_fields() {
+    fn header_drag_is_the_one_flag_left_and_it_is_saved() {
         let mut w = Workspace::default();
         for f in Flag::ALL {
             assert_eq!(Flag::parse(f.id()), Some(f));
             w.set_flag(f, !w.flag(f));
         }
-        assert_eq!((w.blur, w.outlines, w.header_drag), (true, false, true));
-        let json = serde_json::to_value(&w).unwrap();
-        assert_eq!((json["blur"].as_bool(), json["outlines"].as_bool(), json["header_drag"].as_bool()), (Some(true), Some(false), Some(true)));
+        assert!(w.header_drag);
+        assert_eq!(serde_json::to_value(&w).unwrap()["header_drag"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn a_version_1_file_migrates_style_and_never_writes_legacy_fields() {
+        let old = r##"{"version":1,"overrides":{"accent":"#ff8800","radius-lg":"30"},"blur":true,"outlines":false,
+          "instances":[{"id":"drawer-1","widget":"drawer","params":{"transparent":true,"opacity":40,"blur":true,"tint":false,"title":"Apps"}},
+                       {"id":"clock-1","widget":"clock","params":{"accent":"#00ff00","ticks":false}},
+                       {"id":"mine-1","widget":"mine","params":{"accent":"#123456"}}]}"##;
+        let dir = std::env::temp_dir().join(format!("wf-migrate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(Workspace::path(&dir), old).unwrap();
+        let (w, err) = Workspace::load(&dir);
+        assert!(err.is_none());
+        assert_eq!(w.version, 2);
+        assert_eq!(w.style.get("accent"), Some(&serde_json::json!("#ff8800")));
+        assert_eq!((w.style.get("blur"), w.style.get("outlines")), (Some(&serde_json::json!(true)), Some(&serde_json::json!(false))));
+        let d = &w.instances[0];
+        assert_eq!((d.style.get("bg-opacity"), d.style.get("tint")), (Some(&serde_json::json!(40)), Some(&serde_json::json!(false))));
+        assert!(!d.params.contains_key("opacity") && d.params.contains_key("title"));
+        assert_eq!(w.instances[1].style.get("accent"), Some(&serde_json::json!("#00ff00")));
+        assert!(w.instances[1].params.contains_key("ticks") && !w.instances[1].params.contains_key("accent"));
+        assert!(w.instances[2].style.is_empty() && w.instances[2].params.contains_key("accent"), "user widgets keep their own accent");
+        w.save(&dir).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(Workspace::path(&dir)).unwrap()).unwrap();
+        assert!(json.get("overrides").is_none() && json.get("blur").is_none() && json.get("outlines").is_none());
+        assert!(json["instances"][2].get("style").is_none() && json["instances"][2].get("theme").is_none(), "empty maps stay out of the file");
+        let (again, _) = Workspace::load(&dir);
+        assert_eq!(again.style, w.style, "a version 2 file loads as saved");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn theme_for_layers_instance_over_global() {
+        let lib = crate::theme::Library::load(Path::new("nope"));
+        let mut w = Workspace::default();
+        w.style.insert("accent".into(), serde_json::json!("#111111"));
+        let mut c = InstanceCfg::default();
+        assert_eq!(w.theme_for(&lib, &c).color("accent").to_hex(), "#111111");
+        assert_eq!(w.global_theme(&lib).color("accent").to_hex(), "#111111");
+        c.style.insert("accent".into(), serde_json::json!("#222222"));
+        c.theme.palette = Some("Daylight".into());
+        let t = w.theme_for(&lib, &c);
+        assert_eq!((t.color("accent").to_hex(), t.color("text").to_hex()), ("#222222".to_string(), "#141a2a".to_string()));
     }
 }

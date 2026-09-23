@@ -38,7 +38,7 @@ use crate::edit::{self, Handle, Rect, Snap};
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
 use crate::platform::win32::{self, ZMode};
-use crate::settings::{self, Cmd, SettingsWin};
+use crate::settings::{self, Cmd, Scope, SettingsWin};
 use crate::text::TextEngine;
 use crate::theme::{Library, Theme};
 use crate::ui::{self, Env, Frame};
@@ -198,8 +198,10 @@ impl App {
     }
 
     fn rebuild_theme(&mut self) {
-        self.theme = Theme::compose(&self.lib, &self.ws.theme, &[&self.global_style()]);
-        for f in self.lib.fonts(&self.ws.theme.fonts).files.clone() {
+        self.theme = self.ws.global_theme(&self.lib);
+        let sets = std::iter::once(self.ws.theme.fonts.clone()).chain(self.ws.instances.iter().filter_map(|c| c.theme.fonts.clone()));
+        let files: Vec<PathBuf> = sets.flat_map(|n| self.lib.fonts(&n).files.clone()).collect();
+        for f in files {
             self.text.load_font_file(&f);
         }
         self.redraw_all();
@@ -215,17 +217,22 @@ impl App {
         self.save_at = Some(Instant::now() + Duration::from_millis(400));
     }
 
-    /// ponytail: shim until style moves into the Workspace; reads the legacy fields.
-    fn global_style(&self) -> BTreeMap<String, Value> {
-        let mut m: BTreeMap<String, Value> = self.ws.overrides.iter().map(|(k, v)| (k.clone(), Value::Str(v.clone()))).collect();
-        m.insert("blur".into(), self.ws.blur.into());
-        m.insert("outlines".into(), self.ws.outlines.into());
-        m
+    /// ponytail: composed per call (a few map merges, never while idle); cache on Instance if drags ever profile slow.
+    fn theme_of(&self, i: usize) -> Theme {
+        self.ws.theme_for(&self.lib, &self.ws.instances[i])
     }
 
-    /// ponytail: composed per call (a few map merges, never while idle); cache on Instance if drags ever profile slow.
-    fn theme_of(&self, _i: usize) -> Theme {
-        Theme::compose(&self.lib, &self.ws.theme, &[&self.global_style()])
+    /// Applies a style change, then refits every window whose blur (and so gutter) changed.
+    fn restyle(&mut self, change: impl FnOnce(&mut Workspace)) {
+        let was: Vec<Card> = (0..self.wins.len()).map(|i| self.card(i)).collect();
+        change(&mut self.ws);
+        for (i, w) in was.into_iter().enumerate() {
+            if self.card(i).blur != w.blur {
+                self.refit_window_around_card(i, w);
+            }
+        }
+        self.rebuild_theme();
+        self.mark_save();
     }
 
     fn card(&self, i: usize) -> Card {

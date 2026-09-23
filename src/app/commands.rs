@@ -110,19 +110,30 @@ impl App {
                     self.mark_save();
                 }
             }
-            Cmd::Theme(sel) => {
-                self.ws.theme = sel;
-                self.rebuild_theme();
-                self.mark_save();
-            }
-            Cmd::Override(k, v) => {
-                match v {
-                    Some(v) => self.ws.overrides.insert(k, v),
-                    None => self.ws.overrides.remove(&k),
+            Cmd::Theme(sel) => self.restyle(|ws| ws.theme = sel),
+            Cmd::Style(scope, token, value) => self.restyle(|ws| {
+                let map = match &scope {
+                    Scope::Global => &mut ws.style,
+                    Scope::Instance(id) => match ws.instances.iter_mut().find(|c| &c.id == id) {
+                        Some(c) => &mut c.style,
+                        None => return,
+                    },
                 };
-                self.rebuild_theme();
-                self.mark_save();
-            }
+                match value {
+                    Some(v) => map.insert(token, (&v).into()),
+                    None => map.remove(&token),
+                };
+            }),
+            Cmd::ThemePick(id, axis, name) => self.restyle(|ws| {
+                let Some(c) = ws.instances.iter_mut().find(|c| c.id == id) else { return };
+                match axis.as_str() {
+                    "palette" => c.theme.palette = name,
+                    "fonts" => c.theme.fonts = name,
+                    "glyphs" => c.theme.glyphs = name,
+                    "pack" => c.theme.icon_pack = name,
+                    _ => {}
+                }
+            }),
             Cmd::Gpu(g) => {
                 self.ws.gpu = g;
                 self.mark_save();
@@ -136,14 +147,7 @@ impl App {
                 self.mark_save();
             }
             Cmd::Flag(flag, on) => {
-                let was: Vec<Card> = (0..self.wins.len()).map(|i| self.card(i)).collect();
                 self.ws.set_flag(flag, on);
-                for (i, w) in was.into_iter().enumerate() {
-                    if self.card(i).blur != w.blur {
-                        self.refit_window_around_card(i, w);
-                    }
-                    self.wins[i].redraw = true;
-                }
                 self.mark_save();
             }
             Cmd::Grid(g) => {

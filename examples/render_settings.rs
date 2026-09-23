@@ -43,7 +43,7 @@ fn main() {
         }
         ws.instances.push(c);
     }
-    ws.overrides.insert("radius-lg".into(), "26".into());
+    ws.style.insert("radius-lg".into(), 26.into());
     let log: Vec<String> = ["monitor \\\\.\\DISPLAY1: 1920x1080 @ 1.00x", "gpu: AMD Radeon(TM) Graphics / Dx12 / IntegratedGpu", "ready: 4 instance(s), theme Midnight / System / Fluent", "edit mode on"].iter().map(|s| s.to_string()).collect();
     let ctx = Ctx { ws: &ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "AMD Radeon(TM) Graphics / Dx12 / IntegratedGpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, parked: &[] };
 

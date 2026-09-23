@@ -35,7 +35,7 @@ impl App {
         let missing: Def = Err(format!("unknown widget `{}`", cfg.widget));
         let def = reg.get(&cfg.widget).unwrap_or(&missing);
         let tm = data::now_local();
-        let pack = ws.theme.icon_pack.clone();
+        let pack = cfg.theme.resolve(&ws.theme).icon_pack;
         iw.anim.duration_factor = anim::duration_factor(&theme.str("anim-speed"));
         let v = View { cfg, state: &iw.state, window_size: size, theme: &theme, icon_pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };
         let mut sv = Services { gpu, icons, text, anim: &mut iw.anim, sources };
