@@ -1,5 +1,27 @@
 use super::*;
 
+/// How-tos for editing the data folder with Claude Code, as path parts under it.
+const GUIDES: &[(&[&str], &str)] = &[
+    (&["THEMES.md"], include_str!("../../assets/guides/THEMES.md")),
+    (&[".claude", "skills", "wayfinder-theme", "SKILL.md"], include_str!("../../assets/guides/wayfinder-theme/SKILL.md")),
+];
+
+/// Written only when missing, so the user's own edits survive every start.
+pub(super) fn write_missing_guides(dir: &std::path::Path) -> Vec<String> {
+    let mut errors = Vec::new();
+    for (parts, text) in GUIDES {
+        let path = parts.iter().fold(dir.to_path_buf(), |p, part| p.join(part));
+        if path.exists() {
+            continue;
+        }
+        let written = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&path, text));
+        if let Err(e) = written {
+            errors.push(format!("could not write {}: {e}", path.display()));
+        }
+    }
+    errors
+}
+
 /// Right-hand side of the primary monitor, clear of the desktop icons.
 pub(super) fn default_instances(monitors: &[MonitorInfo], reg: &Registry, card: Card, host: &mut dyn Host) -> Vec<InstanceCfg> {
     let Some(m) = monitors.iter().find(|m| m.x == 0 && m.y == 0).or(monitors.first()) else { return vec![] };
@@ -25,4 +47,33 @@ pub(super) fn default_instances(monitors: &[MonitorInfo], reg: &Registry, card: 
     col("icon_folder-1", "icon_folder", x2 + lw - 20.0, 8.0);
     let _ = (dh, lh);
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guides_are_written_once_and_user_edits_survive() {
+        let dir = std::env::temp_dir().join(format!("wf-guides-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(write_missing_guides(&dir).is_empty());
+        let skill = dir.join(".claude").join("skills").join("wayfinder-theme").join("SKILL.md");
+        assert_eq!(std::fs::read_to_string(&skill).unwrap(), GUIDES[1].1);
+        std::fs::write(dir.join("THEMES.md"), "mine").unwrap();
+        assert!(write_missing_guides(&dir).is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("THEMES.md")).unwrap(), "mine");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn themes_guide_names_every_builtin_token() {
+        let guide = GUIDES[0].1;
+        let lib = Library::load(std::path::Path::new("no-such-dir"));
+        for axis in [&lib.palettes[0], &lib.fonts[0], &lib.glyphs[0]] {
+            for token in axis.tokens.keys() {
+                assert!(guide.contains(token.as_str()), "THEMES.md does not mention `{token}`");
+            }
+        }
+    }
 }
