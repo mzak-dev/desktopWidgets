@@ -69,8 +69,8 @@ impl App {
     }
 
     pub(super) fn save_rect_to_workspace(&mut self, i: usize) {
-        let Some(w) = self.wins[i].window.clone() else { return };
-        let Some(r) = Self::outer_rect(&w) else { return };
+        // a glide still running is saved where it lands
+        let Some(r) = self.window_target(i) else { return };
         if let Some((m, x, y)) = workspace::anchor((r.x, r.y), (r.w as u32, r.h as u32), &self.monitors) {
             let scale = self.monitors.iter().find(|mi| mi.name == m.name).map_or(1.0, |mi| mi.scale);
             let window = ((r.w as f64 / scale).round() as f32, (r.h as f64 / scale).round() as f32);
@@ -116,8 +116,31 @@ impl App {
     pub(super) fn begin_drag(&mut self, i: usize, handle: Handle, cursor0: (i32, i32)) {
         if let Some(r) = self.wins[i].window.as_ref().and_then(|w| Self::outer_rect(w)) {
             self.wins[i].tween = None;
-            self.wins[i].drag = Some(Drag { handle, cursor0, rect0: r, before: r });
+            self.wins[i].drag = Some(Drag { handle, cursor0, rect0: r, before: r, snapped: [0; 4] });
             self.wins[i].redraw = true;
+        }
+    }
+
+    /// Where the window is headed: a running glide's target, else where it is.
+    pub(super) fn window_target(&self, i: usize) -> Option<Rect> {
+        self.wins[i].tween.as_ref().map(|t| t.to).or_else(|| self.wins[i].window.as_ref().and_then(|w| Self::outer_rect(w)))
+    }
+
+    /// Moves or resizes the window to `target` over a short glide from wherever it is now
+    /// (scaled by `anim-speed`; `off` jumps).
+    pub(super) fn glide_window(&mut self, i: usize, target: Rect) {
+        let secs = GLIDE_SECS * anim::duration_factor(&self.theme_of(i).str("anim-speed"));
+        let now = Instant::now();
+        let from = self.wins[i].tween.as_ref().map(|t| t.rect_at(now)).or_else(|| self.wins[i].window.as_ref().and_then(|w| Self::outer_rect(w)));
+        match from {
+            Some(from) if secs > 0.0 && from != target => {
+                self.wins[i].tween = Some(SizeTween { from, to: target, start: now, secs });
+                self.wins[i].redraw = true;
+            }
+            _ => {
+                self.wins[i].tween = None;
+                self.set_window_rect(i, target);
+            }
         }
     }
 
@@ -129,14 +152,25 @@ impl App {
         let snap = if self.mods.shift_key() { Snap { threshold: 0, grid: 0, ..snap } } else { snap };
         let (card, s) = (self.card(i), self.scale_of(i));
         let g = card.gutter_px(s);
-        let c = edit::dragged_rect(handle, card.card_of_window(rect0, s), cursor.0 - cursor0.0, cursor.1 - cursor0.1, (min.0 - 2 * g, min.1 - 2 * g), max.map(|m| (m.0 - 2 * g, m.1 - 2 * g)), &snap);
-        self.set_window_rect(i, card.window_of_card(c, s));
-        self.wins[i].tween = None;
+        let drag = |snap: &Snap| edit::dragged_rect(handle, card.card_of_window(rect0, s), cursor.0 - cursor0.0, cursor.1 - cursor0.1, (min.0 - 2 * g, min.1 - 2 * g), max.map(|m| (m.0 - 2 * g, m.1 - 2 * g)), snap);
+        let c = drag(&snap);
+        let snapped = snap_offset(drag(&Snap { threshold: 0, grid: 0, ..snap.clone() }), c);
+        let target = card.window_of_card(c, s);
+        // the cursor is followed directly; a snap catching, letting go or stepping glides
+        let jumped = self.wins[i].drag.as_ref().is_some_and(|d| d.snapped != snapped);
+        if let Some(d) = self.wins[i].drag.as_mut() {
+            d.snapped = snapped;
+        }
+        if jumped || self.wins[i].tween.is_some() {
+            self.glide_window(i, target);
+        } else {
+            self.set_window_rect(i, target);
+        }
     }
 
     pub(super) fn end_drag(&mut self, i: usize) {
         if let Some(d) = self.wins[i].drag.take() {
-            let changed = self.wins[i].window.as_ref().and_then(|w| Self::outer_rect(w)).is_some_and(|r| r != d.before);
+            let changed = self.window_target(i).is_some_and(|r| r != d.before);
             if changed {
                 self.undo.push(UndoEntry { id: self.ws.instances[i].id.clone(), before: d.before });
                 self.save_rect_to_workspace(i);
@@ -174,7 +208,7 @@ impl App {
     pub(super) fn undo_last(&mut self) {
         let Some(u) = self.undo.pop() else { return };
         if let Some(i) = self.ws.instances.iter().position(|c| c.id == u.id) {
-            self.set_window_rect(i, u.before);
+            self.glide_window(i, u.before);
             self.save_rect_to_workspace(i);
         }
     }

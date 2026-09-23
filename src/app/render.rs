@@ -102,7 +102,11 @@ impl App {
         if first && !active {
             return; // first layout: nothing to animate
         }
-        self.wins[i].tween = Some(SizeTween { from: cur, to: target, start: Instant::now() });
+        let secs = EXPAND_SECS * anim::duration_factor(&self.theme_of(i).str("anim-speed"));
+        self.wins[i].tween = (secs > 0.0).then(|| SizeTween { from: cur, to: target, start: Instant::now(), secs });
+        if secs <= 0.0 {
+            self.set_window_rect(i, target);
+        }
         // one reconfigure up front; the animation itself then only moves the window
         if let (Some(g), Some(t)) = (self.gpu.as_ref(), self.wins[i].target.as_mut()) {
             g.fit(t, target.w.max(1) as u32, target.h.max(1) as u32);

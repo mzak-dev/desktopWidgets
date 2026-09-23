@@ -99,7 +99,7 @@ impl App {
                         let mut c = card.card_of_window(r, s);
                         (c.w, c.h) = (c.w.min(max.0 - 2 * g), c.h.min(max.1 - 2 * g));
                         if card.window_of_card(c, s) != r {
-                            self.set_window_rect(i, card.window_of_card(c, s));
+                            self.glide_window(i, card.window_of_card(c, s));
                             self.save_rect_to_workspace(i);
                         }
                     }
@@ -126,7 +126,7 @@ impl App {
                     }
                     if let Some(p) = workspace::resolve(&self.ws.instances[i], &self.monitors) {
                         let s = self.scale_of(i);
-                        self.set_window_rect(i, Rect::new(p.0, p.1, (w as f64 * s) as i32, (h as f64 * s) as i32));
+                        self.glide_window(i, Rect::new(p.0, p.1, (w as f64 * s) as i32, (h as f64 * s) as i32));
                     }
                     self.sync_windows(el);
                     self.mark_save();

@@ -7,19 +7,30 @@ pub(super) struct Drag {
     pub(super) cursor0: (i32, i32),
     pub(super) rect0: Rect,
     pub(super) before: Rect,
+    /// `snap_offset` at the last update: a change means a snap caught, let go or stepped.
+    pub(super) snapped: [i32; 4],
 }
 
+/// A window moving or resizing from one rect to another (expand, snap, undo).
 pub(super) struct SizeTween {
     pub(super) from: Rect,
     pub(super) to: Rect,
     pub(super) start: Instant,
+    pub(super) secs: f32,
+}
+
+/// Seconds, before `anim-speed`.
+pub(super) const EXPAND_SECS: f32 = 0.20;
+pub(super) const GLIDE_SECS: f32 = 0.12;
+
+/// How far snapping moved each edge (left, top, right, bottom) from where the cursor alone put it.
+pub(super) fn snap_offset(raw: Rect, snapped: Rect) -> [i32; 4] {
+    [snapped.x - raw.x, snapped.y - raw.y, snapped.right() - raw.right(), snapped.bottom() - raw.bottom()]
 }
 
 impl SizeTween {
-    const SECS: f32 = 0.20;
-
     fn progress(&self, now: Instant) -> f32 {
-        (now.saturating_duration_since(self.start).as_secs_f32() / Self::SECS).clamp(0.0, 1.0)
+        (now.saturating_duration_since(self.start).as_secs_f32() / self.secs.max(1e-3)).clamp(0.0, 1.0)
     }
 
     pub(super) fn rect_at(&self, now: Instant) -> Rect {
@@ -163,6 +174,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_glide_takes_its_own_duration_and_lands_on_the_target() {
+        let t0 = Instant::now();
+        let tw = SizeTween { from: Rect::new(0, 0, 100, 100), to: Rect::new(100, 0, 100, 100), start: t0, secs: 0.1 };
+        assert!(tw.rect_at(t0 + Duration::from_millis(50)).x > 50, "ease-out is past halfway at half time");
+        assert!(!tw.finished_at(t0 + Duration::from_millis(90)));
+        assert_eq!(tw.rect_at(t0 + Duration::from_millis(100)), Rect::new(100, 0, 100, 100));
+        assert!(tw.finished_at(t0 + Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn snap_offset_is_zero_until_a_guide_or_the_grid_moves_an_edge() {
+        let raw = Rect::new(96, 40, 200, 100);
+        assert_eq!(snap_offset(raw, raw), [0; 4]);
+        assert_eq!(snap_offset(raw, Rect::new(100, 40, 200, 100)), [4, 0, 4, 0], "a move snaps both x edges");
+        assert_eq!(snap_offset(raw, Rect::new(96, 40, 204, 100)), [0, 0, 4, 0], "a resize snaps one edge");
+    }
+
+    #[test]
     fn editing_an_expanded_widget_keeps_its_base_size_on_the_expanded_axes() {
         // a collapsed drawer: `[expand]` sets only the height (44), the open size is 300x220
         let collapsed = Some(ExpandInfo { active: true, width: None, height: Some(44.0) });
@@ -199,7 +228,7 @@ mod tests {
     #[test]
     fn a_size_tween_eases_to_its_target_and_ends() {
         let start = Instant::now();
-        let tw = SizeTween { from: Rect::new(0, 0, 100, 100), to: Rect::new(0, 0, 300, 200), start };
+        let tw = SizeTween { from: Rect::new(0, 0, 100, 100), to: Rect::new(0, 0, 300, 200), start, secs: EXPAND_SECS };
         let half = start + Duration::from_millis(100);
         let mid = tw.rect_at(half);
         assert!(!tw.finished_at(half) && mid.w > 200 && mid.w < 300, "ease-out is past halfway at half time: {mid:?}");
