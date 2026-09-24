@@ -15,7 +15,7 @@ Move and resize them in real time, restyle everything, and pay nothing while the
 [![DirectX 12](https://img.shields.io/badge/DirectX_12-DirectComposition-107C10?style=for-the-badge&logo=xbox&logoColor=white)](docs/adr/0001-dx12-dcomp-presentation.md)
 
 ![Status](https://img.shields.io/badge/status-alpha-F5A623?style=flat-square)
-![Tests](https://img.shields.io/badge/unit_tests-240_passing-2EA44F?style=flat-square)
+![Tests](https://img.shields.io/badge/unit_tests-244_passing-2EA44F?style=flat-square)
 ![Idle](https://img.shields.io/badge/idle_CPU-0%25-2EA44F?style=flat-square)
 ![Layout](https://img.shields.io/badge/layout-taffy_flexbox-8A63D2?style=flat-square)
 ![Text](https://img.shields.io/badge/text-glyphon-3B82F6?style=flat-square)
@@ -306,7 +306,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 
 **✅ Verified**
 
-- 240 unit tests (`cargo test --lib`)
+- 244 unit tests (`cargo test --lib`)
 - All four widgets and the settings window rendered offscreen
 - A 35-check scripted run of the live app, on the **software** renderer: drag, live resize, undo, saving, folder expand and z-raise, hot reload with error cards, the settings commands, and Show Desktop detection and response (against a stand-in host window)
 
@@ -331,7 +331,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 ## 🛠️ Development
 
 ```powershell
-cargo test --lib                     # 240 unit tests, pure logic, no GPU
+cargo test --lib                     # 244 unit tests, pure logic, no GPU
 cargo run --release -- --selftest --gpu software --data $env:TEMP\wf-test
 ```
 
