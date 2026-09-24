@@ -15,7 +15,7 @@ Move and resize them in real time, restyle everything, and pay nothing while the
 [![DirectX 12](https://img.shields.io/badge/DirectX_12-DirectComposition-107C10?style=for-the-badge&logo=xbox&logoColor=white)](docs/adr/0001-dx12-dcomp-presentation.md)
 
 ![Status](https://img.shields.io/badge/status-alpha-F5A623?style=flat-square)
-![Tests](https://img.shields.io/badge/unit_tests-207_passing-2EA44F?style=flat-square)
+![Tests](https://img.shields.io/badge/unit_tests-240_passing-2EA44F?style=flat-square)
 ![Idle](https://img.shields.io/badge/idle_CPU-0%25-2EA44F?style=flat-square)
 ![Layout](https://img.shields.io/badge/layout-taffy_flexbox-8A63D2?style=flat-square)
 ![Text](https://img.shields.io/badge/text-glyphon-3B82F6?style=flat-square)
@@ -288,7 +288,8 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 | [Adapter and present mode](docs/adr/0005-adapter-and-present-mode.md) | `Mailbox` presentation, and the integrated GPU by default (see below). |
 | [Swapchain sizing and GPU loss](docs/adr/0006-swapchain-resize-and-gpu-loss.md) | Resizing a composition swapchain every frame is fragile, so it is sized in buckets, and a lost device is rebuilt. |
 | [Content plugins](docs/adr/0007-content-plugins.md) | A `.wfplugin` is a zip that installs by unpacking. Widget ids stay flat, so a plugin can restyle built-ins. No native code. |
-| [Plugin code](docs/adr/0008-plugin-code.md) | WebAssembly Code Sources in wasmi, one thread per plugin, a JSON ABI, HTTPS to listed hosts and 1 MB of saved data. The UI never waits for plugin code. |
+| [Plugin code](docs/adr/0008-plugin-code.md) | WebAssembly Code Sources in wasmi, one thread per plugin, a JSON ABI, HTTPS to listed hosts, read-only folders it declares and 1 MB of saved data. The UI never waits for plugin code. |
+| [Native sources in your own build](docs/adr/0009-native-sources-in-your-own-build.md) | Native code joins through an exe built on the engine as a library, never through DLLs. Sources can act, notify and forget Instances like Code Sources. |
 
 > [!IMPORTANT]
 > **Which GPU?** Wayfinder defaults to the **integrated** GPU (`"gpu": "low"`). On the AMD machine it was developed on, selecting the dedicated GPU pinned one CPU core at 99% while idle with two or more widgets on screen, in a driver thread outside Wayfinder, whereas the integrated GPU idled at 0.00%. Widgets are tiny, so the integrated GPU is plenty. You can change it in **Settings → General**, or set `"gpu": "high"` in `workspace.json`. `"software"` renders on the CPU. Details in [ADR-005](docs/adr/0005-adapter-and-present-mode.md).
@@ -305,7 +306,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 
 **✅ Verified**
 
-- 207 unit tests (`cargo test --lib`)
+- 240 unit tests (`cargo test --lib`)
 - All four widgets and the settings window rendered offscreen
 - A 35-check scripted run of the live app, on the **software** renderer: drag, live resize, undo, saving, folder expand and z-raise, hot reload with error cards, the settings commands, and Show Desktop detection and response (against a stand-in host window)
 
@@ -323,14 +324,14 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 </tr>
 </table>
 
-**Ideas, not promises:** a plugin catalogue to browse and install from, shader widgets, more built-in data sources (media), an installer.
+**Ideas, not promises:** a plugin catalogue to browse and install from, shader widgets, more built-in data sources (media, audio), an installer.
 
 <br>
 
 ## 🛠️ Development
 
 ```powershell
-cargo test --lib                     # 207 unit tests, pure logic, no GPU
+cargo test --lib                     # 240 unit tests, pure logic, no GPU
 cargo run --release -- --selftest --gpu software --data $env:TEMP\wf-test
 ```
 

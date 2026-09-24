@@ -62,7 +62,7 @@ _Avoid_: theme, glyph set
 The global state in which Instances show handles and can be dragged and resized.
 
 **Data Source**:
-A named producer of values that widget definitions bind to (`clock`, `sys`, `shortcuts`). It declares how often each of its fields can change, which is what lets an idle desktop cost nothing.
+A named producer of values that widget definitions bind to (`clock`, `sys`, `shortcuts`). It declares how often each of its fields can change, or says through its Notifier when it changed, which is what lets an idle desktop cost nothing. It may also handle action verbs (`media.play_pause`). Built-ins, Code Sources and native sources an app built on Wayfinder registers (ADR-0009) are all Data Sources.
 _Avoid_: measure, plugin
 
 **Z-mode**:
