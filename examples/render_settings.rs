@@ -60,7 +60,7 @@ fn main() {
         PluginRow { id: "neon-icons".into(), name: "Neon Icons".into(), version: "0.3".into(), author: "Lin".into(), summary: "1 icon pack".into(), enabled: false, ..Default::default() },
     ];
     let log: Vec<String> = ["monitor \\\\.\\DISPLAY1: 1920x1080 @ 1.00x", "gpu: AMD Radeon(TM) Graphics / Dx12 / IntegratedGpu", "ready: 4 instance(s), theme Midnight / System / Fluent", "edit mode on"].iter().map(|s| s.to_string()).collect();
-    let ctx = Ctx { ws: &ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "AMD Radeon(TM) Graphics / Dx12 / IntegratedGpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins };
+    let ctx = Ctx { ws: &ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "AMD Radeon(TM) Graphics / Dx12 / IntegratedGpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "" };
 
     let size = (960.0f32, 680.0f32);
     let states: Vec<(&str, Vec<&str>)> = vec![

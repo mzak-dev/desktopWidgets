@@ -183,6 +183,23 @@ impl App {
                 let _ = std::fs::create_dir_all(&d);
                 win32::open(&d.to_string_lossy());
             }
+            Cmd::InstallPlugin(path) => {
+                let file = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                match PluginStore::new(&self.opts.dir).install(&path) {
+                    Ok(m) => {
+                        self.plugin_note = format!("Installed {} {}", m.name, m.version);
+                        self.log(format!("installed plugin {} {} from {}", m.id, m.version, path.display()));
+                        self.reload(el);
+                    }
+                    Err(e) => {
+                        self.plugin_note = format!("Could not install {file}: {e}");
+                        self.log(format!("could not install {}: {e}", path.display()));
+                    }
+                }
+                if let Some(s) = &mut self.settings {
+                    s.invalidate();
+                }
+            }
             Cmd::PluginEnabled(id, on) => {
                 if on {
                     self.ws.disabled_plugins.remove(&id);

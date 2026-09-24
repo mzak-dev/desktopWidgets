@@ -3,6 +3,7 @@
 //! for the app, with no window or GPU, so it is unit-testable.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -39,6 +40,8 @@ pub struct Ctx<'a> {
     /// Instances without a window, and why.
     pub hidden: &'a [(String, Hidden)],
     pub plugins: &'a [PluginRow],
+    /// The outcome of the last install, for the Plugins page.
+    pub plugin_note: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +74,7 @@ pub enum Cmd {
     Edit(bool),
     Reload,
     OpenFolder,
+    InstallPlugin(PathBuf),
     PluginEnabled(String, bool),
     RemovePlugin(String),
     OpenPluginsFolder,
@@ -382,11 +386,13 @@ pub struct UiState {
     pub caret_at: Instant,
     pub mods: ModifiersState,
     pub popup_anchor_rects: HashMap<String, (f32, f32, f32, f32)>,
+    /// A file is being dragged over the window.
+    pub drop_hover: bool,
 }
 
 impl Default for UiState {
     fn default() -> Self {
-        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), popup_anchor_rects: HashMap::new() }
+        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), popup_anchor_rects: HashMap::new(), drop_hover: false }
     }
 }
 
@@ -1032,8 +1038,12 @@ impl UiState {
 
     fn page_plugins(&self, k: &Kit, ctx: &Ctx) -> Node {
         let mut body = Node::new("pl").col().gap(4.0).pad_xy(24.0, 4.0);
-        let actions = Node::new("pl/acts").row().gap(8.0).child(k.button("pl/folder", "Open plugins folder", "pfolder".into(), false));
+        let actions = Node::new("pl/acts").row().gap(8.0).child(k.button("pl/install", "Install from file...", "pinstall".into(), true)).child(k.button("pl/folder", "Open plugins folder", "pfolder".into(), false));
         body = body.child(k.row("pl/add", "Add a plugin", "A plugin brings widgets, themes, fonts and icons. It never runs programs, but only install plugins you trust.", actions));
+        if !ctx.plugin_note.is_empty() {
+            let bad = ctx.plugin_note.starts_with("Could not");
+            body = body.child(k.txt("pl/note".into(), ctx.plugin_note, 12.5, if bad { k.c("danger") } else { k.c("accent") }).wrap_text());
+        }
         body = body.child(k.section("pl/s1", "Installed"));
         if ctx.plugins.is_empty() {
             body = body.child(k.txt("pl/none".into(), "No plugins yet. Drop a .wfplugin file on this window, or put a plugin's folder in Wayfinder\\plugins.", 12.5, k.c("text-dim")).wrap_text());
@@ -1041,7 +1051,18 @@ impl UiState {
         for (i, r) in ctx.plugins.iter().enumerate() {
             body = body.child(self.plugin_card(k, ctx, r, i));
         }
-        self.scrolling("pl/scroll", body.child(Node::new("pl/pad").h(24.0)))
+        let page = self.scrolling("pl/scroll", body.child(Node::new("pl/pad").h(24.0)));
+        if !self.drop_hover {
+            return page;
+        }
+        let hint = Node::new("pl/drop")
+            .abs(Some(16.0), Some(8.0), Some(16.0), Some(16.0))
+            .center()
+            .radius(16.0)
+            .fill(k.c("accent").with_alpha(0.14))
+            .border(2.0, k.c("accent"))
+            .child(k.bold("pl/drop/t".into(), "Drop to install", 17.0, k.c("text")));
+        Node::new("pl/wrap").col().grow(1.0).child(page).child(hint)
     }
 
     fn plugin_card(&self, k: &Kit, ctx: &Ctx, r: &PluginRow, i: usize) -> Node {
@@ -1481,6 +1502,7 @@ impl UiState {
                 }
             }
             "pfolder" => vec![Cmd::OpenPluginsFolder],
+            "pinstall" => dialog::pick_file_of(hwnd, &[("Wayfinder plugin", "*.wfplugin;*.zip")]).map(|p| vec![Cmd::InstallPlugin(p)]).unwrap_or_default(),
             "openfolder" => vec![Cmd::OpenFolder],
             "reload" => vec![Cmd::Reload],
             "quit" => vec![Cmd::Quit],
@@ -1488,6 +1510,14 @@ impl UiState {
             "min" => vec![Cmd::Minimize],
             _ => vec![],
         }
+    }
+
+    /// A file or folder dropped on the window is a Plugin to install.
+    pub fn dropped(&mut self, path: &Path) -> Vec<Cmd> {
+        self.drop_hover = false;
+        self.page = Page::Plugins;
+        self.open = None;
+        vec![Cmd::InstallPlugin(path.to_path_buf())]
     }
 
     /// `x` in window logical px.
@@ -1752,6 +1782,16 @@ impl SettingsWin {
                 cmds.extend(self.ui.on_key(&event.logical_key, event.text.as_deref(), ctx));
                 self.redraw = true;
             }
+            WindowEvent::HoveredFile(_) => {
+                self.ui.drop_hover = true;
+                self.ui.page = Page::Plugins;
+                self.redraw = true;
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.ui.drop_hover = false;
+                self.redraw = true;
+            }
+            WindowEvent::DroppedFile(p) => cmds.extend(self.ui.dropped(p)),
             _ => {}
         }
         if !cmds.is_empty() {
@@ -1834,7 +1874,7 @@ mod tests {
     }
 
     fn ctx(w: &World) -> Ctx<'_> {
-        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins }
+        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "" }
     }
 
     #[test]
@@ -2034,6 +2074,20 @@ mod tests {
         assert_eq!(ui.act("pon:broken", &c, None), vec![Cmd::PluginEnabled("broken".into(), true)]);
         assert_eq!(ui.act("pon:nope", &c, None), vec![]);
         assert_eq!(ui.act("pfolder", &c, None), vec![Cmd::OpenPluginsFolder]);
+    }
+
+    #[test]
+    fn dropping_a_plugin_file_installs_it() {
+        let mut ui = UiState::default();
+        ui.drop_hover = true;
+        assert_eq!(ui.dropped(Path::new("C:\\Downloads\\sunset.wfplugin")), vec![Cmd::InstallPlugin("C:\\Downloads\\sunset.wfplugin".into())]);
+        assert_eq!((ui.page, ui.drop_hover), (Page::Plugins, false));
+        let w = world();
+        let c = ctx(&w);
+        ui.drop_hover = true;
+        let mut shown = Vec::new();
+        texts(&ui.build(&c, WIN).0, &mut shown);
+        assert!(shown.iter().any(|t| t == "Drop to install"));
     }
 
     #[test]

@@ -7,15 +7,22 @@ use windows::Win32::Foundation::{HGLOBAL, HWND};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, GetClipboardData, OpenClipboard, SetClipboardData};
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
+use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH};
-use windows::core::PCWSTR;
+use windows::core::{HSTRING, PCWSTR};
 
-fn pick(hwnd: Option<HWND>, folders: bool) -> Option<PathBuf> {
+fn pick(hwnd: Option<HWND>, folders: bool, types: &[(&str, &str)]) -> Option<PathBuf> {
     unsafe {
         let dlg: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER).ok()?;
         if folders {
             let opts = dlg.GetOptions().ok()?;
             dlg.SetOptions(opts | FOS_PICKFOLDERS).ok()?;
+        }
+        // the strings must outlive SetFileTypes
+        let wide: Vec<(HSTRING, HSTRING)> = types.iter().map(|(name, spec)| (HSTRING::from(*name), HSTRING::from(*spec))).collect();
+        let specs: Vec<COMDLG_FILTERSPEC> = wide.iter().map(|(n, s)| COMDLG_FILTERSPEC { pszName: PCWSTR(n.as_ptr()), pszSpec: PCWSTR(s.as_ptr()) }).collect();
+        if !specs.is_empty() {
+            dlg.SetFileTypes(&specs).ok()?;
         }
         dlg.Show(hwnd).ok()?; // Err on cancel
         let item = dlg.GetResult().ok()?;
@@ -27,11 +34,16 @@ fn pick(hwnd: Option<HWND>, folders: bool) -> Option<PathBuf> {
 }
 
 pub fn pick_file(hwnd: Option<HWND>) -> Option<PathBuf> {
-    pick(hwnd, false)
+    pick(hwnd, false, &[])
+}
+
+/// Only files matching one of `(name, "*.a;*.b")`.
+pub fn pick_file_of(hwnd: Option<HWND>, types: &[(&str, &str)]) -> Option<PathBuf> {
+    pick(hwnd, false, types)
 }
 
 pub fn pick_folder(hwnd: Option<HWND>) -> Option<PathBuf> {
-    pick(hwnd, true)
+    pick(hwnd, true, &[])
 }
 
 const CF_UNICODETEXT: u32 = 13;

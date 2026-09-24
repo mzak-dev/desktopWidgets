@@ -2,7 +2,8 @@
 //! laid out like the data folder, with a `plugin.toml` manifest. An enabled Plugin is a
 //! content root between the built-ins and the user's own files.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
 use crate::content::{self, Catalog, Contents, Item, Origin, Root};
@@ -150,12 +151,206 @@ impl PluginStore {
         }
     }
 
+    /// Installs a `.wfplugin` (a zip) or a Plugin folder, replacing an installed one with
+    /// the same id. It is unpacked next to the data folder and moved in only once complete.
+    pub fn install(&self, src: &Path) -> Result<Manifest, String> {
+        self.install_with(src, &Limits::default())
+    }
+
+    pub fn install_with(&self, src: &Path, limits: &Limits) -> Result<Manifest, String> {
+        let staging = self.scratch("install");
+        let done = (|| {
+            if src.is_dir() {
+                copy_folder(src, &staging, limits, &mut Budget::default())?;
+            } else {
+                unzip(src, &staging, limits)?;
+            }
+            let top = plugin_top(&staging)?;
+            let m = std::fs::read_to_string(top.join(MANIFEST)).map_err(|e| e.to_string()).and_then(|s| Manifest::parse(&s)).map_err(|e| format!("{MANIFEST}: {e}"))?;
+            self.put_in_place(&top, &m.id)?;
+            Ok(m)
+        })();
+        let _ = std::fs::remove_dir_all(&staging);
+        done
+    }
+
+    /// The old version moves out first and comes back if the new one cannot move in.
+    fn put_in_place(&self, from: &Path, id: &str) -> Result<(), String> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
+        let target = self.dir.join(id);
+        let old = match target.exists() {
+            true => {
+                let t = self.scratch("trash");
+                rename_retrying(&target, &t).map_err(|e| format!("could not replace the installed {id}: {e}"))?;
+                Some(t)
+            }
+            false => None,
+        };
+        if let Err(e) = rename_retrying(from, &target) {
+            if let Some(t) = &old {
+                let _ = rename_retrying(t, &target);
+            }
+            return Err(format!("could not install {id}: {e}"));
+        }
+        if let Some(t) = old {
+            let _ = std::fs::remove_dir_all(t);
+        }
+        Ok(())
+    }
+
     /// Every Plugin folder, sorted by id. Dot-folders are the store's own.
     pub fn list(&self) -> Vec<Plugin> {
         let Ok(rd) = std::fs::read_dir(&self.dir) else { return vec![] };
         let mut dirs: Vec<(String, PathBuf)> = rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).filter_map(|e| Some((e.file_name().into_string().ok()?, e.path()))).filter(|(n, _)| !n.starts_with('.')).collect();
         dirs.sort();
         dirs.into_iter().map(|(id, dir)| Plugin { manifest: read_manifest(&id, &dir), contents: content::scan(&dir), id, dir }).collect()
+    }
+}
+
+/// Caps on what one install may write, so a broken or hostile archive cannot fill the disk.
+#[derive(Clone, Debug)]
+pub struct Limits {
+    pub entries: usize,
+    pub file_bytes: u64,
+    pub total_bytes: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits { entries: 4000, file_bytes: 32 << 20, total_bytes: 256 << 20 }
+    }
+}
+
+#[derive(Default)]
+struct Budget {
+    entries: usize,
+    bytes: u64,
+    names: HashSet<String>,
+}
+
+impl Budget {
+    /// Counts one file at `rel`; two names that differ only in case would overwrite each other on Windows.
+    fn file(&mut self, rel: &Path, limits: &Limits) -> Result<(), String> {
+        self.entries += 1;
+        if self.entries > limits.entries {
+            return Err(format!("more than {} files", limits.entries));
+        }
+        if !self.names.insert(rel.to_string_lossy().to_lowercase().replace('\\', "/")) {
+            return Err(format!("{} appears twice", rel.display()));
+        }
+        Ok(())
+    }
+
+    fn bytes(&mut self, n: u64, rel: &Path, limits: &Limits) -> Result<(), String> {
+        if n > limits.file_bytes {
+            return Err(format!("{} is larger than {} MB", rel.display(), limits.file_bytes >> 20));
+        }
+        self.bytes += n;
+        if self.bytes > limits.total_bytes {
+            return Err(format!("larger than {} MB in all", limits.total_bytes >> 20));
+        }
+        Ok(())
+    }
+}
+
+/// Content only: definitions, images, fonts and notes. Nothing a `launch` could run.
+const ALLOWED: &[&str] = &["toml", "png", "ttf", "otf", "ttc", "otc", "md", "txt"];
+const ALLOWED_BARE: &[&str] = &["license", "licence", "readme", "notice", "copying", "authors"];
+
+fn allowed_file(name: &str) -> bool {
+    let p = Path::new(name);
+    match p.extension().and_then(|e| e.to_str()) {
+        Some(e) => ALLOWED.contains(&e.to_ascii_lowercase().as_str()),
+        None => p.file_stem().and_then(|s| s.to_str()).is_some_and(|s| ALLOWED_BARE.contains(&s.to_ascii_lowercase().as_str())),
+    }
+}
+
+/// Archive and OS clutter, skipped rather than refused.
+fn clutter(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.starts_with('.') || n == "__macosx" || n == "thumbs.db" || n == "desktop.ini"
+}
+
+fn unzip(src: &Path, dest: &Path, limits: &Limits) -> Result<(), String> {
+    let f = std::fs::File::open(src).map_err(|e| format!("{}: {e}", src.display()))?;
+    let mut z = zip::ZipArchive::new(f).map_err(|e| format!("not a plugin file ({e})"))?;
+    if z.len() > limits.entries {
+        return Err(format!("more than {} files", limits.entries));
+    }
+    let mut budget = Budget::default();
+    for i in 0..z.len() {
+        let mut e = z.by_index(i).map_err(|e| e.to_string())?;
+        let name = e.name().to_string();
+        // enclosed_name quietly strips a root or drive; a name with either is refused instead
+        let absolute = name.starts_with(['/', '\\']) || name.contains(':');
+        let rel = e.enclosed_name().filter(|_| !absolute).ok_or_else(|| format!("`{name}` points outside the plugin"))?;
+        let parts: Vec<String> = rel.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+        if parts.iter().any(|c| clutter(c)) || e.is_symlink() {
+            continue;
+        }
+        let out = dest.join(&rel);
+        if e.is_dir() {
+            std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+            continue;
+        }
+        if !allowed_file(&name) {
+            return Err(format!("`{name}`: a plugin may only hold {} files", ALLOWED.join(", ")));
+        }
+        budget.file(&rel, limits)?;
+        budget.bytes(e.size(), &rel, limits)?;
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut w = std::fs::File::create(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+        // the header's size is only a claim: never read past the cap
+        let n = std::io::copy(&mut (&mut e).take(limits.file_bytes + 1), &mut w).map_err(|e| format!("{name}: {e}"))?;
+        budget.bytes(n.saturating_sub(e.size()), &rel, limits)?;
+        if n > limits.file_bytes {
+            return Err(format!("{} is larger than {} MB", rel.display(), limits.file_bytes >> 20));
+        }
+    }
+    Ok(())
+}
+
+fn copy_folder(src: &Path, dest: &Path, limits: &Limits, budget: &mut Budget) -> Result<(), String> {
+    fn walk(root: &Path, dir: &Path, dest: &Path, limits: &Limits, budget: &mut Budget) -> Result<(), String> {
+        let rd = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        for e in rd.filter_map(|e| e.ok()) {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Ok(meta) = std::fs::symlink_metadata(e.path()) else { continue };
+            if clutter(&name) || meta.file_type().is_symlink() {
+                continue;
+            }
+            let rel = e.path().strip_prefix(root).map(Path::to_path_buf).unwrap_or_default();
+            if meta.is_dir() {
+                walk(root, &e.path(), dest, limits, budget)?;
+                continue;
+            }
+            if !allowed_file(&name) {
+                return Err(format!("`{}`: a plugin may only hold {} files", rel.display(), ALLOWED.join(", ")));
+            }
+            budget.file(&rel, limits)?;
+            budget.bytes(meta.len(), &rel, limits)?;
+            let out = dest.join(&rel);
+            std::fs::create_dir_all(out.parent().unwrap_or(dest)).map_err(|e| e.to_string())?;
+            std::fs::copy(e.path(), &out).map_err(|e| format!("{}: {e}", rel.display()))?;
+        }
+        Ok(())
+    }
+    std::fs::create_dir_all(dest).map_err(|e| e.to_string())?;
+    walk(src, src, dest, limits, budget)
+}
+
+/// The folder holding `plugin.toml`: the top, or its one folder ("Send to > Compressed
+/// folder" zips the folder itself).
+fn plugin_top(staging: &Path) -> Result<PathBuf, String> {
+    if staging.join(MANIFEST).is_file() {
+        return Ok(staging.to_path_buf());
+    }
+    let entries: Vec<PathBuf> = std::fs::read_dir(staging).map_err(|e| e.to_string())?.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    match entries.as_slice() {
+        [one] if one.join(MANIFEST).is_file() => Ok(one.clone()),
+        _ => Err(format!("no {MANIFEST} at the top of the plugin")),
     }
 }
 
@@ -498,6 +693,139 @@ mod tests {
         std::fs::create_dir_all(leftover.join("x")).unwrap();
         store.sweep();
         assert!(!leftover.exists());
+        std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    fn zip_of(path: &Path, files: &[(&str, &str)]) {
+        use std::io::Write;
+        let mut z = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+        for (name, text) in files {
+            z.start_file(*name, zip::write::SimpleFileOptions::default()).unwrap();
+            z.write_all(text.as_bytes()).unwrap();
+        }
+        z.finish().unwrap();
+    }
+
+    /// A data folder with room around it, and a way to see what an install left next to it.
+    fn install_area(name: &str) -> (PathBuf, PluginStore) {
+        let data = tmp(name).join("Wayfinder");
+        std::fs::create_dir_all(&data).unwrap();
+        let store = PluginStore::new(&data);
+        (data, store)
+    }
+
+    fn leftovers(data: &Path) -> Vec<String> {
+        std::fs::read_dir(data.parent().unwrap()).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n != "Wayfinder" && !n.ends_with(".wfplugin") && !n.ends_with(".zip")).collect()
+    }
+
+    #[test]
+    fn installs_a_zip_into_plugins_id() {
+        let (data, store) = install_area("inst");
+        let file = data.with_file_name("sunset.wfplugin");
+        zip_of(&file, &[("plugin.toml", OK), ("widgets/weather.toml", "[root]\ntype = 'box'"), ("fonts/Sunset.ttf", "font"), ("README", "hi")]);
+        let m = store.install(&file).unwrap();
+        assert_eq!((m.id.as_str(), m.version.as_str()), ("sunset", "1.2.0"));
+        assert!(data.join("plugins/sunset/widgets/weather.toml").is_file());
+        assert_eq!(store.list()[0].contents.widgets, ["weather"]);
+        assert!(leftovers(&data).is_empty(), "{:?}", leftovers(&data));
+        std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn accepts_one_top_level_folder() {
+        let (data, store) = install_area("top");
+        let file = data.with_file_name("Sunset.zip");
+        zip_of(&file, &[("Sunset/plugin.toml", OK), ("Sunset/palettes/p.toml", "name = 'Sunset'"), ("__MACOSX/Sunset/._plugin.toml", "junk"), ("Sunset/.DS_Store", "junk")]);
+        store.install(&file).unwrap();
+        assert!(data.join("plugins/sunset/palettes/p.toml").is_file(), "installed by its id, not the zip's folder name");
+        assert!(!data.join("plugins/sunset/.DS_Store").exists());
+        std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn installs_a_folder_too() {
+        let (data, store) = install_area("folder");
+        let src = data.with_file_name("dev-sunset");
+        put(&src, "plugin.toml", OK);
+        put(&src, "widgets/w.toml", "[root]\ntype = 'box'");
+        put(&src, ".git/config", "not copied");
+        store.install(&src).unwrap();
+        assert!(data.join("plugins/sunset/widgets/w.toml").is_file() && !data.join("plugins/sunset/.git").exists());
+        std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn rejects_zip_slip_absolute_and_ads_names() {
+        let (data, store) = install_area("slip");
+        for bad in ["../evil.toml", "widgets/../../evil.toml", "/evil.toml", "C:/evil.toml", "widgets/x.toml:hidden"] {
+            let file = data.with_file_name("bad.zip");
+            zip_of(&file, &[("plugin.toml", OK), (bad, "x")]);
+            assert!(store.install(&file).is_err(), "{bad}");
+        }
+        assert!(!data.parent().unwrap().join("evil.toml").exists() && !data.join("evil.toml").exists());
+        assert!(!data.join("plugins/sunset").exists());
+        std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn rejects_disallowed_file_types() {
+        let (data, store) = install_area("types");
+        for bad in ["tools/run.exe", "widgets/app.lnk", "x.bat", "script"] {
+            let file = data.with_file_name("bad.zip");
+            zip_of(&file, &[("plugin.toml", OK), (bad, "x")]);
+            let e = store.install(&file).unwrap_err();
+            assert!(e.contains(bad), "{bad}: {e}");
+        }
+        let file = data.with_file_name("dup.zip");
+        zip_of(&file, &[("plugin.toml", OK), ("widgets/A.toml", "x"), ("widgets/a.toml", "y")]);
+        assert!(store.install(&file).unwrap_err().contains("twice"));
+        std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn rejects_archives_over_the_limits() {
+        let (data, store) = install_area("limits");
+        let file = data.with_file_name("big.zip");
+        zip_of(&file, &[("plugin.toml", OK), ("a.txt", "0123456789"), ("b.txt", "0123456789")]);
+        assert!(store.install_with(&file, &Limits { entries: 2, ..Limits::default() }).unwrap_err().contains("more than 2"));
+        assert!(store.install_with(&file, &Limits { file_bytes: 5, ..Limits::default() }).is_err());
+        assert!(store.install_with(&file, &Limits { total_bytes: 25, ..Limits::default() }).unwrap_err().contains("in all"));
+        assert!(store.install_with(&file, &Limits::default()).is_ok());
+        let not_zip = data.with_file_name("notes.wfplugin");
+        std::fs::write(&not_zip, "hello").unwrap();
+        assert!(store.install(&not_zip).unwrap_err().contains("not a plugin file"));
+        assert!(leftovers(&data).is_empty(), "{:?}", leftovers(&data));
+        std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn upgrade_replaces_files_and_leaves_no_staging_or_trash() {
+        let (data, store) = install_area("upgrade");
+        let v1 = data.with_file_name("v1.zip");
+        zip_of(&v1, &[("plugin.toml", OK), ("widgets/old.toml", "[root]\ntype = 'box'")]);
+        let v2 = data.with_file_name("v2.zip");
+        zip_of(&v2, &[("plugin.toml", &OK.replace("1.2.0", "1.3.0")), ("widgets/new.toml", "[root]\ntype = 'box'")]);
+        store.install(&v1).unwrap();
+        assert_eq!(store.install(&v2).unwrap().version, "1.3.0");
+        assert!(!data.join("plugins/sunset/widgets/old.toml").exists() && data.join("plugins/sunset/widgets/new.toml").is_file());
+        assert!(leftovers(&data).is_empty(), "{:?}", leftovers(&data));
+        std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_failed_install_keeps_the_old_version() {
+        let (data, store) = install_area("keep");
+        let v1 = data.with_file_name("v1.zip");
+        zip_of(&v1, &[("plugin.toml", OK), ("widgets/old.toml", "[root]\ntype = 'box'")]);
+        store.install(&v1).unwrap();
+        let bad = data.with_file_name("bad.zip");
+        zip_of(&bad, &[("plugin.toml", &OK.replace("1.2.0", "2.0")), ("run.exe", "MZ")]);
+        assert!(store.install(&bad).is_err());
+        let no_manifest = data.with_file_name("none.zip");
+        zip_of(&no_manifest, &[("widgets/x.toml", "[root]\ntype = 'box'")]);
+        assert!(store.install(&no_manifest).unwrap_err().contains("no plugin.toml"));
+        assert!(data.join("plugins/sunset/widgets/old.toml").is_file());
+        assert_eq!(store.list()[0].manifest.as_ref().unwrap().version, "1.2.0");
         std::fs::remove_dir_all(data.parent().unwrap()).ok();
     }
 
