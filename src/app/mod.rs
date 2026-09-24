@@ -4,6 +4,7 @@
 mod commands;
 mod desktop;
 mod edit_mode;
+mod explorer;
 mod first_run;
 mod host;
 mod input;
@@ -48,6 +49,8 @@ use crate::value::Value;
 use crate::widgets::{self, ActionCx, Def, ExpandInfo, Host, Registry, Services, View};
 use crate::workspace::{self, InstanceCfg, MonitorInfo, Workspace};
 
+pub use self::explorer::install_from_explorer;
+
 use self::edit_mode::UndoEntry;
 use self::first_run::{default_instances, write_missing_guides};
 use self::host::AppHost;
@@ -69,6 +72,8 @@ pub struct Options {
     pub selftest: bool,
     pub gpu_override: Option<String>,
     pub exit_after_secs: Option<f32>,
+    /// Point `.wfplugin` files at this exe (not for throwaway `--data` runs).
+    pub register_file_type: bool,
 }
 
 pub struct App {
@@ -105,6 +110,8 @@ pub struct App {
     started: Instant,
     booted: bool,
     start_edit: bool,
+    /// A Settings page to open once started (after `--install`).
+    start_page: Option<String>,
     selftest: Option<SelfTest>,
     gpu_lost_reason: Option<String>,
     gpu_recoveries: Vec<Instant>,
@@ -159,6 +166,7 @@ impl App {
             started: Instant::now(),
             booted: false,
             start_edit: false,
+            start_page: None,
             selftest: None,
             gpu_lost_reason: None,
             gpu_recoveries: Vec::new(),
@@ -189,6 +197,10 @@ impl App {
 
     pub fn request_edit_on_start(&mut self) {
         self.start_edit = true;
+    }
+
+    pub fn request_settings_on_start(&mut self, page: &str) {
+        self.start_page = Some(page.to_string());
     }
 
     fn log(&mut self, s: impl Into<String>) {
@@ -519,6 +531,19 @@ impl ApplicationHandler<UserEvent> for App {
         self.check_show_desktop();
         if self.start_edit {
             self.set_edit(true);
+        }
+        if let Some(page) = self.start_page.take() {
+            self.open_settings(el);
+            if let Some(s) = &mut self.settings {
+                s.show_page(&page);
+            }
+        }
+        if self.opts.register_file_type {
+            match std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| win32::register_file_type(&exe)) {
+                Ok(true) => self.log("double-clicking a .wfplugin file now installs it"),
+                Ok(false) => {}
+                Err(e) => self.log(format!("could not register .wfplugin files: {e}")),
+            }
         }
         self.log(format!("ready: {} instance(s), theme {} / {} / {}", self.ws.instances.len(), self.ws.theme.palette, self.ws.theme.fonts, self.ws.theme.glyphs));
     }

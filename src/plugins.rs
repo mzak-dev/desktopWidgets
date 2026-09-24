@@ -207,6 +207,44 @@ impl PluginStore {
     }
 }
 
+/// A plugin file's manifest and what it holds, read without installing it (for a prompt).
+pub fn describe(src: &Path) -> Result<(Manifest, Contents), String> {
+    if src.is_dir() {
+        let m = std::fs::read_to_string(src.join(MANIFEST)).map_err(|_| format!("no {MANIFEST}"))?;
+        return Ok((Manifest::parse(&m).map_err(|e| format!("{MANIFEST}: {e}"))?, content::scan(src)));
+    }
+    let f = std::fs::File::open(src).map_err(|e| format!("{}: {e}", src.display()))?;
+    let mut z = zip::ZipArchive::new(f).map_err(|e| format!("not a plugin file ({e})"))?;
+    let names: Vec<String> = z.file_names().map(|n| n.replace('\\', "/")).filter(|n| !n.split('/').any(clutter)).collect();
+    let top = if names.iter().any(|n| n == MANIFEST) {
+        String::new()
+    } else {
+        let firsts: BTreeSet<&str> = names.iter().filter_map(|n| n.split_once('/').map(|(a, _)| a)).collect();
+        match firsts.into_iter().collect::<Vec<_>>().as_slice() {
+            [one] if names.iter().any(|n| *n == format!("{one}/{MANIFEST}")) => format!("{one}/"),
+            _ => return Err(format!("no {MANIFEST} at the top of the plugin")),
+        }
+    };
+    let mut src_text = String::new();
+    z.by_name(&format!("{top}{MANIFEST}")).map_err(|e| e.to_string())?.take(64 << 10).read_to_string(&mut src_text).map_err(|e| e.to_string())?;
+    let m = Manifest::parse(&src_text).map_err(|e| format!("{MANIFEST}: {e}"))?;
+    let mut c = Contents::default();
+    for n in &names {
+        let Some(rel) = n.strip_prefix(&top) else { continue };
+        let parts: Vec<&str> = rel.split('/').collect();
+        let stem = || Path::new(parts[1]).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        match parts.as_slice() {
+            ["widgets", f] if f.ends_with(".toml") => c.widgets.push(stem()),
+            ["palettes", f] if f.ends_with(".toml") => c.palettes.push(stem()),
+            ["fonts", f] if f.ends_with(".toml") => c.fonts.push(stem()),
+            ["glyphs", f] if f.ends_with(".toml") => c.glyphs.push(stem()),
+            ["iconpacks", pack, ..] if !pack.is_empty() && !c.icon_packs.contains(&pack.to_string()) => c.icon_packs.push(pack.to_string()),
+            _ => {}
+        }
+    }
+    Ok((m, c))
+}
+
 /// Caps on what one install may write, so a broken or hostile archive cannot fill the disk.
 #[derive(Clone, Debug)]
 pub struct Limits {
@@ -795,6 +833,20 @@ mod tests {
         std::fs::write(&not_zip, "hello").unwrap();
         assert!(store.install(&not_zip).unwrap_err().contains("not a plugin file"));
         assert!(leftovers(&data).is_empty(), "{:?}", leftovers(&data));
+        std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn describe_reads_a_plugin_file_without_installing_it() {
+        let (data, store) = install_area("describe");
+        let file = data.with_file_name("sunset.wfplugin");
+        zip_of(&file, &[("Sunset/plugin.toml", OK), ("Sunset/widgets/weather.toml", "x"), ("Sunset/palettes/a.toml", "x"), ("Sunset/iconpacks/Neon/chrome.png", "x"), ("Sunset/iconpacks/Neon/edge.png", "x")]);
+        let (m, c) = describe(&file).unwrap();
+        assert_eq!((m.name.as_str(), c.summary().as_str()), ("Sunset", "1 widget · 1 palette · 1 icon pack"));
+        assert!(store.list().is_empty(), "nothing installed");
+        let bare = data.with_file_name("bare.zip");
+        zip_of(&bare, &[("a/plugin.toml", OK), ("b/x.toml", "x")]);
+        assert!(describe(&bare).is_err());
         std::fs::remove_dir_all(data.parent().unwrap()).ok();
     }
 

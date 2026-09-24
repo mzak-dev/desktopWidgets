@@ -537,3 +537,62 @@ mod tests {
 pub fn is_visible(hwnd: HWND) -> bool {
     unsafe { IsWindowVisible(hwnd) }.as_bool()
 }
+
+/// The Explorer "open" command for `.wfplugin` files.
+pub fn association_command(exe: &std::path::Path) -> String {
+    format!("\"{}\" --install \"%1\"", exe.display())
+}
+
+const PLUGIN_CLASS: &str = "Software\\Classes\\Wayfinder.Plugin";
+
+fn reg_default(subkey: &str) -> Option<String> {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW};
+    use windows::core::{HSTRING, PCWSTR};
+    let mut buf = [0u16; 1024];
+    let mut len = (buf.len() * 2) as u32;
+    let r = unsafe { RegGetValueW(HKEY_CURRENT_USER, &HSTRING::from(subkey), PCWSTR::null(), RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr().cast()), Some(&mut len)) };
+    r.is_ok().then(|| String::from_utf16_lossy(&buf[..(len as usize / 2).saturating_sub(1)]))
+}
+
+fn reg_set_default(subkey: &str, value: &str) -> Result<(), String> {
+    use windows::Win32::System::Registry::{HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RegCloseKey, RegCreateKeyExW, RegSetValueExW};
+    use windows::core::{HSTRING, PCWSTR};
+    let mut key = HKEY::default();
+    unsafe {
+        RegCreateKeyExW(HKEY_CURRENT_USER, &HSTRING::from(subkey), None, PCWSTR::null(), REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, None, &mut key, None).ok().map_err(|e| format!("{subkey}: {e}"))?;
+        let v: Vec<u16> = value.encode_utf16().chain([0]).collect();
+        let r = RegSetValueExW(key, PCWSTR::null(), None, REG_SZ, Some(std::slice::from_raw_parts(v.as_ptr().cast(), v.len() * 2)));
+        let _ = RegCloseKey(key);
+        r.ok().map_err(|e| format!("{subkey}: {e}"))
+    }
+}
+
+/// Makes double-clicking a `.wfplugin` file install it with this exe, for the current user
+/// only. Returns whether anything had to change.
+pub fn register_file_type(exe: &std::path::Path) -> Result<bool, String> {
+    let command = association_command(exe);
+    let open = format!("{PLUGIN_CLASS}\\shell\\open\\command");
+    if reg_default(&open).as_deref() == Some(command.as_str()) && reg_default("Software\\Classes\\.wfplugin").as_deref() == Some("Wayfinder.Plugin") {
+        return Ok(false);
+    }
+    reg_set_default("Software\\Classes\\.wfplugin", "Wayfinder.Plugin")?;
+    reg_set_default(PLUGIN_CLASS, "Wayfinder plugin")?;
+    reg_set_default(&format!("{PLUGIN_CLASS}\\DefaultIcon"), &format!("\"{}\",0", exe.display()))?;
+    reg_set_default(&open, &command)?;
+    unsafe {
+        use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
+        SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
+    }
+    Ok(true)
+}
+
+#[cfg(test)]
+mod association_tests {
+    use super::*;
+
+    #[test]
+    fn association_command_quotes_exe_and_file() {
+        let exe = std::path::Path::new("C:\\Program Files\\Wayfinder\\wayfinder.exe");
+        assert_eq!(association_command(exe), "\"C:\\Program Files\\Wayfinder\\wayfinder.exe\" --install \"%1\"");
+    }
+}

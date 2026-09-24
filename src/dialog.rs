@@ -90,3 +90,17 @@ pub fn set_clipboard_text(text: &str) {
         let _ = PCWSTR::null();
     }
 }
+
+/// A modal OK/Cancel question; true on OK.
+pub fn confirm(title: &str, text: &str) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONQUESTION, MB_OKCANCEL, MessageBoxW};
+    unsafe { MessageBoxW(None, &HSTRING::from(text), &HSTRING::from(title), MB_OKCANCEL | MB_ICONQUESTION) == IDOK }
+}
+
+/// A modal note; `error` shows the error icon.
+pub fn tell(title: &str, text: &str, error: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MessageBoxW};
+    unsafe {
+        MessageBoxW(None, &HSTRING::from(text), &HSTRING::from(title), MB_OK | if error { MB_ICONERROR } else { MB_ICONINFORMATION });
+    }
+}

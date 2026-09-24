@@ -1635,6 +1635,12 @@ impl SettingsWin {
         self.redraw = true;
     }
 
+    /// Shows a page by its id (`plugins`...).
+    pub fn show_page(&mut self, id: &str) {
+        self.ui.page = Page::parse(id);
+        self.redraw = true;
+    }
+
     pub fn open(el: &ActiveEventLoop, gpu: &mut Option<Gpu>, power: Power) -> Result<SettingsWin, String> {
         let pos = el.primary_monitor().or_else(|| el.available_monitors().next()).map(|m| {
             let (p, s, sc) = (m.position(), m.size(), m.scale_factor());
