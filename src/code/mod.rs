@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::data::{Cadence, DataSource, SourceCx};
+use crate::data::{Cadence, DataSource, News, SourceCx};
 use crate::net::{Fetch, HostPattern, Net};
 use crate::value::Value;
 
@@ -61,15 +61,6 @@ impl Status {
             Status::Broken(e) => format!("Cannot run: {e}"),
         }
     }
-}
-
-/// What changed since the last `take_news`.
-#[derive(Debug, Default)]
-pub struct News {
-    /// Instances whose values changed.
-    pub changed: BTreeSet<String>,
-    pub logs: Vec<String>,
-    pub status_changed: bool,
 }
 
 enum Msg {
@@ -124,16 +115,6 @@ impl WasmSource {
         WasmSource { name, tx, shared, initial, worker }
     }
 
-    pub fn act(&self, verb: &str, arg: &str, cx: &SourceCx) {
-        let _ = self.tx.send(Msg::Act { instance: cx.cfg.id.clone(), params: params_json(cx.params), verb: verb.into(), arg: arg.into() });
-    }
-
-    /// Forgets every Instance not in `live`.
-    pub fn retain(&self, live: &BTreeSet<String>) {
-        self.shared.slots.lock().unwrap().retain(|id, _| live.contains(id));
-        let _ = self.tx.send(Msg::Retain(live.clone()));
-    }
-
     pub fn take_news(&self) -> News {
         std::mem::take(&mut *self.shared.news.lock().unwrap())
     }
@@ -173,6 +154,17 @@ impl DataSource for WasmSource {
     /// Code values change when the worker says so, never with the clock.
     fn cadence(&self, _field: &str) -> Option<Cadence> {
         None
+    }
+
+    fn act(&self, verb: &str, arg: &str, cx: &SourceCx) -> bool {
+        let _ = self.tx.send(Msg::Act { instance: cx.cfg.id.clone(), params: params_json(cx.params), verb: verb.into(), arg: arg.into() });
+        true
+    }
+
+    /// Forgets every Instance not in `live`.
+    fn retain(&self, live: &BTreeSet<String>) {
+        self.shared.slots.lock().unwrap().retain(|id, _| live.contains(id));
+        let _ = self.tx.send(Msg::Retain(live.clone()));
     }
 }
 

@@ -67,12 +67,16 @@ pub enum UserEvent {
     Hotkey,
     TrayClick,
     FilesChanged,
+    /// A folder a Data Source watches changed.
+    WatchedChanged(Vec<PathBuf>),
     ForegroundChanged,
     DisplaysChanged,
-    /// A Code Source has new values, logs or status.
+    /// A Data Source has new values, logs or status.
     SourceNews,
 }
 
+/// How to run Wayfinder. `Options::from_args()` reads the command line; an app built on
+/// Wayfinder adds its own Data Sources to `extra_sources` and calls `run`.
 pub struct Options {
     pub dir: PathBuf,
     pub selftest: bool,
@@ -80,6 +84,81 @@ pub struct Options {
     pub exit_after_secs: Option<f32>,
     /// Point `.wfplugin` files at this exe (not for throwaway `--data` runs).
     pub register_file_type: bool,
+    /// Start in Edit Mode.
+    pub edit: bool,
+    /// Install this `.wfplugin` first (what double-clicking one runs).
+    pub install: Option<PathBuf>,
+    /// Data Sources beyond the built-ins, registered at startup.
+    pub extra_sources: Vec<Box<dyn data::DataSource>>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options { dir: workspace::data_dir(), selftest: false, gpu_override: None, exit_after_secs: None, register_file_type: true, edit: false, install: None, extra_sources: Vec::new() }
+    }
+}
+
+impl Options {
+    pub fn from_args() -> Options {
+        Options::parse(&std::env::args().skip(1).collect::<Vec<_>>())
+    }
+
+    /// `--data <dir> --exit-after <sec> --gpu <mode> --edit --selftest --install <file>`.
+    pub fn parse(args: &[String]) -> Options {
+        let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned());
+        let flag = |name: &str| args.iter().any(|a| a == name);
+        let selftest = flag("--selftest");
+        Options {
+            dir: value("--data").map(PathBuf::from).unwrap_or_else(workspace::data_dir),
+            selftest,
+            gpu_override: value("--gpu"),
+            exit_after_secs: value("--exit-after").and_then(|s| s.parse().ok()),
+            register_file_type: value("--data").is_none() && !selftest,
+            edit: flag("--edit"),
+            install: value("--install").map(PathBuf::from),
+            extra_sources: Vec::new(),
+        }
+    }
+}
+
+/// Runs Wayfinder until it quits: one copy per data folder, `--install` first, then the
+/// tray, the widgets and the event loop.
+pub fn run(mut opts: Options) {
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows::Win32::System::Threading::CreateMutexW;
+    use windows::core::HSTRING;
+
+    // One running copy per data directory: a second launch exits quietly.
+    let key = format!("Wayfinder-{:x}", opts.dir.to_string_lossy().bytes().fold(5381u64, |h, b| h.wrapping_mul(33) ^ b as u64));
+    let _mutex = unsafe { CreateMutexW(None, true, &HSTRING::from(key)) };
+    let running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    let installing = opts.install.take();
+    if let Some(file) = &installing {
+        let installed = install_from_explorer(&opts.dir, file, running);
+        if running || !installed {
+            return; // a running copy reloads by itself
+        }
+    } else if running {
+        eprintln!("wayfinder: already running (data dir {})", opts.dir.display());
+        return;
+    }
+    // COM for the file pickers; S_FALSE (already initialised) is fine.
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+    }
+    let event_loop = winit::event_loop::EventLoop::<UserEvent>::with_user_event().build().expect("event loop");
+    let proxy = event_loop.create_proxy();
+    let edit = opts.edit;
+    let mut app = App::new(proxy, opts);
+    if edit {
+        app.request_edit_on_start();
+    }
+    if installing.is_some() {
+        app.request_settings_on_start("plugins");
+    }
+    if let Err(e) = event_loop.run_app(&mut app) {
+        eprintln!("wayfinder: event loop error: {e}");
+    }
 }
 
 pub struct App {
@@ -134,8 +213,20 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(proxy: EventLoopProxy<UserEvent>, opts: Options) -> App {
+    pub fn new(proxy: EventLoopProxy<UserEvent>, mut opts: Options) -> App {
         let dir = opts.dir.clone();
+        let extra_sources = std::mem::take(&mut opts.extra_sources);
+        let mut sources = DataSources::builtin();
+        let waker = Mutex::new(proxy.clone());
+        sources.set_waker(Arc::new(move || {
+            let _ = waker.lock().unwrap().send_event(UserEvent::SourceNews);
+        }));
+        let mut source_errors = Vec::new();
+        for s in extra_sources {
+            if let Err(e) = sources.register(s) {
+                source_errors.push(e);
+            }
+        }
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::remove_file(dir.join("wayfinder.log")); // one log per run
         let guide_errors = write_missing_guides(&dir);
@@ -151,7 +242,7 @@ impl App {
             lib: Library::default(), // filled by `load_content` below
             theme,
             reg: Registry::default(),
-            sources: DataSources::builtin(),
+            sources,
             gpu: None,
             text,
             wins: Vec::new(),
@@ -194,7 +285,7 @@ impl App {
         if let Some(e) = ws_err {
             app.log(e);
         }
-        for e in guide_errors {
+        for e in guide_errors.into_iter().chain(source_errors) {
             app.log(e);
         }
         app
@@ -408,6 +499,17 @@ impl App {
         }
     }
 
+    /// What Instance `i`'s sources see: its params with the Widget's defaults, the time and its icon pack.
+    fn with_source_cx<R>(&self, i: usize, f: impl FnOnce(&data::SourceCx) -> R) -> R {
+        let cfg = &self.ws.instances[i];
+        let params = match self.reg.get(&cfg.widget) {
+            Some(Ok(w)) => w.meta().effective_params(&cfg.params_map()),
+            _ => cfg.params_map(),
+        };
+        let icon_pack = cfg.theme.resolve(&self.ws.theme).icon_pack;
+        f(&data::SourceCx { cfg, params: &params, tm: data::now_local(), icon_pack: &icon_pack })
+    }
+
     /// The folders content is read from, after the built-ins; later ones win.
     fn content_roots(&self) -> Vec<Root> {
         let mut roots = plugins::roots(&self.plugins, &self.ws.disabled_plugins);
@@ -480,6 +582,11 @@ impl App {
                 self.log(format!("{name}: {l}"));
             }
             status |= news.status_changed;
+            if news.all {
+                for iw in self.wins.iter_mut().filter(|w| DataSources::reads(&w.deps, &name)) {
+                    iw.redraw = true;
+                }
+            }
             for id in news.changed {
                 if let Some(iw) = self.ws.instances.iter().position(|c| c.id == id).and_then(|i| self.wins.get_mut(i)) {
                     iw.redraw = true;
@@ -524,8 +631,10 @@ impl App {
             if matches!(ev.kind, notify::EventKind::Access(_)) {
                 return;
             }
-            let relevant = ev.paths.iter().any(|p| !only_assets || plugins::is_content_change(&data, p));
-            if relevant {
+            if !only_assets {
+                // a Data Source's own folder: only that source looks again
+                let _ = proxy.send_event(UserEvent::WatchedChanged(ev.paths));
+            } else if ev.paths.iter().any(|p| plugins::is_content_change(&data, p)) {
                 let _ = proxy.send_event(UserEvent::FilesChanged);
             }
         })
@@ -541,7 +650,7 @@ impl App {
                 }
             }
         }
-        let want: Vec<(String, PathBuf)> = self.ws.instances.iter().flat_map(|c| self.sources.watched_paths(c).into_iter().map(|p| (c.id.clone(), p))).collect();
+        let want: Vec<(String, PathBuf)> = (0..self.ws.instances.len()).flat_map(|i| self.with_source_cx(i, |cx| self.sources.watched_paths(cx)).into_iter().map(move |p| (i, p))).map(|(i, p)| (self.ws.instances[i].id.clone(), p)).collect();
         if want != self.watched_paths {
             self.watchers.truncate(1);
             self.watched_paths = want.clone();
@@ -640,6 +749,12 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Hotkey => self.set_edit(!self.edit),
             UserEvent::TrayClick => self.open_settings(el),
             UserEvent::FilesChanged => self.reload_at = Some(Instant::now() + Duration::from_millis(250)),
+            UserEvent::WatchedChanged(paths) => {
+                for p in &paths {
+                    self.sources.path_changed(p);
+                }
+                self.redraw_all();
+            }
             UserEvent::ForegroundChanged => {
                 // Explorer reorders a few ms after the event: check a few times, growing gaps
                 let now = Instant::now();
@@ -780,5 +895,20 @@ impl ApplicationHandler<UserEvent> for App {
             eprintln!("wayfinder: could not save workspace on exit: {e}");
         }
         let _ = DrawList::default();
+    }
+}
+
+#[cfg(test)]
+mod options_tests {
+    use super::*;
+
+    #[test]
+    fn options_come_from_the_command_line() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let o = Options::parse(&args(&["--data", "D:\\wf", "--gpu", "software", "--edit", "--install", "x.wfplugin", "--exit-after", "2.5"]));
+        assert_eq!((o.dir, o.gpu_override.as_deref(), o.edit, o.install, o.exit_after_secs), (PathBuf::from("D:\\wf"), Some("software"), true, Some(PathBuf::from("x.wfplugin")), Some(2.5)));
+        assert!(!o.register_file_type, "a throwaway --data run leaves the file association alone");
+        let plain = Options::parse(&[]);
+        assert!(plain.register_file_type && plain.extra_sources.is_empty() && !plain.selftest);
     }
 }

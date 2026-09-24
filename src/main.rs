@@ -8,53 +8,10 @@
 //!   wayfinder --edit              start in Edit Mode
 //!   wayfinder --selftest          drive the interactive paths with synthetic input and report
 //!   wayfinder --install <file>    install a .wfplugin (what double-clicking one runs)
-
-use wayfinder::app::{App, Options, UserEvent};
-use winit::event_loop::EventLoop;
-
-fn arg(name: &str) -> Option<String> {
-    let a: Vec<String> = std::env::args().collect();
-    a.iter().position(|x| x == name).and_then(|i| a.get(i + 1).cloned())
-}
+//!
+//! An app built on Wayfinder does the same with its own Data Sources:
+//! `let mut o = Options::from_args(); o.extra_sources.push(Box::new(Mine)); wayfinder::run(o)`.
 
 fn main() {
-    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
-    use windows::Win32::System::Threading::CreateMutexW;
-    use windows::core::HSTRING;
-
-    let dir = arg("--data").map(std::path::PathBuf::from).unwrap_or_else(wayfinder::workspace::data_dir);
-    // One running copy per data directory: a second launch exits quietly.
-    let key = format!("Wayfinder-{:x}", dir.to_string_lossy().bytes().fold(5381u64, |h, b| h.wrapping_mul(33) ^ b as u64));
-    let _mutex = unsafe { CreateMutexW(None, true, &HSTRING::from(key)) };
-    let running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
-    let install = arg("--install");
-    if let Some(file) = &install {
-        let installed = wayfinder::app::install_from_explorer(&dir, std::path::Path::new(file), running);
-        if running || !installed {
-            return; // a running copy reloads by itself
-        }
-    } else if running {
-        eprintln!("wayfinder: already running (data dir {})", dir.display());
-        return;
-    }
-
-    // COM for the file pickers; S_FALSE (already initialised) is fine.
-    unsafe {
-        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
-    }
-    let event_loop = EventLoop::<UserEvent>::with_user_event().build().expect("event loop");
-    let proxy = event_loop.create_proxy();
-    let exit_after_secs = arg("--exit-after").and_then(|s| s.parse().ok());
-    let selftest = std::env::args().any(|a| a == "--selftest");
-    let register_file_type = arg("--data").is_none() && !selftest;
-    let mut app = App::new(proxy, Options { dir, exit_after_secs, selftest, gpu_override: arg("--gpu"), register_file_type });
-    if std::env::args().any(|a| a == "--edit") {
-        app.request_edit_on_start();
-    }
-    if install.is_some() {
-        app.request_settings_on_start("plugins");
-    }
-    if let Err(e) = event_loop.run_app(&mut app) {
-        eprintln!("wayfinder: event loop error: {e}");
-    }
+    wayfinder::run(wayfinder::Options::from_args());
 }

@@ -137,14 +137,7 @@ impl App {
         }
         // `weather.refresh`: a Code Source's own verb
         if let Some((source, v)) = verb.split_once('.') {
-            let cfg = &self.ws.instances[i];
-            let params = match self.reg.get(&cfg.widget) {
-                Some(Ok(w)) => w.meta().effective_params(&cfg.params_map()),
-                _ => cfg.params_map(),
-            };
-            let icon_pack = cfg.theme.resolve(&self.ws.theme).icon_pack;
-            let cx = crate::data::SourceCx { cfg, params: &params, tm: crate::data::now_local(), icon_pack: &icon_pack };
-            if self.sources.act(source, v, rest, &cx) {
+            if self.with_source_cx(i, |cx| self.sources.act(source, v, rest, cx)) {
                 return;
             }
         }

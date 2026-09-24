@@ -110,8 +110,8 @@ impl DataSource for Shortcuts {
         None
     }
 
-    fn watched_paths(&self, cfg: &InstanceCfg) -> Vec<PathBuf> {
-        let folder = cfg.folder();
+    fn watched_paths(&self, cx: &super::SourceCx) -> Vec<PathBuf> {
+        let folder = cx.cfg.folder();
         if folder.is_empty() { vec![] } else { vec![PathBuf::from(folder)] }
     }
 
@@ -141,11 +141,15 @@ mod tests {
         let mut cfg = InstanceCfg::default();
         cfg.set_items(&starter_apps());
         assert_eq!(src.items_of(&cfg).len(), 4, "no folder: the explicit list");
-        assert!(src.watched_paths(&cfg).is_empty());
+        let watched = |cfg: &InstanceCfg| {
+            let params = cfg.params_map();
+            src.watched_paths(&SourceCx { cfg, params: &params, tm: crate::data::Tm { year: 2026, month: 1, day: 1, dow: 4, hour: 0, minute: 0, second: 0, ms: 0 }, icon_pack: "Default" })
+        };
+        assert!(watched(&cfg).is_empty());
 
         cfg.params.insert("folder".into(), serde_json::Value::String(dir.to_string_lossy().into_owned()));
         assert_eq!(src.items_of(&cfg).iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["b"]);
-        assert_eq!(src.watched_paths(&cfg), vec![dir.clone()]);
+        assert_eq!(watched(&cfg), vec![dir.clone()]);
         std::fs::write(dir.join("a.txt"), "").unwrap();
         assert_eq!(src.items_of(&cfg).len(), 1, "cached until the watcher says otherwise");
         src.invalidate();

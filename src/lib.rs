@@ -25,3 +25,6 @@ pub mod ui;
 pub mod value;
 pub mod widgets;
 pub mod workspace;
+
+pub use app::{Options, run};
+pub use data::{DataSource, Notifier, SourceCx};
