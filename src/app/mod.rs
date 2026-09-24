@@ -58,7 +58,7 @@ pub use self::explorer::install_from_explorer;
 use self::edit_mode::UndoEntry;
 use self::first_run::{default_instances, write_missing_guides};
 use self::host::AppHost;
-use self::instance::{Drag, EXPAND_SECS, GLIDE_SECS, Instance, VerbOutcome, SizeTween, base_size_after_edit, engine_action, expand_target, scrolled_offset, snap_offset, wheel_target};
+use self::instance::{Drag, EXPAND_SECS, GLIDE_SECS, Instance, VerbOutcome, SizeTween, base_size_after_edit, engine_action, expand_target, on_drop, scrolled_offset, snap_offset, wheel_target, OnDrop};
 use self::selftest::SelfTest;
 
 #[derive(Debug)]
@@ -591,6 +591,12 @@ impl App {
             for id in news.changed {
                 if let Some(iw) = self.ws.instances.iter().position(|c| c.id == id).and_then(|i| self.wins.get_mut(i)) {
                     iw.redraw = true;
+                }
+            }
+            for (id, param, v) in news.params {
+                match self.ws.instances.iter().position(|c| c.id == id) {
+                    Some(i) => self.set_param(i, &param, &v),
+                    None => self.log(format!("{name}: no widget `{id}` to save `{param}` for")),
                 }
             }
         }

@@ -129,10 +129,11 @@ impl App {
             Some(((cx - origin.x) as f32 / s, (cy - origin.y) as f32 / s))
         });
         let action = at.and_then(|(x, y)| self.wins[i].frame.as_ref()?.drop_at(x, y).map(String::from));
-        match action {
-            Some(a) => self.run_action(i, &format!("{a} {p}")),
-            None if self.widget_action(i, "drop", &p) => {}
-            None => self.log(format!("{}: nothing there takes dropped files", self.ws.instances[i].id)),
+        match on_drop(action.as_deref(), &p) {
+            OnDrop::SaveParam(name, v) => self.set_param(i, &name, &v),
+            OnDrop::Run(a) => self.run_action(i, &a),
+            OnDrop::Widget if self.widget_action(i, "drop", &p) => {}
+            OnDrop::Widget => self.log(format!("{}: nothing there takes dropped files", self.ws.instances[i].id)),
         }
     }
 
@@ -161,6 +162,10 @@ impl App {
             if self.with_source_cx(i, |cx| self.sources.act(source, v, rest, cx)) {
                 return;
             }
+        }
+        if verb == "param" {
+            // only a drop carries a value the user chose; a click would let a widget pick its own
+            return self.log(format!("`{action}`: `param` works only in on_drop, with the dropped file as its value"));
         }
         match engine_action(&mut self.wins[i].state, verb, rest) {
             VerbOutcome::Launch(target) if !crate::code::launch::allowed(&target, &self.sources.launch_rules(&self.wins[i].deps), std::env::var_os("USERPROFILE").map(PathBuf::from).as_deref()) => {

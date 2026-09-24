@@ -89,6 +89,8 @@ pub struct News {
     pub changed: BTreeSet<String>,
     pub logs: Vec<String>,
     pub status_changed: bool,
+    /// Params to save: (Instance id, param name, value).
+    pub params: Vec<(String, String, Value)>,
 }
 
 #[derive(Default)]
@@ -131,6 +133,14 @@ impl Notifier {
     pub fn log(&self, line: impl Into<String>) {
         let line = line.into();
         self.board.post(&self.source, |n| n.logs.push(line));
+    }
+
+    /// Saves `value` as the Instance's param `name`, as if the user had set it in Settings:
+    /// it survives restarts and Settings shows it. A folder dropped on a gallery stays its
+    /// folder. Only native sources get a Notifier; plugin code never changes params (ADR-0008).
+    pub fn set_param(&self, instance: &str, name: &str, value: Value) {
+        let (instance, name) = (instance.to_string(), name.to_string());
+        self.board.post(&self.source, |n| n.params.push((instance, name, value)));
     }
 }
 
@@ -519,6 +529,7 @@ mod tests {
             notify.changed_for("media-1");
             notify.changed();
             notify.log("new track");
+            notify.set_param("gallery-1", "folder", Value::Str("D:\\Photos".into()));
         })
         .join()
         .unwrap();
@@ -526,6 +537,7 @@ mod tests {
         let news = src.take_news();
         let (name, n) = &news[0];
         assert_eq!((name.as_str(), n.all, n.changed.contains("media-1"), n.logs.clone()), ("media", true, true, vec!["new track".to_string()]));
+        assert_eq!(n.params, [("gallery-1".to_string(), "folder".to_string(), Value::Str("D:\\Photos".into()))], "a param for the app to save");
         assert!(src.take_news().is_empty(), "taken once");
         assert!(DataSources::reads(&deps(&["media.title"]), "media") && !DataSources::reads(&deps(&["mediaplayer.x"]), "media"));
     }

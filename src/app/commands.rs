@@ -51,6 +51,25 @@ impl App {
         self.log(format!("removed {id}"));
     }
 
+    /// Saves a param of Instance `i`, from Settings, a source or a drop.
+    pub(super) fn set_param(&mut self, i: usize, name: &str, v: &Value) {
+        if self.ws.instances[i].params.get(name).map(Value::from).as_ref() == Some(v) {
+            return;
+        }
+        let was = self.card(i);
+        self.ws.instances[i].set_param(name, v);
+        if self.card(i).blur != was.blur {
+            self.refit_window_around_card(i, was);
+        }
+        self.sync_watchers(); // a param may name a path a source watches
+        self.sources.invalidate();
+        self.wins[i].redraw = true;
+        self.mark_save();
+        if let Some(s) = &mut self.settings {
+            s.invalidate();
+        }
+    }
+
     pub(super) fn apply(&mut self, el: &ActiveEventLoop, cmd: Cmd) {
         let find = |s: &Self, id: &str| s.ws.instances.iter().position(|c| c.id == id);
         match cmd {
@@ -58,15 +77,7 @@ impl App {
             Cmd::Remove(id) => self.remove_instance(&id),
             Cmd::Param(id, name, v) => {
                 if let Some(i) = find(self, &id) {
-                    let was = self.card(i);
-                    self.ws.instances[i].set_param(&name, &v);
-                    if self.card(i).blur != was.blur {
-                        self.refit_window_around_card(i, was);
-                    }
-                    self.sync_watchers(); // a param may name a path a source watches
-                    self.sources.invalidate();
-                    self.wins[i].redraw = true;
-                    self.mark_save();
+                    self.set_param(i, &name, &v);
                 }
             }
             Cmd::Items(id, items) => {

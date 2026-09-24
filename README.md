@@ -223,7 +223,7 @@ justify = "center"
 | Look | `fill` (or `[top, bottom]` gradient) `border` `border_color` `radius` `shadow` `opacity` `clip` |
 | Text | `text` `size` `color` `font` `weight` `text_align` `text_wrap` `line_height` |
 | Image | `src` (PNG, JPEG, WebP, GIF, BMP; `./` is next to the widget file) `tint` `fit` (`contain` · `cover`) `anim` (`false` stops a GIF, WebP or APNG) `frame` (show one frame) |
-| Behaviour | `on_click` (`launch <path>` · `toggle <state>` · `set <state> <value>`, where numbers and `true`/`false` keep their type and `'quotes'` keep text) `on_drop` (a dropped file's path follows the action) `hover` `transition` `enter` `scroll` `scroll_x` (sideways; the wheel over it writes `state.scroll_x`, Shift+wheel too) `when` |
+| Behaviour | `on_click` (`launch <path>` · `toggle <state>` · `set <state> <value>`, where numbers and `true`/`false` keep their type and `'quotes'` keep text) `on_drop` (a dropped file's path follows the action; `on_drop = "param folder"` saves it as the widget's `folder` setting) `hover` `transition` `enter` `scroll` `scroll_x` (sideways; the wheel over it writes `state.scroll_x`, Shift+wheel too) `when` |
 
 **Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `param.*` · `state.*` · `self.w` / `self.h`.
 
@@ -357,7 +357,7 @@ Each kind of extension is one file plus one line of registration:
 | widgets and themes to share | a folder with `plugin.toml` in `<data>/plugins/` (see `assets/guides/PLUGINS.md`) | nothing: it loads as you save |
 | live data from a plugin | a Rust crate on [`wayfinder-plugin`](sdk/README.md), built for `wasm32-unknown-unknown` | a `[code]` table in its `plugin.toml` |
 
-**Your own build.** The engine is a library: an app can add native data sources (media keys, audio levels) and ship its own exe. A source says it changed through the `Notifier` it is given in `attach`, handles `on_click = "media.play_pause"` in `act`, frees per-widget state in `retain`, and gives a `cadence(field, cx)` that may follow its state (`Second` while playing, `None` while paused):
+**Your own build.** The engine is a library: an app can add native data sources (media keys, audio levels) and ship its own exe. A source says it changed through the `Notifier` it is given in `attach`, handles `on_click = "media.play_pause"` in `act`, saves a widget's setting with `Notifier::set_param` (a folder dropped on a gallery survives a restart), frees per-widget state in `retain`, and gives a `cadence(field, cx)` that may follow its state (`Second` while playing, `None` while paused):
 
 ```rust
 fn main() {

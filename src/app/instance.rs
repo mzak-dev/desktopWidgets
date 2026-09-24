@@ -160,6 +160,29 @@ pub(super) enum VerbOutcome {
 }
 
 /// `toggle` also scrolls back to the top.
+/// What a file dropped on a widget does.
+#[derive(Debug, PartialEq)]
+pub(super) enum OnDrop {
+    /// `on_drop = "param folder"`: the user chose this path by dropping it, so it is saved
+    /// like a pick in Settings.
+    SaveParam(String, Value),
+    /// Any other `on_drop` action, with the path after it.
+    Run(String),
+    /// Nothing under the cursor takes files: the Widget's own `drop` verb may.
+    Widget,
+}
+
+pub(super) fn on_drop(action: Option<&str>, path: &str) -> OnDrop {
+    match action.map(str::trim) {
+        Some(a) if a.split_whitespace().next() == Some("param") => match a.split_whitespace().nth(1) {
+            Some(name) => OnDrop::SaveParam(name.to_string(), Value::Str(path.to_string())),
+            None => OnDrop::Widget,
+        },
+        Some(a) => OnDrop::Run(format!("{a} {path}")),
+        None => OnDrop::Widget,
+    }
+}
+
 /// A `set` value: numbers and `true`/`false` keep their type, so `set index 2` compares
 /// equal to `2`; quotes keep text as written (`set code '007'`).
 pub(super) fn typed(v: &str) -> Value {
@@ -303,6 +326,15 @@ mod tests {
         assert_eq!(hit((10.0, 110.0), -30.0, 0.0), Some(("strip".into(), -30.0)));
         assert_eq!(hit((10.0, 10.0), -30.0, 0.0), None, "a sideways wheel over a list that only scrolls down");
         assert_eq!(hit((10.0, 200.0), 0.0, -48.0), None);
+    }
+
+    #[test]
+    fn a_drop_saves_a_param_runs_an_action_or_goes_to_the_widget() {
+        let p = "D:\\My Photos";
+        assert_eq!(on_drop(Some("param folder"), p), OnDrop::SaveParam("folder".into(), Value::Str(p.into())));
+        assert_eq!(on_drop(Some("gallery.add"), p), OnDrop::Run(format!("gallery.add {p}")));
+        assert_eq!(on_drop(Some("parameters.add"), p), OnDrop::Run(format!("parameters.add {p}")), "only the word `param`");
+        assert_eq!((on_drop(None, p), on_drop(Some("param"), p)), (OnDrop::Widget, OnDrop::Widget));
     }
 
     #[test]

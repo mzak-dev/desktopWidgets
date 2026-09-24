@@ -63,7 +63,8 @@ To read files, list the folders under your home folder it may read, and any para
 
 ```toml
 fs_read = ["~/.claude"]               # read-only, shown when installing
-fs_read_params = ["folder"]           # the folder the user chose in this param
+fs_read_params = ["folder"]           # the folder the user chose in this param, in Settings
+                                      # or by dropping it on an on_drop = "param folder" element
 ```
 
 A widget showing its values opens only `https://` links, unless the plugin lists more:
