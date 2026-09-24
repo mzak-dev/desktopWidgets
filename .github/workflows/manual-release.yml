@@ -39,6 +39,9 @@ jobs:
           sed -i '0,/^version = /{s/^version = ".*"/version = "'"$VERSION"'"/}' Cargo.toml
           sed -i '/^name = "wayfinder"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/}' Cargo.lock
 
+      - name: Ensure changelog file exists
+        run: touch CHANGELOG.md
+
       - name: Generate changelog
         id: cliff
         uses: orhun/git-cliff-action@v4
