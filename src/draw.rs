@@ -76,6 +76,11 @@ pub struct DrawList {
 }
 
 impl DrawList {
+    /// The images this list draws.
+    pub fn image_ids(&self) -> impl Iterator<Item = &str> {
+        self.layers.iter().flat_map(|l| &l.images).map(|d| d.tex.as_str())
+    }
+
     /// Draws all of `other` above this list's own layer 1 (the Edit Mode overlay).
     pub fn put_on_top(&mut self, other: DrawList) {
         for l in other.layers {

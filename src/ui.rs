@@ -39,6 +39,43 @@ pub struct ImageSpec {
     pub play: bool,
     /// Shows this frame of an animation instead of playing it.
     pub frame: Option<u32>,
+    pub fit: Fit,
+}
+
+/// How an image fills a box of another shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Fit {
+    /// All of it shows, letter-boxed.
+    #[default]
+    Contain,
+    /// It fills the box, cropped around its centre.
+    Cover,
+}
+
+impl Fit {
+    pub fn parse(s: &str) -> Option<Fit> {
+        match s {
+            "contain" => Some(Fit::Contain),
+            "cover" => Some(Fit::Cover),
+            _ => None,
+        }
+    }
+
+    /// The drawn size in the box `w` x `h`, and the part of the image shown, `[u0, v0, u1, v1]`.
+    pub fn place(self, img: (f32, f32), w: f32, h: f32) -> ((f32, f32), [f32; 4]) {
+        let (iw, ih) = (img.0.max(1.0), img.1.max(1.0));
+        match self {
+            Fit::Contain => {
+                let k = (w / iw).min(h / ih);
+                ((iw * k, ih * k), [0.0, 0.0, 1.0, 1.0])
+            }
+            Fit::Cover => {
+                let k = (w / iw).max(h / ih);
+                let (fx, fy) = ((w / (iw * k)).min(1.0), (h / (ih * k)).min(1.0));
+                ((w, h), [0.5 - fx / 2.0, 0.5 - fy / 2.0, 0.5 + fx / 2.0, 0.5 + fy / 2.0])
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -559,9 +596,8 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                 }
             }
             Kind::Image(im) => {
-                let (iw, ih) = (im.w.max(1.0), im.h.max(1.0));
-                let k = (w / iw).min(h / ih);
-                let (dw, dh) = (iw * k / 2.0 * s, ih * k / 2.0 * s);
+                let ((fw, fh), uv) = im.fit.place((im.w, im.h), w, h);
+                let (dw, dh) = (fw / 2.0 * s, fh / 2.0 * s);
                 list.images.push(ImgDraw {
                     tex: im.id.clone(),
                     inst: ImgInst {
@@ -571,7 +607,7 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                         alpha: op,
                         tint: im.tint.map_or([1.0; 4], |t| t.0),
                         clip,
-                        uv: [0.0, 0.0, 1.0, 1.0],
+                        uv,
                         ..Default::default()
                     },
                     play: im.play,
@@ -611,6 +647,15 @@ mod tests {
     fn gauges(w: f32) -> Node {
         let row = Node::new("w/c/row").row().wrap().gap(10.0).kids((0..3).map(|i| Node::new(format!("w/c/row/{i}")).wh(80.0, 80.0)));
         Node::new("w").wh(w, 300.0).child(Node::new("w/c").grow(1.0).child(row))
+    }
+
+    #[test]
+    fn cover_crops_the_middle_and_contain_letterboxes() {
+        // a 200 x 100 picture in a 100 x 100 box
+        assert_eq!(Fit::Contain.place((200.0, 100.0), 100.0, 100.0), ((100.0, 50.0), [0.0, 0.0, 1.0, 1.0]));
+        assert_eq!(Fit::Cover.place((200.0, 100.0), 100.0, 100.0), ((100.0, 100.0), [0.25, 0.0, 0.75, 1.0]));
+        assert_eq!(Fit::Cover.place((100.0, 400.0), 50.0, 100.0), ((50.0, 100.0), [0.0, 0.25, 1.0, 0.75]));
+        assert_eq!(Fit::Cover.place((64.0, 64.0), 32.0, 32.0).1, [0.0, 0.0, 1.0, 1.0], "same shape: nothing cropped");
     }
 
     #[test]

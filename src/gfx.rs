@@ -47,6 +47,8 @@ struct GpuImage {
     w: u32,
     h: u32,
     frames: Option<crate::images::Frames>,
+    /// Its texture's size in memory.
+    bytes: u64,
 }
 
 struct Buf {
@@ -455,6 +457,10 @@ impl Gpu {
         self.images.get(id).map(|i| (i.w, i.h))
     }
 
+    pub fn image_bytes(&self, id: &str) -> Option<u64> {
+        self.images.get(id).map(|i| i.bytes)
+    }
+
     /// Upload straight-alpha RGBA8.
     pub fn upload_image(&mut self, id: &str, rgba: &[u8], w: u32, h: u32) {
         self.upload(id, rgba, w, h, None);
@@ -497,8 +503,9 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
+        let bytes = w as u64 * h as u64 * 4;
         let (w, h) = frames.as_ref().map_or((w, h), |f| (f.frame_w, f.frame_h));
-        self.images.insert(id.to_string(), GpuImage { bind, w, h, frames });
+        self.images.insert(id.to_string(), GpuImage { bind, w, h, frames, bytes });
     }
 
     pub fn drop_image(&mut self, id: &str) {

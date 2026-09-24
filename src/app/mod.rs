@@ -877,6 +877,11 @@ impl ApplicationHandler<UserEvent> for App {
                 soonest(t, &mut wake);
             }
         }
+        if let Some(g) = self.gpu.as_mut() {
+            let shown = self.wins.iter().filter(|w| w.window.is_some()).filter_map(|w| w.frame.as_ref());
+            let drawn = shown.flat_map(|f| f.list.image_ids()).chain(self.settings.iter().flat_map(|s| s.drawn_images()));
+            self.icons.release_unused(g, drawn);
+        }
         if let Some(s) = &self.settings {
             match s.next_frame(now) {
                 Some(t) if t <= now => s.window.request_redraw(),

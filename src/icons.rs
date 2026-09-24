@@ -156,17 +156,54 @@ fn from_files(id: &str) -> bool {
     id.starts_with("file:") || id.strip_prefix("icon:").and_then(|rest| rest.split_once(ID_SEP)).is_some_and(|(pack, _)| !matches!(pack, "Default" | ""))
 }
 
+/// Images no window draws that stay on the GPU, so a gallery flipping between a few
+/// pictures doesn't decode them again. Past this, the longest unused go first.
+pub const IDLE_BUDGET: u64 = 64 << 20;
+
+/// Which uploaded images no window draws any more, oldest first.
+#[derive(Default)]
+pub struct Residency {
+    idle: Vec<(String, u64)>,
+}
+
+impl Residency {
+    /// `loaded` is every image on the GPU with its size, `drawn` what some window draws now.
+    /// Returns the images to drop.
+    pub fn settle<'a>(&mut self, loaded: impl IntoIterator<Item = (&'a str, u64)>, drawn: &HashSet<&str>, budget: u64) -> Vec<String> {
+        let loaded: BTreeMap<&str, u64> = loaded.into_iter().collect();
+        self.idle.retain(|(id, _)| loaded.contains_key(id.as_str()) && !drawn.contains(id.as_str()));
+        for (id, bytes) in &loaded {
+            if !drawn.contains(id) && !self.idle.iter().any(|(i, _)| i == id) {
+                self.idle.push((id.to_string(), *bytes));
+            }
+        }
+        let mut total: u64 = self.idle.iter().map(|(_, b)| b).sum();
+        let mut out = vec![];
+        while total > budget && !self.idle.is_empty() {
+            let (id, bytes) = self.idle.remove(0);
+            total -= bytes;
+            out.push(id);
+        }
+        out
+    }
+
+    fn clear(&mut self) {
+        self.idle.clear();
+    }
+}
+
 /// Uploads images on demand and remembers which ids the GPU already has.
 #[derive(Default)]
 pub struct IconService {
     /// Icon Pack name to its folder, from every content root.
     packs: BTreeMap<String, PathBuf>,
     seen: HashSet<String>,
+    residency: Residency,
 }
 
 impl IconService {
     pub fn new(packs: BTreeMap<String, PathBuf>) -> Self {
-        Self { packs, seen: HashSet::new() }
+        Self { packs, ..Default::default() }
     }
 
     pub fn set_packs(&mut self, packs: BTreeMap<String, PathBuf>) {
@@ -212,9 +249,22 @@ impl IconService {
         }
     }
 
+    /// Drops images no window has drawn for a while (see `IDLE_BUDGET`). `drawn` is what
+    /// every open window draws now; the generic icon always stays.
+    pub fn release_unused<'a>(&mut self, gpu: &mut Gpu, drawn: impl IntoIterator<Item = &'a str>) {
+        let drawn: HashSet<&str> = drawn.into_iter().collect();
+        let IconService { seen, residency, .. } = self;
+        let loaded = seen.iter().filter(|id| id.as_str() != GENERIC).filter_map(|id| Some((id.as_str(), gpu.image_bytes(id)?)));
+        for id in residency.settle(loaded, &drawn, IDLE_BUDGET) {
+            gpu.drop_image(&id);
+            self.seen.remove(&id);
+        }
+    }
+
     /// The GPU was rebuilt: nothing is uploaded any more.
     pub fn forget(&mut self) {
         self.seen.clear();
+        self.residency.clear();
     }
 
     /// Forget everything (icon pack changed, so ids are new anyway, but this frees the memory).
@@ -223,6 +273,7 @@ impl IconService {
             gpu.drop_image(&id);
         }
         self.seen.clear();
+        self.residency.clear();
     }
 }
 
@@ -237,6 +288,19 @@ mod tests {
         assert!(from_files(&icon("Neon")));
         assert!(!from_files(&icon("Default")), "a shell icon is expensive to extract again");
         assert!(!from_files(GENERIC));
+    }
+
+    #[test]
+    fn unused_images_stay_within_a_budget_then_go_oldest_first() {
+        let mut r = Residency::default();
+        let set = |ids: &[&'static str]| ids.iter().copied().collect::<HashSet<&str>>();
+        let loaded = |ids: &[&'static str]| ids.iter().map(|id| (*id, 10u64)).collect::<Vec<_>>();
+        assert!(r.settle(loaded(&["a", "b", "c"]), &set(&["a", "b", "c"]), 25).is_empty(), "all drawn");
+        assert!(r.settle(loaded(&["a", "b", "c"]), &set(&["c"]), 25).is_empty(), "a and b idle, 20 bytes fit");
+        assert!(r.settle(loaded(&["a", "b", "c", "d"]), &set(&["b", "d"]), 25).is_empty(), "b drawn again, a and c idle");
+        assert_eq!(r.settle(loaded(&["a", "b", "c", "d"]), &set(&[]), 30), ["a"], "a idled first, so it goes first");
+        assert_eq!(r.settle(loaded(&["b", "c", "d"]), &set(&[]), 0), ["c", "b", "d"], "then in the order they idled");
+        assert!(r.settle(loaded(&["e"]), &set(&[]), 25).is_empty() && r.idle.len() == 1, "images no longer loaded are forgotten");
     }
 
     #[test]

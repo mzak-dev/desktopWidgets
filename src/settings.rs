@@ -1841,6 +1841,11 @@ impl SettingsWin {
         self.last = now;
     }
 
+    /// The images the last frame drew.
+    pub fn drawn_images(&self) -> impl Iterator<Item = &str> {
+        self.frame.iter().flat_map(|f| f.list.image_ids())
+    }
+
     pub fn next_frame(&self, now: Instant) -> Option<Instant> {
         if self.redraw {
             return Some(now);

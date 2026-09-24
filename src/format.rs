@@ -786,6 +786,21 @@ mod tests {
     }
 
     #[test]
+    fn an_image_fits_by_contain_or_cover() {
+        let fit = |f: &str| {
+            let def = WidgetDef::parse("t", &format!("[root]\ntype = 'image'\nsrc = 'icon:x'\n{f}")).unwrap();
+            let (p, st) = (BTreeMap::new(), BTreeMap::new());
+            let inp = Inputs { params: &p, state: &st, card_size: (100.0, 60.0), key_prefix: "t", read_source: &|_| None };
+            build(&def, &inp, &theme(), &|_| None).map(|b| match b.root.kind {
+                crate::ui::Kind::Image(im) => im.fit,
+                _ => panic!("not an image"),
+            })
+        };
+        assert_eq!((fit(""), fit("fit = 'cover'"), fit("fit = 'contain'")), (Ok(crate::ui::Fit::Contain), Ok(crate::ui::Fit::Cover), Ok(crate::ui::Fit::Contain)));
+        assert!(fit("fit = 'fill'").unwrap_err().contains("contain or cover"));
+    }
+
+    #[test]
     fn a_dot_slash_src_in_a_builtin_warns() {
         let (ids, warns) = image_ids(&WidgetDef::parse("t", LOGO).unwrap());
         assert!(warns.iter().any(|w| w.contains("needs a widget file")), "{warns:?}");
