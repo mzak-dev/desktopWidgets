@@ -12,4 +12,4 @@ The `DataSource` trait gives a native source what Code Sources already had:
 
 Two builds may be installed side by side, so `.wfplugin` files go to the first one that starts. Neither takes them from the other while its exe still exists; one whose exe is gone holds nothing. Settings → General switches them on request. Otherwise each start would rewrite the association.
 
-A widget that depends on such a source declares it (`needs = ["media"]`), so a stock Wayfinder shows "needs the `media` data source" instead of a blank card. Sources that belong to everyone, such as media and audio, can still move into the engine as built-ins. That is a code review, not a plugin install.
+A widget that depends on such a source declares it (`needs = ["media"]`), so a stock Wayfinder shows "needs the `media` data source" instead of a blank card. Sources that belong to everyone move into the engine as built-ins after a code review; `media` (SMTC) and `audio` (WASAPI loopback) have. Neither costs anything unread: the media thread starts at the first read and then only wakes on SMTC events, and audio capture runs only while a widget reads it or waits through silence for sound.

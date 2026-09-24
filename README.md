@@ -225,7 +225,7 @@ justify = "center"
 | Image | `src` (PNG, JPEG, WebP, GIF, BMP; `./` is next to the widget file) `tint` `fit` (`contain` · `cover`) `anim` (`false` stops a GIF, WebP or APNG) `frame` (show one frame) |
 | Behaviour | `on_click` (`launch <path>` · `toggle <state>` · `set <state> <value>`, where numbers and `true`/`false` keep their type and `'quotes'` keep text) `on_drop` (a dropped file's path follows the action; `on_drop = "param folder"` saves it as the widget's `folder` setting) `hover` `transition` `enter` `scroll` `scroll_x` (sideways; the wheel over it writes `state.scroll_x`, Shift+wheel too) `when` |
 
-**Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `param.*` · `state.*` · `self.w` / `self.h`.
+**Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `media.*` (what any app plays through the system media controls: `title` `artist` `album` `source` `playing` `art` `position` `duration` `progress` `clock` `length` `active`; `on_click = "media.play_pause"`, `media.next`, `media.prev`) · `audio.*` (what the speakers play, for visualizers: `bands` `peaks` `level` `bass` `active`, shaped by the widget's `bands` `fmin` `fmax` `gain` `attack` `release` `peak_fall` params) · `param.*` · `state.*` · `self.w` / `self.h`.
 
 **Size tiers** are plain `when` conditions on `self.w` and `self.h`: show more when there is room. The engine animates the change.
 
@@ -324,7 +324,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 </tr>
 </table>
 
-**Ideas, not promises:** a plugin catalogue to browse and install from, shader widgets, more built-in data sources (media, audio), an installer.
+**Ideas, not promises:** a plugin catalogue to browse and install from, shader widgets, an installer.
 
 <br>
 
