@@ -160,6 +160,26 @@ pub(super) enum VerbOutcome {
 }
 
 /// `toggle` also scrolls back to the top.
+/// A `set` value: numbers and `true`/`false` keep their type, so `set index 2` compares
+/// equal to `2`; quotes keep text as written (`set code '007'`).
+pub(super) fn typed(v: &str) -> Value {
+    let t = v.trim();
+    let quoted = |q: char| t.strip_prefix(q).and_then(|s| s.strip_suffix(q)).filter(|_| t.len() >= 2);
+    if let Some(s) = quoted('\'').or_else(|| quoted('"')) {
+        return Value::Str(s.to_string());
+    }
+    match t {
+        "true" => return Value::Bool(true),
+        "false" => return Value::Bool(false),
+        _ => {}
+    }
+    let numeric = t.chars().any(|c| c.is_ascii_digit()) && t.chars().all(|c| c.is_ascii_digit() || "+-.eE".contains(c));
+    match t.parse::<f64>() {
+        Ok(n) if numeric && n.is_finite() => Value::Num(n),
+        _ => Value::Str(v.to_string()),
+    }
+}
+
 pub(super) fn engine_action(state: &mut BTreeMap<String, Value>, verb: &str, rest: &str) -> VerbOutcome {
     match verb {
         "launch" => VerbOutcome::Launch(rest.trim().to_string()),
@@ -171,7 +191,7 @@ pub(super) fn engine_action(state: &mut BTreeMap<String, Value>, verb: &str, res
         }
         "set" => match rest.split_once(' ') {
             Some((name, val)) => {
-                state.insert(name.to_string(), Value::Str(val.to_string()));
+                state.insert(name.to_string(), typed(val));
                 VerbOutcome::Redraw
             }
             None => VerbOutcome::Nothing,
@@ -294,6 +314,15 @@ mod tests {
         assert_eq!(st.get("expanded"), Some(&Value::Bool(false)));
         assert_eq!(engine_action(&mut st, "set", "tab news"), VerbOutcome::Redraw);
         assert_eq!(st.get("tab"), Some(&Value::Str("news".into())));
+        engine_action(&mut st, "set", "index 2");
+        assert_eq!(st.get("index"), Some(&Value::Num(2.0)), "a number, so `state.index == 2` holds");
+        engine_action(&mut st, "set", "on true");
+        assert_eq!(st.get("on"), Some(&Value::Bool(true)));
+        engine_action(&mut st, "set", "code '007'");
+        assert_eq!(st.get("code"), Some(&Value::Str("007".into())), "quotes keep text");
+        engine_action(&mut st, "set", "title 2 cats");
+        assert_eq!(st.get("title"), Some(&Value::Str("2 cats".into())));
+        assert_eq!((typed("-1.5"), typed("1e3"), typed("inf"), typed("1.2.3"), typed("'")), (Value::Num(-1.5), Value::Num(1000.0), Value::Str("inf".into()), Value::Str("1.2.3".into()), Value::Str("'".into())));
         assert_eq!(engine_action(&mut st, "launch", " C:\\app.exe "), VerbOutcome::Launch("C:\\app.exe".into()));
         assert_eq!(engine_action(&mut st, "settings", ""), VerbOutcome::OpenSettings);
         assert_eq!(engine_action(&mut st, "add_app", ""), VerbOutcome::Unknown, "a Widget's own verb is not the engine's");
