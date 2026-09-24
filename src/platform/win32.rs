@@ -567,13 +567,60 @@ fn reg_set_default(subkey: &str, value: &str) -> Result<(), String> {
     }
 }
 
+/// Which exe opens `.wfplugin` files, seen from this one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FileOwner {
+    Me,
+    Nobody,
+    Other(std::path::PathBuf),
+}
+
+/// The exe an association command starts: its first quoted path, or its first word.
+pub fn association_exe(command: &str) -> Option<std::path::PathBuf> {
+    let c = command.trim();
+    let exe = match c.strip_prefix('"') {
+        Some(rest) => rest.split('"').next()?,
+        None => c.split_whitespace().next()?,
+    };
+    (!exe.is_empty()).then(|| exe.into())
+}
+
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let norm = |p: &std::path::Path| p.to_string_lossy().replace('/', "\\").to_lowercase();
+    norm(a) == norm(b)
+}
+
+/// Who opens `.wfplugin` files, from the extension's class and its open command. A command
+/// naming an exe that is gone (a moved or deleted build) counts as nobody's.
+pub fn file_owner_of(class: Option<&str>, command: Option<&str>, me: &std::path::Path, exists: impl Fn(&std::path::Path) -> bool) -> FileOwner {
+    let Some(exe) = command.filter(|_| class == Some("Wayfinder.Plugin")).and_then(association_exe) else { return FileOwner::Nobody };
+    if same_file(&exe, me) && command == Some(association_command(me).as_str()) {
+        FileOwner::Me
+    } else if exists(&exe) && !same_file(&exe, me) {
+        FileOwner::Other(exe)
+    } else {
+        FileOwner::Nobody
+    }
+}
+
+/// Who opens `.wfplugin` files now, without changing anything.
+pub fn file_type_owner(me: &std::path::Path) -> FileOwner {
+    let open = format!("{PLUGIN_CLASS}\\shell\\open\\command");
+    file_owner_of(reg_default("Software\\Classes\\.wfplugin").as_deref(), reg_default(&open).as_deref(), me, |p| p.is_file())
+}
+
 /// Makes double-clicking a `.wfplugin` file install it with this exe, for the current user
-/// only. Returns whether anything had to change.
-pub fn register_file_type(exe: &std::path::Path) -> Result<bool, String> {
+/// only, unless another build that still exists already does: two exes started in turn
+/// (`wayfinder.exe`, `wayfinder-extra.exe`) would otherwise take it from each other at every
+/// start. `take` claims it anyway, when the user asks in Settings. Returns who opens the
+/// files afterwards and whether anything changed.
+pub fn register_file_type(exe: &std::path::Path, take: bool) -> Result<(FileOwner, bool), String> {
     let command = association_command(exe);
     let open = format!("{PLUGIN_CLASS}\\shell\\open\\command");
-    if reg_default(&open).as_deref() == Some(command.as_str()) && reg_default("Software\\Classes\\.wfplugin").as_deref() == Some("Wayfinder.Plugin") {
-        return Ok(false);
+    match file_type_owner(exe) {
+        FileOwner::Me => return Ok((FileOwner::Me, false)),
+        FileOwner::Other(p) if !take => return Ok((FileOwner::Other(p), false)),
+        _ => {}
     }
     reg_set_default("Software\\Classes\\.wfplugin", "Wayfinder.Plugin")?;
     reg_set_default(PLUGIN_CLASS, "Wayfinder plugin")?;
@@ -583,7 +630,7 @@ pub fn register_file_type(exe: &std::path::Path) -> Result<bool, String> {
         use windows::Win32::UI::Shell::{SHCNE_ASSOCCHANGED, SHCNF_IDLIST, SHChangeNotify};
         SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, None, None);
     }
-    Ok(true)
+    Ok((FileOwner::Me, true))
 }
 
 #[cfg(test)]
@@ -594,5 +641,23 @@ mod association_tests {
     fn association_command_quotes_exe_and_file() {
         let exe = std::path::Path::new("C:\\Program Files\\Wayfinder\\wayfinder.exe");
         assert_eq!(association_command(exe), "\"C:\\Program Files\\Wayfinder\\wayfinder.exe\" --install \"%1\"");
+        assert_eq!(association_exe(&association_command(exe)).as_deref(), Some(exe));
+        assert_eq!(association_exe("C:\\x.exe --install %1").as_deref(), Some(std::path::Path::new("C:\\x.exe")));
+    }
+
+    #[test]
+    fn two_builds_never_take_plugin_files_from_each_other() {
+        let me = std::path::Path::new("C:\\Apps\\wayfinder-extra.exe");
+        let other = std::path::Path::new("C:\\Apps\\wayfinder.exe");
+        let class = Some("Wayfinder.Plugin");
+        let cmd = |p: &std::path::Path| Some(association_command(p));
+        let both_exist = |_: &std::path::Path| true;
+        assert_eq!(file_owner_of(class, cmd(me).as_deref(), me, both_exist), FileOwner::Me);
+        assert_eq!(file_owner_of(class, cmd(other).as_deref(), me, both_exist), FileOwner::Other(other.into()), "the other build keeps them");
+        assert_eq!(file_owner_of(class, cmd(other).as_deref(), me, |p: &std::path::Path| p != other), FileOwner::Nobody, "a build that is gone holds nothing");
+        assert_eq!(file_owner_of(None, None, me, both_exist), FileOwner::Nobody);
+        assert_eq!(file_owner_of(Some("SomeZipTool"), cmd(other).as_deref(), me, both_exist), FileOwner::Nobody, "the extension points elsewhere");
+        let upper = std::path::Path::new("C:\\APPS\\WAYFINDER-EXTRA.EXE");
+        assert_eq!(file_owner_of(class, cmd(upper).as_deref(), me, both_exist), FileOwner::Nobody, "ours with an outdated command: rewrite it, never call it someone else's");
     }
 }

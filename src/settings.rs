@@ -26,6 +26,7 @@ use crate::theme::{Library, Selection, Theme, style_schema};
 use crate::ui::{self, Env, Frame, Kind, Node};
 use crate::value::Value;
 use crate::widgets::{ParamDef, ParamType, Registry, WidgetMeta};
+use crate::platform::win32::FileOwner;
 use crate::workspace::{Flag, Workspace};
 
 pub struct Ctx<'a> {
@@ -44,6 +45,8 @@ pub struct Ctx<'a> {
     pub plugin_note: &'a str,
     /// Every data source the app has now, for widgets' `needs`.
     pub sources: &'a [String],
+    /// Which exe double-clicking a `.wfplugin` runs.
+    pub plugin_files: &'a FileOwner,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,6 +83,8 @@ pub enum Cmd {
     PluginEnabled(String, bool),
     RemovePlugin(String),
     OpenPluginsFolder,
+    /// Make double-clicking a `.wfplugin` run this exe.
+    ClaimPluginFiles,
     Quit,
     Close,
     Minimize,
@@ -1145,8 +1150,23 @@ impl UiState {
             .child(k.row("gn/hk", "Edit hotkey", "Toggles Edit layout from anywhere", k.txt("gn/hk/t".into(), "Ctrl + Alt + E", 13.0, k.c("text")).with_text(|t| t.weight = 600)))
             .child(k.section("gn/s3", "Files"))
             .child(k.row("gn/files", "Your widgets", "Drop .toml widget definitions here; they reload as you save", Node::new("gn/files/c").row().gap(8.0).child(k.button("gn/open", "Open folder", "openfolder".into(), false)).child(k.button("gn/reload", "Reload all", "reload".into(), false))))
+            .child(self.plugin_files_row(k, ctx))
             .child(Node::new("gn/pad").h(24.0));
         self.scrolling("gn/scroll", body)
+    }
+
+    /// Which app a double-clicked `.wfplugin` opens, and a way to make it this one.
+    fn plugin_files_row(&self, k: &Kit, ctx: &Ctx) -> Node {
+        let help = match ctx.plugin_files {
+            FileOwner::Me => "Double-clicking a .wfplugin file installs it with this app".to_string(),
+            FileOwner::Other(p) => format!("Double-clicking a .wfplugin file opens {}", p.display()),
+            FileOwner::Nobody => "No app installs .wfplugin files on a double-click yet".to_string(),
+        };
+        let control = match ctx.plugin_files {
+            FileOwner::Me => k.txt("gn/pf/t".into(), "This app", 12.5, k.c("text-dim")),
+            _ => k.button("gn/pf/b", "Use this app", "claimfiles".into(), false),
+        };
+        k.row("gn/pf", "Plugin files", &help, control)
     }
 
     fn page_log(&self, k: &Kit, ctx: &Ctx) -> Node {
@@ -1521,6 +1541,7 @@ impl UiState {
             "pfolder" => vec![Cmd::OpenPluginsFolder],
             "pinstall" => dialog::pick_file_of(hwnd, &[("Wayfinder plugin", "*.wfplugin;*.zip")]).map(|p| vec![Cmd::InstallPlugin(p)]).unwrap_or_default(),
             "openfolder" => vec![Cmd::OpenFolder],
+            "claimfiles" => vec![Cmd::ClaimPluginFiles],
             "reload" => vec![Cmd::Reload],
             "quit" => vec![Cmd::Quit],
             "close" => vec![Cmd::Close],
@@ -1903,7 +1924,23 @@ mod tests {
     }
 
     fn ctx(w: &World) -> Ctx<'_> {
-        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources }
+        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me }
+    }
+
+    #[test]
+    fn general_says_which_app_opens_plugin_files() {
+        fn has(n: &Node, key: &str) -> bool {
+            n.key == key || n.children.iter().any(|c| has(c, key))
+        }
+        let w = world();
+        let mut ui = UiState::default();
+        ui.page = Page::General;
+        let mine = ui.build(&ctx(&w), WIN).0;
+        assert!(has(&mine, "gn/pf") && !has(&mine, "gn/pf/b"), "already this app: no button");
+        let other = FileOwner::Other("C:\\Apps\\wayfinder.exe".into());
+        let theirs = ui.build(&Ctx { plugin_files: &other, ..ctx(&w) }, WIN).0;
+        assert!(has(&theirs, "gn/pf/b"), "another build has them: offer to switch");
+        assert_eq!(ui.act("claimfiles", &ctx(&w), None), [Cmd::ClaimPluginFiles]);
     }
 
     #[test]

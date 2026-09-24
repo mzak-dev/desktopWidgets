@@ -253,6 +253,7 @@ impl App {
                     }
                 }
             }
+            Cmd::ClaimPluginFiles => self.claim_plugin_files(true),
             Cmd::OpenPluginsFolder => {
                 let store = PluginStore::new(&self.opts.dir);
                 let _ = std::fs::create_dir_all(store.dir());

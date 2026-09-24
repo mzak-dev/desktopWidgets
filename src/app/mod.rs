@@ -210,6 +210,8 @@ pub struct App {
     stores: BTreeMap<String, Arc<KvStore>>,
     /// The network for plugin code, opened the first time a Plugin lists hosts.
     fetch: Option<Arc<dyn Fetch>>,
+    /// Which exe double-clicking a `.wfplugin` runs, for Settings.
+    plugin_files: win32::FileOwner,
 }
 
 impl App {
@@ -278,6 +280,7 @@ impl App {
             plugin_note: String::new(),
             stores: BTreeMap::new(),
             fetch: None,
+            plugin_files: win32::FileOwner::Nobody,
         };
         app.load_content();
         app.rebuild_theme();
@@ -567,6 +570,31 @@ impl App {
         self.refresh_code_status();
     }
 
+    /// Points `.wfplugin` files at this exe, unless another build that still exists has them;
+    /// `take` (the Settings button) claims them anyway. A throwaway `--data` run only looks.
+    fn claim_plugin_files(&mut self, take: bool) {
+        let Ok(exe) = std::env::current_exe() else { return };
+        if !self.opts.register_file_type && !take {
+            self.plugin_files = win32::file_type_owner(&exe);
+            return;
+        }
+        match win32::register_file_type(&exe, take) {
+            Ok((owner, changed)) => {
+                if changed {
+                    self.log("double-clicking a .wfplugin file now installs it with this app");
+                }
+                if let win32::FileOwner::Other(p) = &owner {
+                    self.log(format!(".wfplugin files open with {}; Settings > General can switch them to this app", p.display()));
+                }
+                self.plugin_files = owner;
+            }
+            Err(e) => self.log(format!("could not register .wfplugin files: {e}")),
+        }
+        if let Some(s) = &mut self.settings {
+            s.invalidate();
+        }
+    }
+
     /// Copies each Code Source's status onto its Plugins page row.
     fn refresh_code_status(&mut self) {
         for (name, status) in self.sources.code_status() {
@@ -733,13 +761,7 @@ impl ApplicationHandler<UserEvent> for App {
                 s.show_page(&page);
             }
         }
-        if self.opts.register_file_type {
-            match std::env::current_exe().map_err(|e| e.to_string()).and_then(|exe| win32::register_file_type(&exe)) {
-                Ok(true) => self.log("double-clicking a .wfplugin file now installs it"),
-                Ok(false) => {}
-                Err(e) => self.log(format!("could not register .wfplugin files: {e}")),
-            }
-        }
+        self.claim_plugin_files(false);
         self.log(format!("ready: {} instance(s), theme {} / {} / {}", self.ws.instances.len(), self.ws.theme.palette, self.ws.theme.fonts, self.ws.theme.glyphs));
     }
 
@@ -775,11 +797,11 @@ impl ApplicationHandler<UserEvent> for App {
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
         if self.settings.as_ref().is_some_and(|s| s.window.id() == id) {
             let gpu_info = self.gpu.as_ref().map(|g| g.info.clone()).unwrap_or_else(|| "no GPU yet".into());
-            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, .. } = self;
+            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, .. } = self;
             let off = plugins::hidden_instances(ws, reg, installed);
             let hidden: Vec<(String, settings::Hidden)> = ws.instances.iter().zip(wins.iter()).filter(|(_, w)| w.window.is_none()).map(|(c, _)| (c.id.clone(), off.get(&c.id).map_or(settings::Hidden::Parked, |p| settings::Hidden::PluginOff(p.clone())))).collect();
             let source_names = sources.names();
-            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names };
+            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files };
             let s = settings.as_mut().unwrap();
             let cmds = s.event(&ev, &ctx, text);
             if matches!(ev, WindowEvent::RedrawRequested) {

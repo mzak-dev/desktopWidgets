@@ -10,4 +10,6 @@ The `DataSource` trait gives a native source what Code Sources already had:
 - **`retain(live)`**: per-Instance state goes when an Instance is removed.
 - **`watched_paths(cx)` and `path_changed`**: a source watches any path param. A change to one redraws; it does not reload content.
 
+Two builds may be installed side by side, so `.wfplugin` files go to the first one that starts. Neither takes them from the other while its exe still exists; one whose exe is gone holds nothing. Settings → General switches them on request. Otherwise each start would rewrite the association.
+
 A widget that depends on such a source declares it (`needs = ["media"]`), so a stock Wayfinder shows "needs the `media` data source" instead of a blank card. Sources that belong to everyone, such as media and audio, can still move into the engine as built-ins. That is a code review, not a plugin install.
