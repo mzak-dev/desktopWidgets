@@ -292,7 +292,11 @@ impl PluginStore {
     }
 }
 
-/// A plugin file's manifest and what it holds, read without installing it (for a prompt).
+/// A plugin's manifest and what it holds, read without installing anything. `src` is a
+/// `.wfplugin` file (a zip, `plugin.toml` at its top or in its one folder) or a plugin folder.
+///
+/// A stable API: Settings uses it for the install prompt, and tools and tests built on
+/// Wayfinder may rely on it. It checks the manifest only; [`check`] validates everything.
 pub fn describe(src: &Path) -> Result<(Manifest, Contents), String> {
     if src.is_dir() {
         let m = std::fs::read_to_string(src.join(MANIFEST)).map_err(|_| format!("no {MANIFEST}"))?;
@@ -328,6 +332,113 @@ pub fn describe(src: &Path) -> Result<(Manifest, Contents), String> {
         }
     }
     Ok((m, c))
+}
+
+/// Zips a plugin folder into a `.wfplugin` at `out`, `plugin.toml` at its top, by the same
+/// rules as installing: only content files, within the size limits, clutter left out.
+pub fn pack(dir: &Path, out: &Path) -> Result<Manifest, String> {
+    use std::io::Write;
+    let text = std::fs::read_to_string(dir.join(MANIFEST)).map_err(|_| format!("{}: no {MANIFEST}", dir.display()))?;
+    let m = Manifest::parse(&text).map_err(|e| format!("{MANIFEST}: {e}"))?;
+    let parent = out.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    if parent.canonicalize().ok().zip(dir.canonicalize().ok()).is_some_and(|(o, d)| o.starts_with(d)) {
+        return Err("put the .wfplugin outside the plugin's folder".into());
+    }
+    // copying first applies the install rules exactly
+    let staging = std::env::temp_dir().join(format!("wayfinder-pack-{}-{}", m.id, std::process::id()));
+    let _ = std::fs::remove_dir_all(&staging);
+    let done = (|| {
+        copy_folder(dir, &staging, &Limits::default(), &mut Budget::default())?;
+        let mut files = vec![];
+        let mut stack = vec![staging.clone()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).map_err(|e| e.to_string())?.flatten() {
+                if e.path().is_dir() {
+                    stack.push(e.path());
+                } else {
+                    files.push(e.path());
+                }
+            }
+        }
+        files.sort();
+        let tmp = out.with_extension("wfplugin.part");
+        let mut z = zip::ZipWriter::new(std::fs::File::create(&tmp).map_err(|e| format!("{}: {e}", tmp.display()))?);
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        for f in &files {
+            let name = f.strip_prefix(&staging).unwrap_or(f).components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
+            z.start_file(name, opts).map_err(|e| e.to_string())?;
+            z.write_all(&std::fs::read(f).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+        }
+        z.finish().map_err(|e| e.to_string())?;
+        std::fs::rename(&tmp, out).map_err(|e| format!("{}: {e}", out.display()))
+    })();
+    let _ = std::fs::remove_dir_all(&staging);
+    done.map(|_| m)
+}
+
+/// What [`check`] found.
+#[derive(Debug, Default)]
+pub struct Report {
+    pub manifest: Option<Manifest>,
+    pub contents: Contents,
+    /// It would not install, or would install broken.
+    pub problems: Vec<String>,
+    /// Worth knowing, but it works.
+    pub warnings: Vec<String>,
+    /// What it restyles, runs and reaches.
+    pub notes: Vec<String>,
+}
+
+/// Validates a `.wfplugin` or a plugin folder the way installing and loading it would, in a
+/// throwaway data folder: the archive, the manifest, every widget and theme file, the code
+/// module (it must load and speak this Wayfinder's ABI) and the data sources widgets need.
+pub fn check(src: &Path) -> Report {
+    let area = (0..).map(|n| std::env::temp_dir().join(format!("wayfinder-check-{}-{n}", std::process::id()))).find(|p| !p.exists()).expect("a free name");
+    let data = area.join("Wayfinder");
+    let r = check_in(src, &data);
+    let _ = std::fs::remove_dir_all(&area);
+    r
+}
+
+fn check_in(src: &Path, data: &Path) -> Report {
+    let mut r = Report::default();
+    let store = PluginStore::new(data);
+    let m = match store.install(src) {
+        Ok(m) => m,
+        Err(e) => {
+            r.problems.push(e);
+            return r;
+        }
+    };
+    let list = store.list();
+    let Some(p) = list.iter().find(|p| p.id == m.id) else {
+        r.problems.push("it installed, but did not show up".into());
+        return r;
+    };
+    r.contents = p.contents.clone();
+    let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
+    let builtin = crate::data::DataSources::builtin().native_names();
+    let needed: BTreeSet<String> = p.contents.widgets.iter().filter_map(|w| cat.registry.get(w)?.as_ref().ok()).flat_map(|d| d.meta().needs.clone()).collect();
+    let own = m.code.as_ref().map(|c| c.source.clone());
+    for n in needed.iter().filter(|n| !builtin.contains(*n) && own.as_ref() != Some(*n)) {
+        r.warnings.push(format!("its widgets need the `{n}` data source, which another plugin or an app built on Wayfinder must provide"));
+    }
+    let row = rows(&list, &BTreeSet::new(), &cat, &builtin.union(&needed).cloned().collect()).into_iter().find(|x| x.id == m.id).unwrap_or_default();
+    r.problems.extend(row.problems);
+    r.notes.extend(row.notes);
+    if !row.code.is_empty() {
+        r.notes.push(row.code);
+    }
+    if let Some(code) = &m.code {
+        use crate::code::runtime::{Compiled, Env, Limits as CodeLimits, Runtime};
+        let limits = CodeLimits::default();
+        let loaded = std::fs::read(p.dir.join(&code.module)).map_err(|_| format!("code.module `{}` is missing", code.module)).and_then(|w| Compiled::load(&w)).and_then(|c| Runtime::new(&c, Env::new(None, None, &limits), &limits).map(drop).map_err(|f| f.to_string()));
+        if let Err(e) = loaded {
+            r.problems.push(format!("its code cannot run: {e}"));
+        }
+    }
+    r.manifest = Some(m);
+    r
 }
 
 /// Caps on what one install may write, so a broken or hostile archive cannot fill the disk.
@@ -1161,6 +1272,47 @@ mod tests {
         zip_of(&file, &[("plugin.toml", OK), ("widgets/A.toml", "x"), ("widgets/a.toml", "y")]);
         assert!(store.install(&file).unwrap_err().contains("twice"));
         std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn pack_zips_a_folder_that_installs() {
+        let (data, store) = install_area("pack");
+        let src = data.parent().unwrap().join("src").join("sunset");
+        put(&src, "plugin.toml", OK);
+        put(&src, "widgets/card.toml", "[root]\ntype = 'box'");
+        put(&src, "Thumbs.db", "clutter");
+        let out = data.parent().unwrap().join("sunset.wfplugin");
+        assert_eq!(pack(&src, &out).unwrap().id, "sunset");
+        let (m, c) = describe(&out).unwrap();
+        assert_eq!((m.id.as_str(), c.widgets.as_slice()), ("sunset", &["card".to_string()][..]));
+        store.install(&out).unwrap();
+        assert!(!data.join("plugins").join("sunset").join("Thumbs.db").exists());
+        assert!(pack(&src, &src.join("x.wfplugin")).unwrap_err().contains("outside"));
+        put(&src, "tools/run.exe", "MZ");
+        assert!(pack(&src, &out).unwrap_err().contains("run.exe"));
+        std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn check_finds_what_would_break() {
+        let root = tmp("check");
+        let good = root.join("good");
+        put(&good, "plugin.toml", OK);
+        put(&good, "widgets/card.toml", "needs = ['media']\n[root]\ntype = 'box'");
+        let r = check(&good);
+        assert!(r.problems.is_empty(), "{:?}", r.problems);
+        assert_eq!(r.manifest.map(|m| m.id), Some("sunset".into()));
+        assert!(r.warnings.iter().any(|w| w.contains("`media`")), "{:?}", r.warnings);
+        let bad = root.join("bad");
+        put(&bad, "plugin.toml", &format!("{OK}\n[code]\nmodule = 'code/m.wasm'\nsource = 'm'"));
+        put(&bad, "widgets/card.toml", "[root]\ntype = 'box'\ncolour = 'red'");
+        let r = check(&bad);
+        assert!(r.problems.iter().any(|p| p.contains("colour")), "{:?}", r.problems);
+        assert!(r.problems.iter().any(|p| p.contains("code.module `code/m.wasm` is missing")), "{:?}", r.problems);
+        put(&bad, "code/m.wasm", "not wasm");
+        assert!(check(&bad).problems.iter().any(|p| p.contains("its code cannot run")));
+        assert!(!check(&root.join("nothing")).problems.is_empty());
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

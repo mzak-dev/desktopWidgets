@@ -77,7 +77,7 @@ The module runs sandboxed: it cannot write files or start programs, reads only t
 ## Try it, then share it
 
 1. Put the folder in `plugins/` here. Wayfinder loads it as you save, like any other file, and **Settings → Plugins** shows it with any errors.
-2. To share it, zip the folder (right-click it → **Send to → Compressed (zipped) folder**) and rename the `.zip` to `.wfplugin`.
+2. To share it, run `wayfinder plugin pack plugins\sunset | Out-Host` in PowerShell: it writes `sunset.wfplugin` next to the folder and checks it. Or zip the folder (right-click it → **Send to → Compressed (zipped) folder**) and rename the `.zip` to `.wfplugin`; `wayfinder plugin check sunset.wfplugin | Out-Host` then says whether it installs and loads cleanly.
 3. Double-clicking a `.wfplugin`, dropping it on the Settings window, or **Install from file...** installs it. Installing one with the same `id` replaces the old version and keeps it switched on or off.
 
 **With Claude Code:** run `claude` in this folder and ask for a plugin ("a plugin with a sunset palette and a matching clock"). The `wayfinder-plugin` skill in `.claude/skills/` tells it how.

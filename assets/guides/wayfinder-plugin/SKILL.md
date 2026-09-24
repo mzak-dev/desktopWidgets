@@ -14,6 +14,6 @@ The working directory is Wayfinder's data folder (`%APPDATA%\Wayfinder`). Wayfin
 5. Only use `toml png jpg jpeg gif webp bmp ttf otf ttc otc md txt wasm` files. Anything else stops the plugin from installing elsewhere.
 6. For live data, the plugin can carry code: a Rust crate using `wayfinder-plugin`, built with `cargo build --release --target wasm32-unknown-unknown` (never a WASI target), its `.wasm` copied into the plugin and named in a `[code]` table. Read the `Code` section of `PLUGINS.md` and the SDK README it links. List every host the code calls in `net`, and every folder it reads in `fs_read` (`~/…`).
 7. Tell the user to open Settings → Plugins (left-click the tray icon) to see it, switch it on and read any errors. `wayfinder.log` has the details.
-8. To share it: zip the plugin folder and rename the `.zip` to `<id>.wfplugin`. On Windows, PowerShell does it in one line: `Compress-Archive plugins\<id>\* <id>.zip; Rename-Item <id>.zip <id>.wfplugin`.
+8. To share it: `wayfinder plugin pack plugins\<id> | Out-Host` writes `<id>.wfplugin` and reports any problem. `wayfinder plugin check <file> | Out-Host` checks one. To see a widget without the desktop: `wayfinder --render-widget <id> --png out.png | Out-Host`, then look at the image.
 
 Do not edit `workspace.json`. The running app owns it and overwrites edits.
