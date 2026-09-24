@@ -961,7 +961,7 @@ impl UiState {
             let fnm = self.focus.as_ref().filter(|f| f.key == nk).map(|f| (f.caret, self.caret_on));
             let ftg = self.focus.as_ref().filter(|f| f.key == tk).map(|f| (f.caret, self.caret_on));
             let mut img = Node::new(format!("sc/{id}/{i}/img")).wh(28.0, 28.0).no_shrink();
-            img.kind = Kind::Image(ui::ImageSpec { id: iid, w: 32.0, h: 32.0, tint: None });
+            img.kind = Kind::Image(ui::ImageSpec { id: iid, w: 32.0, h: 32.0, ..Default::default() });
             col = col.child(
                 Node::new(format!("sc/{id}/{i}"))
                     .row()

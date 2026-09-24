@@ -66,7 +66,9 @@ impl App {
             eprintln!("wayfinder: {}: {w}", cfg.id);
         }
         let continuous = sources.needs_every_frame(&p.deps);
-        iw.next_tick = if continuous { None } else { sources.next_wake(&p.deps, &tm).map(|d| now + d) };
+        // a playing GIF wakes at its own frame rate, never every display frame
+        let frame_due = gpu.animation_delay(&p.frame.list).map(|d| now + d);
+        iw.next_tick = if continuous { None } else { sources.next_wake(&p.deps, &tm).map(|d| now + d).into_iter().chain(frame_due).min() };
         iw.widget_error = p.error.clone();
         iw.animating = p.frame.animating || continuous || iw.tween.is_some();
         iw.deps = p.deps;

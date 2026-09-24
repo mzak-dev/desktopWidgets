@@ -18,12 +18,27 @@ pub use clock::{Clock, Tm, clock_value, now_local};
 pub use shortcuts::{ID_SEP, Shortcut, Shortcuts, file_stem, folder_items, icon_id, shortcuts_value, starter_apps};
 pub use sys::Sys;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cadence {
+    /// Every display frame: smooth motion only.
     Frame,
+    /// Every this many milliseconds (at least 16), e.g. an animation's own frame rate.
+    Millis(u32),
     Second,
     TenSecond,
     Minute,
+}
+
+impl Cadence {
+    pub fn period(self) -> Duration {
+        match self {
+            Cadence::Frame => Duration::from_millis(8),
+            Cadence::Millis(n) => Duration::from_millis(n.max(16) as u64),
+            Cadence::Second => Duration::from_secs(1),
+            Cadence::TenSecond => Duration::from_secs(10),
+            Cadence::Minute => Duration::from_secs(60),
+        }
+    }
 }
 
 pub struct SourceCx<'a> {
@@ -224,10 +239,11 @@ impl DataSources {
     }
 
     pub fn next_wake(&self, deps: &BTreeSet<String>, tm: &Tm) -> Option<Duration> {
-        let fastest = deps.iter().filter_map(|d| self.cadence_of(d)).min()?;
+        let fastest = deps.iter().filter_map(|d| self.cadence_of(d)).min_by_key(|c| c.period())?;
         let into_sec = tm.ms as u64;
         let ms = match fastest {
             Cadence::Frame => 8,
+            Cadence::Millis(_) => return Some(fastest.period()),
             Cadence::Second => 1000 - into_sec,
             Cadence::TenSecond => (10 - (tm.second % 10)) as u64 * 1000 - into_sec,
             Cadence::Minute => (60 - tm.second) as u64 * 1000 - into_sec,
@@ -286,6 +302,28 @@ mod tests {
         // smooth second hand needs frames
         assert!(src.needs_every_frame(&deps(&["clock.second_smooth"])));
         assert!(!src.needs_every_frame(&deps(&["clock.second"])));
+    }
+
+    #[test]
+    fn a_millis_cadence_wakes_at_its_own_rate() {
+        struct Gif;
+        impl DataSource for Gif {
+            fn name(&self) -> &str {
+                "gif"
+            }
+            fn value(&self, _: &SourceCx) -> Value {
+                Value::Nil
+            }
+            fn cadence(&self, _: &str) -> Option<Cadence> {
+                Some(Cadence::Millis(83))
+            }
+        }
+        let mut src = DataSources::builtin();
+        src.register(Box::new(Gif)).unwrap();
+        assert_eq!(src.next_wake(&deps(&["gif.frame", "clock.minute"]), &tm(1, 2, 3, 0)), Some(Duration::from_millis(83)), "12 fps, not every display frame");
+        assert!(!src.needs_every_frame(&deps(&["gif.frame"])));
+        assert_eq!(src.next_wake(&deps(&["gif.frame", "clock.second_smooth"]), &tm(1, 2, 3, 0)), Some(Duration::from_millis(10)), "a frame cadence still wins");
+        assert_eq!(Cadence::Millis(1).period(), Duration::from_millis(16));
     }
 
     #[test]

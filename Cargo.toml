@@ -43,7 +43,7 @@ toml = { version = "1.1.6", features = ["preserve_order"] }
 notify = "8.2.0"
 global-hotkey = "0.8.0"
 tray-icon = "0.24.1"
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # plugin code (ADR-0008): an interpreter, no JIT, no WASI
 wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "validate", "auto-dispatch"] }

@@ -39,11 +39,16 @@ pub struct ImgInst {
     pub _pad: [f32; 2],
     pub tint: [f32; 4],
     pub clip: [f32; 4],
+    /// The part of the texture to show: `[u0, v0, u1, v1]`.
+    pub uv: [f32; 4],
 }
 
 pub struct ImgDraw {
     pub tex: String,
     pub inst: ImgInst,
+    /// For an animated texture: play it, or show `frame`.
+    pub play: bool,
+    pub frame: Option<u32>,
 }
 
 pub struct TextItem {

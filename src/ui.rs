@@ -35,6 +35,10 @@ pub struct ImageSpec {
     pub w: f32,
     pub h: f32,
     pub tint: Option<Color>,
+    /// An animation plays (`anim = false` freezes it on its first frame).
+    pub play: bool,
+    /// Shows this frame of an animation instead of playing it.
+    pub frame: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -567,8 +571,11 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                         alpha: op,
                         tint: im.tint.map_or([1.0; 4], |t| t.0),
                         clip,
+                        uv: [0.0, 0.0, 1.0, 1.0],
                         ..Default::default()
                     },
+                    play: im.play,
+                    frame: im.frame,
                 });
             }
             Kind::Shape(shape) => shape.emit(&ShapeCx { center_px: [cx, cy], logical_size: (w, h), scale: s, inherited_opacity: op, clip_px: clip }, &mut list.shapes),

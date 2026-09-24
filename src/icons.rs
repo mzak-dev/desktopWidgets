@@ -184,7 +184,13 @@ impl IconService {
         let img = if id == GENERIC {
             generic()
         } else if let Some(path) = id.strip_prefix("file:") {
-            load_image(Path::new(path)).unwrap_or_else(generic)
+            match crate::images::decode_file(Path::new(path)) {
+                Some(d) => {
+                    gpu.upload_decoded(id, &d);
+                    return true;
+                }
+                None => generic(),
+            }
         } else if let Some(rest) = id.strip_prefix("icon:") {
             let mut it = rest.split(ID_SEP);
             let (pack, target, explicit) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
