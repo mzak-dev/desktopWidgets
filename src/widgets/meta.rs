@@ -19,6 +19,26 @@ pub struct WidgetMeta {
     /// Data sources it cannot work without (`needs = ["agents"]`), so a missing one is
     /// named instead of the widget showing blank.
     pub needs: Vec<String>,
+    /// Named card-size tiers, slots and Modules the user may arrange; all empty for a Widget that declares none.
+    pub tiers: Vec<TierMeta>,
+    pub slots: Vec<(String, String)>,
+    pub modules: Vec<ModuleMeta>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TierMeta {
+    pub name: String,
+    pub label: String,
+    pub size: (f32, f32),
+    pub layout: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModuleMeta {
+    pub name: String,
+    pub label: String,
+    pub slots: Vec<String>,
+    pub legacy: Option<String>,
 }
 
 /// "needs the `agents` data source, which is missing…"
@@ -36,6 +56,25 @@ impl WidgetMeta {
 
     pub fn effective_params(&self, saved: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
         self.params.iter().map(|p| (p.name.clone(), saved.get(&p.name).cloned().unwrap_or_else(|| p.default.clone()))).collect()
+    }
+
+    /// A saved `show_x = false` of a param a Module replaced (`legacy`) becomes a layout
+    /// without that Module, then the old param goes.
+    pub fn migrate(&self, cfg: &mut InstanceCfg) {
+        let off: Vec<(&ModuleMeta, &String)> = self.modules.iter().filter_map(|m| m.legacy.as_ref().map(|l| (m, l))).collect();
+        if off.is_empty() {
+            return;
+        }
+        let hidden: Vec<&str> = off.iter().filter(|(_, l)| cfg.params.get(*l) == Some(&serde_json::Value::Bool(false))).map(|(m, _)| m.name.as_str()).collect();
+        if !hidden.is_empty() && cfg.layout.is_empty() {
+            for t in &self.tiers {
+                let l = t.layout.iter().map(|(s, v)| (s.clone(), v.iter().filter(|e| !hidden.contains(&e.as_str())).cloned().collect())).collect();
+                cfg.layout.insert(t.name.clone(), l);
+            }
+        }
+        for (_, l) in off {
+            cfg.params.remove(l);
+        }
     }
 
     pub fn seed_params(&self, cfg: &mut InstanceCfg) {
@@ -100,6 +139,8 @@ pub struct ParamDef {
     pub seed: Option<Seed>,
     /// Settings shows params with one group under its own heading (`group = "Motion"`).
     pub group: Option<String>,
+    /// The Module this option belongs to; none = an option of the whole Widget.
+    pub module: Option<String>,
 }
 
 /// One option of an `enum` param: the saved value, and what Settings shows.

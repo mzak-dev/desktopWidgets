@@ -64,7 +64,7 @@ fn every_builtin_fits_every_size_it_allows() {
                 let cx = SourceCx { cfg: &cfg, params: &params, tm, icon_pack: "Default" };
                 let read = |n: &str| sources.value(n, &cx);
                 let state = BTreeMap::new();
-                let inp = Inputs { params: &params, state: &state, card_size: *size, key_prefix: &cfg.id, read_source: &read };
+                let inp = Inputs { params: &params, state: &state, card_size: *size, key_prefix: &cfg.id, read_source: &read, arrange: None };
                 let b = match w.build(&inp, &theme, &|_| None) {
                     Ok(b) => b,
                     Err(e) => {
@@ -116,7 +116,7 @@ fn texts_at(id: &str, size: (f32, f32)) -> Vec<String> {
     let cx = SourceCx { cfg: &cfg, params: &params, tm, icon_pack: "Default" };
     let read = |n: &str| sources.value(n, &cx);
     let state = BTreeMap::new();
-    let inp = Inputs { params: &params, state: &state, card_size: size, key_prefix: "t", read_source: &read };
+    let inp = Inputs { params: &params, state: &state, card_size: size, key_prefix: "t", read_source: &read, arrange: None };
     let root = w.build(&inp, &Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[]), &|_| None).unwrap().root;
     fn walk(n: &Node, out: &mut Vec<String>) {
         if let Kind::Text(t) = &n.kind {

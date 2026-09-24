@@ -10,10 +10,11 @@ use crate::anim::Ease;
 use crate::color::{Color, MAGENTA};
 use crate::elements;
 use crate::expr::{Scope, Template};
+use crate::modules::{Arrange, Arrangement, Each, Inst, ModuleDef, ModuleSet, Placed, PlacedSlot, SlotDef, TierDef, place};
 use crate::theme::Theme;
 use crate::ui::*;
 use crate::value::Value;
-use crate::widgets::{Built, Choice, ExpandInfo, Inputs, ParamDef, ParamType, Seed, WidgetMeta};
+use crate::widgets::{Built, Choice, ExpandInfo, Inputs, ModuleMeta, ParamDef, ParamType, Seed, TierMeta, WidgetMeta};
 
 
 #[derive(Clone, Debug)]
@@ -50,9 +51,11 @@ const COMMON_ATTRS: &[&str] = &[
 ];
 /// `repeat` is structural, not an element kind.
 const REPEAT_ATTRS: &[&str] = &["for", "as", "index"];
+/// `slot` is structural too: a box the user's arranged Modules fill.
+const SLOT_ATTRS: &[&str] = &["slot"];
 
 fn type_names() -> Vec<&'static str> {
-    elements::KINDS.iter().map(|k| k.name).chain(["repeat"]).collect()
+    elements::KINDS.iter().map(|k| k.name).chain(["repeat", "slot"]).collect()
 }
 
 fn edit_distance(a: &str, b: &str) -> usize {
@@ -91,6 +94,7 @@ fn parse_elem(t: &toml::Table, path: &str) -> Result<Elem, String> {
     let specific: &[&str] = match elements::find(&ty) {
         Some(k) => k.own_attrs,
         None if ty == "repeat" => REPEAT_ATTRS,
+        None if ty == "slot" => SLOT_ATTRS,
         None => {
             let types = type_names();
             return Err(format!("{path}: unknown type `{ty}`{} (expected one of {})", suggest(&ty, &[&types]), types.join(", ")));
@@ -133,6 +137,8 @@ pub struct WidgetDef {
     pub meta: WidgetMeta,
     pub expand: Option<Expand>,
     pub root: Elem,
+    /// Tiers, slots and Modules, when the file declares them.
+    pub modules: Option<ModuleSet>,
     /// Where the file lives; `None` for a built-in.
     pub base: Option<Base>,
 }
@@ -165,7 +171,7 @@ impl Base {
     }
 }
 
-const TOP: &[&str] = &["name", "description", "size", "min_size", "max_size", "needs", "params", "state", "expand", "root"];
+const TOP: &[&str] = &["name", "description", "size", "min_size", "max_size", "needs", "params", "state", "expand", "tiers", "slots", "modules", "root"];
 
 fn pair(v: Option<&toml::Value>, default: (f32, f32), what: &str) -> Result<(f32, f32), String> {
     let Some(v) = v else { return Ok(default) };
@@ -228,9 +234,125 @@ pub fn parse_params(pt: &toml::Table) -> Result<Vec<ParamDef>, String> {
             },
             seed,
             group: p.get("group").and_then(|v| v.as_str()).map(str::trim).filter(|g| !g.is_empty()).map(String::from),
+            module: p.get("module").and_then(|v| v.as_str()).map(String::from),
         });
     }
     Ok(params)
+}
+
+fn table_of<'a>(v: &'a toml::Value, what: &str) -> Result<&'a toml::Table, String> {
+    v.as_table().ok_or_else(|| format!("{what}: expected a table"))
+}
+
+fn only_keys(t: &toml::Table, allowed: &[&str], what: &str) -> Result<(), String> {
+    match t.keys().find(|k| !allowed.contains(&k.as_str())) {
+        Some(k) => Err(format!("{what}: unknown key `{k}`{}", suggest(k, &[allowed]))),
+        None => Ok(()),
+    }
+}
+
+fn tpl(t: &toml::Table, k: &str, what: &str) -> Result<Option<Template>, String> {
+    t.get(k)
+        .map(|v| {
+            let s = v.as_str().ok_or_else(|| format!("{what}.{k}: expected a string"))?;
+            Template::parse(s).map_err(|e| format!("{what}.{k}: {e}"))
+        })
+        .transpose()
+}
+
+fn names(t: &toml::Table, k: &str, what: &str) -> Result<Vec<String>, String> {
+    match t.get(k) {
+        None => Ok(vec![]),
+        Some(v) => v.as_array().and_then(|a| a.iter().map(|x| x.as_str().map(String::from)).collect()).ok_or_else(|| format!("{what}.{k}: expected a list of names")),
+    }
+}
+
+/// `[tiers.*]`, `[slots.*]` and `[modules.*]`: what a user may arrange, and how.
+fn parse_modules(t: &toml::Table) -> Result<Option<ModuleSet>, String> {
+    if !["tiers", "slots", "modules"].iter().any(|k| t.contains_key(*k)) {
+        return Ok(None);
+    }
+    let sub = |k: &str| t.get(k).map(|v| table_of(v, k)).transpose();
+    let mut set = ModuleSet::default();
+    if let Some(tiers) = sub("tiers")? {
+        for (name, v) in tiers {
+            let what = format!("tiers.{name}");
+            let tt = table_of(v, &what)?;
+            only_keys(tt, &["label", "size", "when", "layout"], &what)?;
+            let layout = match tt.get("layout") {
+                None => BTreeMap::new(),
+                Some(l) => table_of(l, &format!("{what}.layout"))?
+                    .iter()
+                    .map(|(slot, v)| Ok((slot.clone(), v.as_array().and_then(|a| a.iter().map(|x| x.as_str().map(String::from)).collect::<Option<Vec<_>>>()).ok_or_else(|| format!("{what}.layout.{slot}: expected a list of module names"))?)))
+                    .collect::<Result<_, String>>()?,
+            };
+            set.tiers.push(TierDef {
+                name: name.clone(),
+                label: tt.get("label").and_then(|v| v.as_str()).map_or_else(|| name.clone(), String::from),
+                when: tpl(tt, "when", &what)?,
+                size: pair(tt.get("size"), (300.0, 200.0), &format!("{what}.size"))?,
+                layout,
+            });
+        }
+    }
+    if let Some(slots) = sub("slots")? {
+        for (name, v) in slots {
+            let what = format!("slots.{name}");
+            let st = table_of(v, &what)?;
+            only_keys(st, &["label"], &what)?;
+            set.slots.push(SlotDef { name: name.clone(), label: st.get("label").and_then(|v| v.as_str()).map_or_else(|| name.clone(), String::from) });
+        }
+    }
+    if let Some(modules) = sub("modules")? {
+        for (name, v) in modules {
+            let what = format!("modules.{name}");
+            let mut body = table_of(v, &what)?.clone();
+            let label = match body.remove("label") {
+                Some(toml::Value::String(s)) => Template::parse(&s).map_err(|e| format!("{what}.label: {e}"))?,
+                Some(_) => return Err(format!("{what}.label: expected a string")),
+                None => Template::parse(&name.replace('{', "{{").replace('}', "}}")).map_err(|e| format!("{what}: {e}"))?,
+            };
+            let mut head = toml::Table::new();
+            for k in ["slots", "legacy", "when", "for", "as", "key"] {
+                if let Some(x) = body.remove(k) {
+                    head.insert(k.into(), x);
+                }
+            }
+            let each = tpl(&head, "for", &what)?.map(|list| -> Result<Each, String> {
+                Ok(Each { list, var: head.get("as").and_then(|v| v.as_str()).unwrap_or("item").to_string(), key: tpl(&head, "key", &what)? })
+            });
+            set.modules.push(ModuleDef {
+                name: name.clone(),
+                label,
+                slots: names(&head, "slots", &what)?,
+                legacy: head.get("legacy").and_then(|v| v.as_str()).map(String::from),
+                when: tpl(&head, "when", &what)?,
+                each: each.transpose()?,
+                body: parse_elem(&body, &format!("modules.{name}"))?,
+            });
+        }
+    }
+    let slot_names: Vec<&str> = set.slots.iter().map(|s| s.name.as_str()).collect();
+    let module_names: Vec<&str> = set.modules.iter().map(|m| m.name.as_str()).collect();
+    if set.tiers.is_empty() {
+        return Err("modules: declare at least one [tiers.<name>]".into());
+    }
+    for m in &set.modules {
+        if let Some(bad) = m.slots.iter().find(|s| !slot_names.contains(&s.as_str())) {
+            return Err(format!("modules.{}.slots: unknown slot `{bad}`{}", m.name, suggest(bad, &[&slot_names])));
+        }
+    }
+    for tier in &set.tiers {
+        for (slot, entries) in &tier.layout {
+            if !slot_names.contains(&slot.as_str()) {
+                return Err(format!("tiers.{}.layout: unknown slot `{slot}`{}", tier.name, suggest(slot, &[&slot_names])));
+            }
+            if let Some(bad) = entries.iter().find(|e| !module_names.contains(&e.as_str())) {
+                return Err(format!("tiers.{}.layout.{slot}: unknown module `{bad}`{}", tier.name, suggest(bad, &[&module_names])));
+            }
+        }
+    }
+    Ok(Some(set))
 }
 
 impl WidgetDef {
@@ -256,6 +378,10 @@ impl WidgetDef {
                 Some(Expand { when: tpl("when")?.ok_or("expand: missing `when`")?, width: tpl("width")?, height: tpl("height")? })
             }
         };
+        let modules = parse_modules(&t)?;
+        if let Some(bad) = params.iter().filter_map(|p| p.module.as_deref()).find(|m| !modules.as_ref().is_some_and(|ms| ms.modules.iter().any(|d| d.name == *m))) {
+            return Err(format!("params: `module = \"{bad}\"` names a module this widget does not declare"));
+        }
         let root_t = t.get("root").and_then(|v| v.as_table()).ok_or("missing [root] table")?;
         let min_card_size = pair(t.get("min_size"), (48.0, 48.0), "min_size")?;
         let max_card_size = t.get("max_size").map(|v| pair(Some(v), (0.0, 0.0), "max_size")).transpose()?;
@@ -275,8 +401,20 @@ impl WidgetDef {
                 None => vec![],
                 Some(v) => v.as_array().and_then(|a| a.iter().map(|x| x.as_str().map(String::from)).collect()).ok_or("needs must be a list of data source names")?,
             },
+            tiers: modules.iter().flat_map(|m| &m.tiers).map(|t| TierMeta { name: t.name.clone(), label: t.label.clone(), size: t.size, layout: t.layout.clone() }).collect(),
+            slots: modules.iter().flat_map(|m| &m.slots).map(|s| (s.name.clone(), s.label.clone())).collect(),
+            modules: modules
+                .iter()
+                .flat_map(|m| &m.modules)
+                .map(|d| ModuleMeta {
+                    name: d.name.clone(),
+                    label: if d.each.is_some() || !d.label.is_literal() { d.name.clone() } else { d.label.eval(&Scope::default()).map(|v| v.to_string()).unwrap_or_else(|_| d.name.clone()) },
+                    slots: d.slots.clone(),
+                    legacy: d.legacy.clone(),
+                })
+                .collect(),
         };
-        Ok(WidgetDef { meta, expand, root: parse_elem(root_t, "root")?, base: None })
+        Ok(WidgetDef { meta, expand, root: parse_elem(root_t, "root")?, modules, base: None })
     }
 }
 
@@ -288,6 +426,16 @@ struct TreeBuilder<'a> {
     warns: Vec<String>,
     images: BTreeSet<String>,
     image_size: &'a dyn Fn(&str) -> Option<(f32, f32)>,
+    modules: Option<&'a ModuleSet>,
+    /// Every Module (item of a `for` Module) that exists now.
+    insts: Vec<Inst>,
+    /// slot -> indexes into `insts`, for the current tier.
+    placed: BTreeMap<String, Vec<usize>>,
+    tier: String,
+    /// The slots built so far, in tree order.
+    built: Vec<PlacedSlot>,
+    /// Settings preview: Modules are the only hit targets.
+    preview: bool,
 }
 
 pub fn build(def: &WidgetDef, inp: &Inputs, theme: &Theme, image_size: &dyn Fn(&str) -> Option<(f32, f32)>) -> Result<Built, String> {
@@ -299,7 +447,23 @@ pub fn build(def: &WidgetDef, inp: &Inputs, theme: &Theme, image_size: &dyn Fn(&
     st.extend(inp.state.clone());
     scope.set("state", obj(&st));
     scope.set("self", Value::obj([("w", (card.0 as f64).into()), ("h", (card.1 as f64).into())]));
-    let mut b = TreeBuilder { theme, base: def.base.as_ref(), scope, warns: vec![], images: BTreeSet::new(), image_size };
+    let mut b = TreeBuilder {
+        theme,
+        base: def.base.as_ref(),
+        scope,
+        warns: vec![],
+        images: BTreeSet::new(),
+        image_size,
+        modules: def.modules.as_ref(),
+        insts: vec![],
+        placed: BTreeMap::new(),
+        tier: String::new(),
+        built: vec![],
+        preview: inp.arrange.is_some_and(|a| a.preview),
+    };
+    if let Some(ms) = &def.modules {
+        b.arrange(ms, inp.arrange)?;
+    }
     let mut nodes = b.build_elem(&def.root, inp.key_prefix)?;
     let mut root = nodes.pop().ok_or("root produced no node")?;
     root.style.size = Size { width: length(card.0), height: length(card.1) };
@@ -313,7 +477,8 @@ pub fn build(def: &WidgetDef, inp: &Inputs, theme: &Theme, image_size: &dyn Fn(&
             Some(ExpandInfo { active, width: dim(&e.width, &b)?, height: dim(&e.height, &b)? })
         }
     };
-    Ok(Built { root, deps: b.scope.deps(), image_ids: b.images, warnings: b.warns, expand })
+    let arrangement = b.arrangement();
+    Ok(Built { root, deps: b.scope.deps(), image_ids: b.images, warnings: b.warns, expand, arrangement })
 }
 
 /// Decision 14: a broken widget shows this in place, never a silent skip.
@@ -387,7 +552,130 @@ impl<'a> Attrs<'_, 'a> {
     }
 }
 
-impl TreeBuilder<'_> {
+impl<'a> TreeBuilder<'a> {
+    /// Picks the tier, lists the Modules that exist, and places them per the layout.
+    fn arrange(&mut self, ms: &'a ModuleSet, a: Option<Arrange>) -> Result<(), String> {
+        let forced = a.and_then(|a| a.tier).and_then(|n| ms.tiers.iter().find(|t| t.name == n));
+        let tier = match forced {
+            Some(t) => t,
+            None => {
+                let mut hit = None;
+                for t in &ms.tiers {
+                    if let Some(w) = &t.when {
+                        if w.eval(&self.scope).map_err(|e| format!("tiers.{}.when: {e}", t.name))?.truthy() {
+                            hit = Some(t);
+                            break;
+                        }
+                    }
+                }
+                hit.or_else(|| ms.tiers.iter().find(|t| t.when.is_none())).unwrap_or(&ms.tiers[ms.tiers.len() - 1])
+            }
+        };
+        self.tier = tier.name.clone();
+        self.scope.set("tier", Value::Str(tier.name.clone()));
+        for (mi, m) in ms.modules.iter().enumerate() {
+            let what = format!("modules.{}", m.name);
+            let Some(e) = &m.each else {
+                if let Some(inst) = self.instance(m, mi, None, 0, &what)? {
+                    self.insts.push(inst);
+                }
+                continue;
+            };
+            let list = match e.list.eval(&self.scope).map_err(|x| format!("{what}.for: {x}"))? {
+                Value::List(l) => l,
+                Value::Nil => vec![],
+                other => return Err(format!("{what}.for: expected a list, got `{other}`")),
+            };
+            for (i, item) in list.into_iter().enumerate() {
+                self.scope.set(&e.var, item.clone());
+                self.scope.set("index", Value::Num(i as f64));
+                let inst = self.instance(m, mi, Some(item), i, &what);
+                self.scope.pop();
+                self.scope.pop();
+                if let Some(inst) = inst? {
+                    self.insts.push(inst);
+                }
+            }
+        }
+        let user = a.and_then(|a| a.layout.get(&tier.name));
+        self.placed = place(ms, &self.insts, user.unwrap_or(&tier.layout));
+        Ok(())
+    }
+
+    /// The Module (or one item of it), unless its `when` says it does not exist.
+    fn instance(&self, m: &ModuleDef, module: usize, item: Option<Value>, i: usize, what: &str) -> Result<Option<Inst>, String> {
+        if let Some(w) = &m.when {
+            if !w.eval(&self.scope).map_err(|e| format!("{what}.when: {e}"))?.truthy() {
+                return Ok(None);
+            }
+        }
+        let label = m.label.eval(&self.scope).map_err(|e| format!("{what}.label: {e}"))?.to_string();
+        let id = match m.each.as_ref().map(|e| &e.key) {
+            None => m.name.clone(),
+            Some(None) => format!("{}:{i}", m.name),
+            Some(Some(k)) => format!("{}:{}", m.name, k.eval(&self.scope).map_err(|e| format!("{what}.key: {e}"))?),
+        };
+        Ok(Some(Inst { id, module, label, item }))
+    }
+
+    fn arrangement(&self) -> Option<Arrangement> {
+        let ms = self.modules?;
+        let placed: BTreeSet<&str> = self.built.iter().flat_map(|s| s.modules.iter().map(|m| m.id.as_str())).collect();
+        let hidden = self
+            .insts
+            .iter()
+            .filter(|i| !placed.contains(i.id.as_str()))
+            .filter(|i| self.built.iter().any(|s| ms.modules[i.module].fits(&s.name)))
+            .map(|i| Placed { id: i.id.clone(), module: ms.modules[i.module].name.clone(), label: i.label.clone(), key: String::new() })
+            .collect();
+        Some(Arrangement { tier: self.tier.clone(), slots: self.built.clone(), hidden })
+    }
+
+    fn slot(&mut self, e: &Elem, key: &str) -> Result<Vec<Node>, String> {
+        let path = key.to_string();
+        let ms = self.modules.ok_or_else(|| format!("{path}: `slot` needs the file to declare [tiers], [slots] and [modules]"))?;
+        let name = self.text(e, "slot", &path)?.ok_or_else(|| format!("{path}: a slot element needs `slot = \"name\"`"))?;
+        let Some(def) = ms.slots.iter().find(|s| s.name == name) else {
+            let known: Vec<&str> = ms.slots.iter().map(|s| s.name.as_str()).collect();
+            return Err(format!("{path}: unknown slot `{name}`{}", suggest(&name, &[&known])));
+        };
+        if self.built.iter().any(|s| s.name == name) {
+            return Err(format!("{path}: slot `{name}` is used twice"));
+        }
+        let mut n = Node::new(key);
+        self.layout(e, &mut n, &path)?;
+        self.look(e, &mut n, &path)?;
+        self.interact(e, &mut n, &path)?;
+        let mut modules = Vec::new();
+        for (pos, i) in self.placed.get(&name).cloned().unwrap_or_default().into_iter().enumerate() {
+            let inst = self.insts[i].clone();
+            let m = &ms.modules[inst.module];
+            let mkey = format!("{key}/m:{}", inst.id);
+            let mut pushed = 1;
+            if let Some(each) = &m.each {
+                self.scope.set(&each.var, inst.item.clone().unwrap_or(Value::Nil));
+                pushed += 1;
+            }
+            self.scope.set("index", Value::Num(pos as f64)); // the place in the slot, for `enter` staggers
+            self.scope.set("slot", Value::Str(name.clone()));
+            let built = self.build_elem(&m.body, &mkey);
+            for _ in 0..pushed + 1 {
+                self.scope.pop();
+            }
+            let mut nodes = built?;
+            if self.preview {
+                for nd in &mut nodes {
+                    nd.action = Some(format!("mod:{}", inst.id));
+                    nd.hit_testable = true;
+                }
+            }
+            n.children.extend(nodes);
+            modules.push(Placed { id: inst.id.clone(), module: m.name.clone(), label: inst.label.clone(), key: mkey });
+        }
+        self.built.push(PlacedSlot { name, label: def.label.clone(), key: key.to_string(), modules });
+        Ok(vec![n])
+    }
+
     fn warn(&mut self, m: String) {
         if !self.warns.contains(&m) {
             self.warns.push(m);
@@ -693,6 +981,12 @@ impl TreeBuilder<'_> {
         }
         n.overlay = self.flag(e, "overlay", path)?.unwrap_or(false);
         n.hit_testable = self.flag(e, "hit", path)?.unwrap_or(false);
+        if self.preview {
+            // Settings shows the widget, it must not act on it
+            n.action = None;
+            n.on_drop = None;
+            n.hit_testable = false;
+        }
         Ok(())
     }
 
@@ -709,6 +1003,9 @@ impl TreeBuilder<'_> {
         }
         if e.ty == "repeat" {
             return self.repeat(e, key);
+        }
+        if e.ty == "slot" {
+            return self.slot(e, key);
         }
         let mut n = Node::new(key);
         self.layout(e, &mut n, &path)?;
@@ -778,13 +1075,14 @@ mod tests {
                 "shortcuts" => Some(crate::data::shortcuts_value(&[], "Default")),
                 _ => None,
             },
+            arrange: None,
         };
         build(&def, &inp, &theme(), &|_| None)
     }
 
     fn image_ids(def: &WidgetDef) -> (BTreeSet<String>, Vec<String>) {
         let (p, st) = (BTreeMap::new(), BTreeMap::new());
-        let inp = Inputs { params: &p, state: &st, card_size: (100.0, 60.0), key_prefix: "t", read_source: &|_| None };
+        let inp = Inputs { params: &p, state: &st, card_size: (100.0, 60.0), key_prefix: "t", read_source: &|_| None, arrange: None };
         let b = build(def, &inp, &theme(), &|_| None).unwrap();
         (b.image_ids, b.warnings)
     }
@@ -820,7 +1118,7 @@ mod tests {
         let fit = |f: &str| {
             let def = WidgetDef::parse("t", &format!("[root]\ntype = 'image'\nsrc = 'icon:x'\n{f}")).unwrap();
             let (p, st) = (BTreeMap::new(), BTreeMap::new());
-            let inp = Inputs { params: &p, state: &st, card_size: (100.0, 60.0), key_prefix: "t", read_source: &|_| None };
+            let inp = Inputs { params: &p, state: &st, card_size: (100.0, 60.0), key_prefix: "t", read_source: &|_| None, arrange: None };
             build(&def, &inp, &theme(), &|_| None).map(|b| match b.root.kind {
                 crate::ui::Kind::Image(im) => im.fit,
                 _ => panic!("not an image"),
@@ -896,10 +1194,69 @@ mod tests {
             assert!(k.own_attrs.iter().all(|a| !COMMON_ATTRS.contains(a)), "`{}` redeclares a common attribute", k.name);
         }
         let e = WidgetDef::parse("t", "[root]\ntype='nope'").unwrap_err();
-        assert!(e.contains("box, text, image, hand, ticks, arc, graph, repeat"), "{e}");
+        assert!(e.contains("box, text, image, hand, ticks, arc, graph, repeat, slot"), "{e}");
         assert!(WidgetDef::parse("t", "[root]\ntype='arc'\nsweep=90\nvalue=50").is_ok());
         let e = WidgetDef::parse("t", "[root]\ntype='arc'\nangle=90").unwrap_err();
         assert!(e.contains("unknown attribute `angle` on `arc`"), "an attribute of another kind is rejected: {e}");
+    }
+
+    const MODS: &str = "
+[tiers.small]
+when = '{self.w < 80}'
+[tiers.wide]
+layout = { row = ['a', 'g', 'b'] }
+[slots.row]
+[slots.col]
+[modules.a]
+label = 'A'
+[modules.b]
+slots = ['row']
+[modules.g]
+for = '{clock.list}'
+as = 'x'
+key = '{x.id}'
+label = 'GPU {x.id}'
+[root]
+type = 'box'
+[[root.children]]
+type = 'slot'
+slot = 'row'
+";
+
+    fn mods(size: f32, layout: &crate::workspace::Layout, tier: Option<&str>) -> Built {
+        let def = WidgetDef::parse("t", MODS).unwrap();
+        let (p, st) = (BTreeMap::new(), BTreeMap::new());
+        let read = |n: &str| (n == "clock").then(|| Value::obj([("list", Value::List(vec![Value::obj([("id", "one".into())]), Value::obj([("id", "two".into())])]))]));
+        let inp = Inputs { params: &p, state: &st, card_size: (size, 60.0), key_prefix: "t", read_source: &read, arrange: Some(Arrange { layout, tier, preview: false }) };
+        build(&def, &inp, &theme(), &|_| None).unwrap()
+    }
+
+    #[test]
+    fn modules_fill_a_slot_from_the_default_then_from_the_saved_layout() {
+        let none = crate::workspace::Layout::new();
+        let ids = |b: &Built| b.arrangement.as_ref().unwrap().slots[0].modules.iter().map(|m| m.id.clone()).collect::<Vec<_>>();
+        let b = mods(200.0, &none, None);
+        let a = b.arrangement.as_ref().unwrap();
+        assert_eq!((a.tier.as_str(), ids(&b)), ("wide", vec!["a".into(), "g:one".into(), "g:two".into(), "b".into()]), "a module name places every item of it");
+        assert_eq!(b.root.children[0].children.len(), 4);
+        assert_eq!(a.slots[0].modules[1].label, "GPU one");
+        assert_eq!(mods(50.0, &none, None).arrangement.unwrap().tier, "small", "the first tier whose `when` holds");
+        assert_eq!(mods(200.0, &none, Some("small")).arrangement.unwrap().tier, "small", "a tier can be asked for");
+
+        let saved = crate::workspace::Layout::from([("wide".to_string(), BTreeMap::from([("row".to_string(), vec!["g:two".to_string(), "a".to_string()])]))]);
+        let b = mods(200.0, &saved, None);
+        assert_eq!(ids(&b), ["g:two", "a"]);
+        let hidden: Vec<String> = b.arrangement.unwrap().hidden.into_iter().map(|m| m.id).collect();
+        assert_eq!(hidden, ["b", "g:one"], "what a saved layout leaves out is hidden, in declaration order");
+    }
+
+    #[test]
+    fn a_widget_that_names_no_module_or_slot_it_declares_is_rejected() {
+        let bad = |extra: &str| WidgetDef::parse("t", &format!("[tiers.a]\n{extra}\n[slots.row]\n[modules.a]\n[root]\ntype='box'")).err().unwrap();
+        assert!(bad("layout = { rwo = ['a'] }").contains("did you mean `row`"));
+        assert!(bad("layout = { row = ['b'] }").contains("unknown module `b`"));
+        let e = WidgetDef::parse("t", "[params.x]\ntype='bool'\nmodule='nope'\n[tiers.a]\n[root]\ntype='box'").err().unwrap();
+        assert!(e.contains("does not declare"), "{e}");
     }
 
     #[test]
