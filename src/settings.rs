@@ -1036,9 +1036,9 @@ impl UiState {
 
     fn page_log(&self, k: &Kit, ctx: &Ctx) -> Node {
         let mut body = Node::new("lg").col().gap(3.0).pad_xy(24.0, 4.0);
-        let errors = ctx.reg.errors();
+        let errors: Vec<String> = ctx.reg.errors().into_iter().chain(ctx.lib.errors.iter().cloned()).collect();
         if !errors.is_empty() {
-            body = body.child(k.section("lg/e", "Widget files with errors"));
+            body = body.child(k.section("lg/e", "Files with errors"));
             for (i, e) in errors.iter().enumerate() {
                 body = body.child(k.txt(format!("lg/e/{i}"), e, 12.0, k.c("danger")).wrap_text().with_text(|t| t.family = ctx.theme.str("font-mono")));
             }
