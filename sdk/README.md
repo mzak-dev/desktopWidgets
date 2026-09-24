@@ -1,6 +1,6 @@
 # Writing plugin code for Wayfinder
 
-A Wayfinder plugin can carry one **Code Source**: a Data Source written in Rust, compiled to WebAssembly and run sandboxed inside Wayfinder ([ADR-008](../docs/adr/0008-plugin-code.md)). The plugin's widgets stay TOML and bind to it like to `clock` or `sys`:
+A Wayfinder plugin can carry **Code Sources** (one `[code]`, or several `[[code]]` sharing its saved data): a Data Source written in Rust, compiled to WebAssembly and run sandboxed inside Wayfinder ([ADR-008](../docs/adr/0008-plugin-code.md)). The plugin's widgets stay TOML and bind to it like to `clock` or `sys`:
 
 ```toml
 text = "{weather.temp}°"            # a value your code returned

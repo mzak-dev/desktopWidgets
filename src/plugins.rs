@@ -28,7 +28,22 @@ pub struct Manifest {
     pub homepage: Option<String>,
     /// The oldest Wayfinder that can load it.
     pub wayfinder: Option<String>,
-    pub code: Option<Code>,
+    /// Its Code Sources: one `[code]` table, or several `[[code]]`.
+    pub code: Vec<Code>,
+}
+
+impl Manifest {
+    /// What all its code may read, reach and open, in words, each once.
+    fn reach(&self) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let mut out = (vec![], vec![], vec![]);
+        let add = |v: &mut Vec<String>, s: String| if !v.contains(&s) { v.push(s) };
+        for c in &self.code {
+            c.reads().into_iter().for_each(|r| add(&mut out.0, r));
+            c.net.iter().for_each(|h| add(&mut out.1, h.to_string()));
+            c.launch.iter().for_each(|l| add(&mut out.2, l.to_string()));
+        }
+        out
+    }
 }
 
 /// `[code]`: the module that serves this Plugin's Code Source (ADR-0008).
@@ -134,10 +149,14 @@ impl Manifest {
             }
         }
         let code = match t.get("code") {
-            None => None,
-            Some(toml::Value::Table(c)) => Some(parse_code(c)?),
+            None => vec![],
+            Some(toml::Value::Table(c)) => vec![parse_code(c)?],
+            Some(toml::Value::Array(a)) => a.iter().map(|c| c.as_table().ok_or("each `[[code]]` must be a table".to_string()).and_then(parse_code)).collect::<Result<Vec<_>, _>>()?,
             Some(_) => return Err("`code` must be a table".into()),
         };
+        if let Some(dup) = code.iter().enumerate().find(|(i, c)| code[..*i].iter().any(|d| d.source == c.source)) {
+            return Err(format!("two `[[code]]` tables serve `{}`", dup.1.source));
+        }
         let text = |k: &str| -> Result<Option<String>, String> {
             match t.get(k) {
                 None => Ok(None),
@@ -419,22 +438,20 @@ fn check_in(src: &Path, data: &Path) -> Report {
     let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
     let builtin = crate::data::DataSources::builtin().native_names();
     let needed: BTreeSet<String> = p.contents.widgets.iter().filter_map(|w| cat.registry.get(w)?.as_ref().ok()).flat_map(|d| d.meta().needs.clone()).collect();
-    let own = m.code.as_ref().map(|c| c.source.clone());
-    for n in needed.iter().filter(|n| !builtin.contains(*n) && own.as_ref() != Some(*n)) {
+    let own: Vec<&str> = m.code.iter().map(|c| c.source.as_str()).collect();
+    for n in needed.iter().filter(|n| !builtin.contains(*n) && !own.contains(&n.as_str())) {
         r.warnings.push(format!("its widgets need the `{n}` data source, which another plugin or an app built on Wayfinder must provide"));
     }
     let row = rows(&list, &BTreeSet::new(), &cat, &builtin.union(&needed).cloned().collect()).into_iter().find(|x| x.id == m.id).unwrap_or_default();
     r.problems.extend(row.problems);
     r.notes.extend(row.notes);
-    if !row.code.is_empty() {
-        r.notes.push(row.code);
-    }
-    if let Some(code) = &m.code {
+    r.notes.extend(row.code.lines().map(String::from));
+    for code in &m.code {
         use crate::code::runtime::{Compiled, Env, Limits as CodeLimits, Runtime};
         let limits = CodeLimits::default();
         let loaded = std::fs::read(p.dir.join(&code.module)).map_err(|_| format!("code.module `{}` is missing", code.module)).and_then(|w| Compiled::load(&w)).and_then(|c| Runtime::new(&c, Env::new(None, None, &limits), &limits).map(drop).map_err(|f| f.to_string()));
         if let Err(e) = loaded {
-            r.problems.push(format!("its code cannot run: {e}"));
+            r.problems.push(format!("its code for `{}` cannot run: {e}", code.source));
         }
     }
     r.manifest = Some(m);
@@ -642,10 +659,11 @@ pub struct PluginRow {
     pub problems: Vec<String>,
     /// Widget ids nothing else provides: removing the Plugin removes their Instances.
     pub sole_widgets: Vec<String>,
-    /// "Runs code as `weather` · can reach api.open-meteo.com"; empty without code.
+    /// "Runs code as `weather` · can reach api.open-meteo.com", a line per Code Source;
+    /// empty without code.
     pub code: String,
-    /// Its Code Source's name while it runs, to match the live status to the row.
-    pub code_source: Option<String>,
+    /// Its Code Sources' names while they run, to match the live status to the row.
+    pub code_sources: Vec<String>,
     /// How the code is doing, kept current by the app.
     pub status: String,
 }
@@ -700,8 +718,8 @@ pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog, native:
                     problems.push(format!("Its {what} is hidden: {} has one too, and wins", named(&sh.winner)));
                 }
             }
-            let own_source = p.manifest.as_ref().ok().and_then(|m| m.code.as_ref()).map(|c| c.source.as_str());
-            let has = |n: &str| native.contains(n) || running.contains(n) || own_source == Some(n);
+            let own: Vec<&str> = p.manifest.as_ref().ok().map(|m| m.code.iter().map(|c| c.source.as_str()).collect()).unwrap_or_default();
+            let has = |n: &str| native.contains(n) || running.contains(n) || own.contains(&n);
             for w in p.contents.widgets.iter().filter(|w| cat.origins.get(&(Item::Widget, w.to_string())) == Some(&me)) {
                 if let Some(Ok(def)) = cat.registry.get(w) {
                     let unmet = def.meta().unmet(has);
@@ -716,18 +734,24 @@ pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog, native:
             let providers = |w: &str| -> Vec<&Origin> { cat.origins.get(&(Item::Widget, w.to_string())).into_iter().chain(cat.shadows.iter().filter(|s| s.item == Item::Widget && s.name == w).map(|s| &s.loser)).collect() };
             let sole_widgets = p.contents.widgets.iter().filter(|w| providers(w).iter().all(|o| **o == me)).cloned().collect();
             let m = p.manifest.as_ref().ok();
-            let code = m.and_then(|m| m.code.as_ref());
-            if let (Some(c), Some(winner)) = (code, code_lost.get(&p.id)) {
-                problems.push(format!("Its data source `{}` is hidden: {} has one too, and wins", c.source, named(&Origin::Plugin(winner.clone()))));
+            let code: &[Code] = m.map_or(&[], |m| m.code.as_slice());
+            for c in code {
+                if let Some(winner) = code_lost.get(&(p.id.clone(), c.source.clone())) {
+                    problems.push(format!("Its data source `{}` is hidden: {} has one too, and wins", c.source, named(&Origin::Plugin(winner.clone()))));
+                }
             }
-            let code_line = code.map_or(String::new(), |c| {
-                let reach = if c.net.is_empty() { "no network".to_string() } else { format!("can reach {}", c.net.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(", ")) };
-                let reads = c.reads();
-                let reads = if reads.is_empty() { String::new() } else { format!(" · reads {}", reads.join(", ")) };
-                let opens = if c.launch.is_empty() { String::new() } else { format!(" · opens {}", c.launch.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ")) };
-                format!("Runs code as `{}` · {reach}{reads}{opens}", c.source)
-            });
-            let runs = code.is_some() && !disabled.contains(&p.id) && !code_lost.contains_key(&p.id);
+            let code_line = code
+                .iter()
+                .map(|c| {
+                    let reach = if c.net.is_empty() { "no network".to_string() } else { format!("can reach {}", c.net.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(", ")) };
+                    let reads = c.reads();
+                    let reads = if reads.is_empty() { String::new() } else { format!(" · reads {}", reads.join(", ")) };
+                    let opens = if c.launch.is_empty() { String::new() } else { format!(" · opens {}", c.launch.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ")) };
+                    format!("Runs code as `{}` · {reach}{reads}{opens}", c.source)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let runs = |c: &&Code| !disabled.contains(&p.id) && !code_lost.contains_key(&(p.id.clone(), c.source.clone()));
             PluginRow {
                 id: p.id.clone(),
                 name: p.name().to_string(),
@@ -740,7 +764,7 @@ pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog, native:
                 problems,
                 sole_widgets,
                 code: code_line,
-                code_source: code.filter(|_| runs).map(|c| c.source.clone()),
+                code_sources: code.iter().filter(runs).map(|c| c.source.clone()).collect(),
                 status: String::new(),
             }
         })
@@ -792,20 +816,25 @@ pub fn data_file(data: &Path, id: &str) -> PathBuf {
     data.join(DATA_DIR).join(format!("{id}.json"))
 }
 
-/// The Code Sources to run: enabled Plugins with a valid `[code]`, keyed so that an unchanged
-/// one keeps running. Two with one source name follow ADR-0007: the later id wins. Returns
-/// (key, spec) pairs and, per losing Plugin id, the winner's id.
-pub fn code_specs(list: &[Plugin], disabled: &BTreeSet<String>) -> (Vec<(String, CodeSpec)>, BTreeMap<String, String>) {
+/// Who lost a source name: (Plugin id, source) to the winning Plugin's id.
+pub type Lost = BTreeMap<(String, String), String>;
+
+/// The Code Sources to run: every `[code]` of enabled Plugins, keyed so that an unchanged one
+/// keeps running. Two Plugins with one source name follow ADR-0007: the later id wins.
+/// Returns (key, spec) pairs and the losers.
+pub fn code_specs(list: &[Plugin], disabled: &BTreeSet<String>) -> (Vec<(String, CodeSpec)>, Lost) {
     let mut by_source: BTreeMap<String, (String, CodeSpec)> = BTreeMap::new();
-    let mut lost = BTreeMap::new();
+    let mut lost = Lost::new();
     for p in list.iter().filter(|p| !disabled.contains(&p.id)) {
-        let Some(code) = p.manifest.as_ref().ok().and_then(|m| m.code.as_ref()) else { continue };
-        let module = p.dir.join(&code.module);
-        let stamp = std::fs::metadata(&module).map(|m| (m.len(), m.modified().ok())).ok();
-        let key = format!("{}|{:?}|{:?}", p.id, code, stamp);
-        let spec = CodeSpec { plugin: p.id.clone(), source: code.source.clone(), module, hosts: code.net.clone(), fs_read: code.fs_read.clone(), fs_read_params: code.fs_read_params.clone(), launch: code.launch.clone(), initial: code.initial.clone() };
-        if let Some((_, old)) = by_source.insert(code.source.clone(), (key, spec)) {
-            lost.insert(old.plugin, p.id.clone());
+        let Some(m) = p.manifest.as_ref().ok() else { continue };
+        for code in &m.code {
+            let module = p.dir.join(&code.module);
+            let stamp = std::fs::metadata(&module).map(|m| (m.len(), m.modified().ok())).ok();
+            let key = format!("{}|{:?}|{:?}", p.id, code, stamp);
+            let spec = CodeSpec { plugin: p.id.clone(), source: code.source.clone(), module, hosts: code.net.clone(), fs_read: code.fs_read.clone(), fs_read_params: code.fs_read_params.clone(), launch: code.launch.clone(), initial: code.initial.clone() };
+            if let Some((_, old)) = by_source.insert(code.source.clone(), (key, spec)) {
+                lost.insert((old.plugin, old.source), p.id.clone());
+            }
         }
     }
     (by_source.into_values().collect(), lost)
@@ -820,27 +849,28 @@ pub fn install_question(m: &Manifest, contents: &Contents, installed: Option<&Ma
     };
     let about = if m.description.is_empty() { String::new() } else { format!("\n{}", m.description) };
     let mut q = format!("{verb}?\n\n{}{about}\n\n", contents.summary());
-    match &m.code {
-        None => q += "Plugins add widgets, themes, fonts and icons, and never run programs.",
-        Some(code) => {
-            let reads = code.reads();
-            q += if reads.is_empty() { "This plugin runs sandboxed code. It cannot read your files or start programs." } else { "This plugin runs sandboxed code. It cannot change your files or start programs." };
-            if !reads.is_empty() {
-                q += &format!(" It can read files in: {}.", reads.join(", "));
-            }
-            let hosts: Vec<String> = code.net.iter().map(|h| h.to_string()).collect();
-            if !hosts.is_empty() {
-                q += &format!(" It can connect to: {}.", hosts.join(", "));
-            }
-            if !code.launch.is_empty() {
-                q += &format!(" Its widgets can open {}.", code.launch.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", "));
-            }
-            let reach = |c: &Code| c.net.iter().map(|h| h.to_string()).chain(c.reads()).chain(c.launch.iter().map(|l| l.to_string())).collect::<Vec<_>>();
-            let before = installed.and_then(|o| o.code.as_ref()).map(reach).unwrap_or_default();
-            let new: Vec<String> = reach(code).into_iter().filter(|h| !before.contains(h)).collect();
-            if installed.is_some() && !new.is_empty() {
-                q += &format!(" New in this version: {}.", new.join(", "));
-            }
+    if m.code.is_empty() {
+        q += "Plugins add widgets, themes, fonts and icons, and never run programs.";
+    } else {
+        let (reads, hosts, opens) = m.reach();
+        q += if reads.is_empty() { "This plugin runs sandboxed code. It cannot read your files or start programs." } else { "This plugin runs sandboxed code. It cannot change your files or start programs." };
+        if !reads.is_empty() {
+            q += &format!(" It can read files in: {}.", reads.join(", "));
+        }
+        if !hosts.is_empty() {
+            q += &format!(" It can connect to: {}.", hosts.join(", "));
+        }
+        if !opens.is_empty() {
+            q += &format!(" Its widgets can open {}.", opens.join(", "));
+        }
+        let all = |m: &Manifest| {
+            let (r, h, o) = m.reach();
+            h.into_iter().chain(r).chain(o).collect::<Vec<_>>()
+        };
+        let before = installed.map(all).unwrap_or_default();
+        let new: Vec<String> = all(m).into_iter().filter(|h| !before.contains(h)).collect();
+        if installed.is_some() && !new.is_empty() {
+            q += &format!(" New in this version: {}.", new.join(", "));
         }
     }
     q + " Only install plugins you trust."
@@ -885,17 +915,17 @@ mod tests {
     #[test]
     fn manifest_reads_a_code_table() {
         let src = format!("{OK}\n[code]\nmodule = 'code\\weather.wasm'\nsource = 'weather'\nnet = ['api.open-meteo.com', '*.example.org']\n[code.initial]\ntemp = 0\nsky = '...'");
-        let c = Manifest::parse(&src).unwrap().code.expect("a code table");
+        let c = Manifest::parse(&src).unwrap().code.remove(0);
         assert_eq!((c.module.as_str(), c.source.as_str()), ("code/weather.wasm", "weather"));
         assert_eq!(c.net.iter().map(|h| h.to_string()).collect::<Vec<_>>(), ["api.open-meteo.com", "*.example.org"]);
         assert_eq!(c.initial.get("sky").map(|v| v.to_string()), Some("...".into()));
-        assert_eq!(Manifest::parse(OK).unwrap().code, None);
+        assert!(Manifest::parse(OK).unwrap().code.is_empty());
     }
 
     #[test]
     fn code_may_read_declared_folders_and_picked_ones() {
         let src = format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'agents'\nfs_read = ['~/.claude', '~\\.copilot']\nfs_read_params = ['folder']");
-        let c = Manifest::parse(&src).unwrap().code.unwrap();
+        let c = Manifest::parse(&src).unwrap().code.remove(0);
         assert_eq!(c.reads(), ["~/.claude", "~/.copilot", "folders you pick for its widgets"]);
         let with = |code: &str| Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'a'\n{code}")).unwrap_err();
         assert!(with("fs_read = ['~']").contains("~/"));
@@ -943,13 +973,34 @@ mod tests {
     #[test]
     fn code_may_let_its_widgets_open_more_than_web_links() {
         let v1 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'agents'\nlaunch = ['vscode', '~/.claude']")).unwrap();
-        assert_eq!(v1.code.as_ref().unwrap().launch.iter().map(|l| l.to_string()).collect::<Vec<_>>(), ["vscode: links", "folders and documents in ~/.claude"]);
+        assert_eq!(v1.code[0].launch.iter().map(|l| l.to_string()).collect::<Vec<_>>(), ["vscode: links", "folders and documents in ~/.claude"]);
         let q = install_question(&v1, &Contents::default(), None);
         assert!(q.contains("Its widgets can open vscode: links, folders and documents in ~/.claude."), "{q}");
         let v2 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'agents'\nlaunch = ['vscode', '~/.claude', 'slack']")).unwrap();
         assert!(install_question(&v2, &Contents::default(), Some(&v1)).contains("New in this version: slack: links."));
         let bad = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'a'\nlaunch = ['ms-msdt']")).unwrap_err();
         assert!(bad.contains("never"), "{bad}");
+    }
+
+    #[test]
+    fn a_plugin_may_carry_several_code_sources() {
+        let two = format!("{OK}\n[[code]]\nmodule = 'a.wasm'\nsource = 'agents'\nfs_read = ['~/.claude']\n[[code]]\nmodule = 'g.wasm'\nsource = 'gallery'\nfs_read_params = ['folder']\nnet = ['api.example.com']");
+        let m = Manifest::parse(&two).unwrap();
+        assert_eq!(m.code.iter().map(|c| c.source.as_str()).collect::<Vec<_>>(), ["agents", "gallery"]);
+        let q = install_question(&m, &Contents::default(), None);
+        assert!(q.contains("read files in: ~/.claude, folders you pick for its widgets.") && q.contains("connect to: api.example.com."), "{q}");
+        let dup = format!("{OK}\n[[code]]\nmodule = 'a.wasm'\nsource = 'x'\n[[code]]\nmodule = 'b.wasm'\nsource = 'x'");
+        assert!(Manifest::parse(&dup).unwrap_err().contains("two `[[code]]` tables serve `x`"));
+        let data = tmp("twocode");
+        put(&data, "plugins/sunset/plugin.toml", &two);
+        let list = PluginStore::new(&data).list();
+        let (specs, lost) = code_specs(&list, &BTreeSet::new());
+        assert_eq!((specs.len(), lost.len()), (2, 0));
+        assert!(specs.iter().all(|(_, s)| s.plugin == "sunset"), "one plugin, one saved store");
+        let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
+        let row = &rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new())[0];
+        assert_eq!((row.code.lines().count(), row.code_sources.clone()), (2, vec!["agents".to_string(), "gallery".to_string()]));
+        std::fs::remove_dir_all(&data).ok();
     }
 
     #[test]
@@ -991,7 +1042,7 @@ mod tests {
         let (specs, lost) = code_specs(&list, &BTreeSet::from(["gamma".to_string()]));
         let who: Vec<(&str, &str)> = specs.iter().map(|(_, s)| (s.source.as_str(), s.plugin.as_str())).collect();
         assert_eq!(who, [("weather", "beta")], "gamma is off; beta, the later id, wins weather");
-        assert_eq!(lost, BTreeMap::from([("alpha".to_string(), "beta".to_string())]));
+        assert_eq!(lost, BTreeMap::from([(("alpha".to_string(), "weather".to_string()), "beta".to_string())]));
         assert_eq!(specs[0].1.module, data.join("plugins/beta/code/m.wasm"));
         let key = specs[0].0.clone();
         assert_eq!(code_specs(&list, &BTreeSet::from(["gamma".to_string()])).0[0].0, key, "same files, same key");
@@ -1010,7 +1061,7 @@ mod tests {
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
         let r = rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new());
         assert_eq!(r[1].code, "Runs code as `weather` · can reach api.open-meteo.com");
-        assert_eq!((r[0].code_source.as_deref(), r[1].code_source.as_deref()), (None, Some("weather")));
+        assert_eq!((r[0].code_sources.as_slice(), r[1].code_sources.as_slice()), (&[][..], &["weather".to_string()][..]));
         assert!(r[0].problems.iter().any(|p| p.contains("data source `weather` is hidden") && p.contains("wins")), "{:?}", r[0].problems);
         std::fs::remove_dir_all(&data).ok();
     }
@@ -1311,7 +1362,7 @@ mod tests {
         assert!(r.problems.iter().any(|p| p.contains("colour")), "{:?}", r.problems);
         assert!(r.problems.iter().any(|p| p.contains("code.module `code/m.wasm` is missing")), "{:?}", r.problems);
         put(&bad, "code/m.wasm", "not wasm");
-        assert!(check(&bad).problems.iter().any(|p| p.contains("its code cannot run")));
+        assert!(check(&bad).problems.iter().any(|p| p.contains("its code for `m` cannot run")));
         assert!(!check(&root.join("nothing")).problems.is_empty());
         std::fs::remove_dir_all(&root).ok();
     }

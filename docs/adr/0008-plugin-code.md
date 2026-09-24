@@ -1,6 +1,6 @@
 # Plugin code: WebAssembly Code Sources in wasmi
 
-A Plugin may carry one WebAssembly module that serves a Data Source, a **Code Source**. Its Widgets stay TOML and bind to it like any other source (`{weather.temp}`), and `on_click = "weather.refresh"` sends it an action. Code never builds element trees: the engine keeps owning layout, animation and the redraw scheduler (ADR-0004), and restyling stays a file edit.
+A Plugin may carry WebAssembly modules that each serve a Data Source, a **Code Source**: one `[code]` table, or several `[[code]]` tables, which share the Plugin's saved data. Its Widgets stay TOML and bind to it like any other source (`{weather.temp}`), and `on_click = "weather.refresh"` sends it an action. Code never builds element trees: the engine keeps owning layout, animation and the redraw scheduler (ADR-0004), and restyling stays a file edit.
 
 **Runtime: wasmi**, a pure-Rust interpreter. Plugin code computes a few values every few seconds or minutes, so an interpreter is fast enough, and it keeps the exe small and the build simple. wasmtime would add a JIT the widgets do not need. wasmi has fuel metering but no epoch interruption, so each call gets a fuel budget and running out traps it. There is no WASI and no component model: a module imports only our `wf` functions.
 

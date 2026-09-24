@@ -603,12 +603,13 @@ impl App {
         }
     }
 
-    /// Copies each Code Source's status onto its Plugins page row.
+    /// Copies each Code Source's status onto its Plugins page row; a Plugin with several
+    /// names each one.
     fn refresh_code_status(&mut self) {
-        for (name, status) in self.sources.code_status() {
-            for row in self.plugin_rows.iter_mut().filter(|r| r.code_source.as_deref() == Some(name.as_str())) {
-                row.status = status.line();
-            }
+        let status: BTreeMap<String, String> = self.sources.code_status().into_iter().map(|(n, s)| (n, s.line())).collect();
+        for row in &mut self.plugin_rows {
+            let lines: Vec<String> = row.code_sources.iter().filter_map(|n| Some((n, status.get(n)?))).map(|(n, s)| if row.code_sources.len() > 1 { format!("`{n}`: {s}") } else { s.clone() }).collect();
+            row.status = lines.join(" · ");
         }
     }
 
@@ -638,7 +639,7 @@ impl App {
         }
         if status {
             self.refresh_code_status();
-            let failing: Vec<String> = self.plugin_rows.iter().filter(|r| r.status.starts_with("Error") || r.status.starts_with("Cannot")).map(|r| format!("plugin {}: {}", r.id, r.status)).collect();
+            let failing: Vec<String> = self.plugin_rows.iter().filter(|r| r.status.contains("Error") || r.status.contains("Cannot")).map(|r| format!("plugin {}: {}", r.id, r.status)).collect();
             for l in failing {
                 self.log(l);
             }

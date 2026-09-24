@@ -72,7 +72,7 @@ Where an Instance sits relative to other windows: Desktop, Bottom, Normal or Top
 To hide an Instance whose monitor is absent while remembering it, instead of relocating or deleting it.
 
 **Plugin**:
-A package of content (Widgets, palettes, font sets, glyph sets, Icon Packs), and optionally one Code Source, that is installed, switched off and on, and removed as one unit. Its folder under `plugins/` has the data folder's layout plus a `plugin.toml` manifest; it is shared as a `.wfplugin` file, a zip of that folder.
+A package of content (Widgets, palettes, font sets, glyph sets, Icon Packs), and optionally Code Sources, that is installed, switched off and on, and removed as one unit. Its folder under `plugins/` has the data folder's layout plus a `plugin.toml` manifest; it is shared as a `.wfplugin` file, a zip of that folder.
 _Avoid_: add-on, extension, skin, package (for the installed folder)
 
 **Code Source**:

@@ -47,7 +47,7 @@ Unknown keys are refused, so a typo shows up at once.
 
 ## Code
 
-For live data (weather, feeds, prices, a to-do list), a plugin can carry one WebAssembly module written in Rust with the `wayfinder-plugin` crate. It serves a data source that the plugin's widgets bind to like any other:
+For live data (weather, feeds, prices, a to-do list), a plugin can carry a WebAssembly module written in Rust with the `wayfinder-plugin` crate. It serves a data source that the plugin's widgets bind to like any other. For several sources, write `[[code]]` once per module instead of `[code]`; they share the plugin's saved data.
 
 ```toml
 [code]

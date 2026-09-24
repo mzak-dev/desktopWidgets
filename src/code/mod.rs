@@ -624,7 +624,7 @@ pub(crate) mod tests {
         let deps = Deps { fetch: Some(Arc::new(fake)), store: None, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits: Limits::default(), places: Default::default() };
         let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/examples/weather/plugin");
         let manifest = crate::plugins::Manifest::parse(&std::fs::read_to_string(plugin.join("plugin.toml")).unwrap()).unwrap();
-        let code = manifest.code.expect("the example has code");
+        let code = manifest.code.into_iter().next().expect("the example has code");
         let src = WasmSource::start(CodeSpec { plugin: "weather".into(), source: code.source, module: wasm, hosts: code.net, fs_read: code.fs_read, fs_read_params: code.fs_read_params, launch: code.launch, initial: code.initial }, deps);
         let c = cfg("weather-1");
         let params = BTreeMap::from([("latitude".to_string(), Value::Num(59.91)), ("longitude".to_string(), Value::Num(10.75))]);

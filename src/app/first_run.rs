@@ -76,7 +76,7 @@ mod tests {
         assert_eq!(m.id, "sunset");
         let code = guide.split("```toml\n").nth(2).and_then(|b| b.split("```").next()).expect("a [code] example");
         let with_code = crate::plugins::Manifest::parse(&format!("{example}\n{code}")).expect("the [code] example parses");
-        assert_eq!(with_code.code.map(|c| c.source), Some("weather".into()));
+        assert_eq!(with_code.code.iter().map(|c| c.source.as_str()).collect::<Vec<_>>(), ["weather"]);
     }
 
     #[test]

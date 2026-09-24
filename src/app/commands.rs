@@ -199,7 +199,7 @@ impl App {
                 let file = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
                 // code gets the same question Explorer asks, naming the hosts it may reach
                 if let Ok((m, contents)) = plugins::describe(&path) {
-                    if m.code.is_some() {
+                    if !m.code.is_empty() {
                         let installed = self.plugins.iter().find(|p| p.id == m.id).and_then(|p| p.manifest.as_ref().ok());
                         if !crate::dialog::confirm("Install a Wayfinder plugin", &plugins::install_question(&m, &contents, installed)) {
                             return;
