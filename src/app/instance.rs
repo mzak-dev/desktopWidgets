@@ -183,6 +183,17 @@ pub(super) fn on_drop(action: Option<&str>, path: &str) -> OnDrop {
     }
 }
 
+/// `param <name> <value>` from a click: the Instance setting to save. A param that holds a
+/// folder plugin code may read (`fs_read_params`) is refused: a click names a value the
+/// widget chose, and only Settings or a drop may grant a folder.
+pub(super) fn click_param(rest: &str, file_params: &BTreeSet<String>) -> Result<(String, Value), String> {
+    let (name, value) = rest.trim().split_once(' ').ok_or("`param` needs a name and a value: `param city Oslo`")?;
+    if file_params.contains(name) {
+        return Err(format!("`param {name}` from a click is refused: plugin code may read the folder in `{name}`, so only Settings or a dropped folder may set it"));
+    }
+    Ok((name.to_string(), typed(value)))
+}
+
 /// A `set` value: numbers and `true`/`false` keep their type, so `set index 2` compares
 /// equal to `2`; quotes keep text as written (`set code '007'`).
 pub(super) fn typed(v: &str) -> Value {
@@ -326,6 +337,16 @@ mod tests {
         assert_eq!(hit((10.0, 110.0), -30.0, 0.0), Some(("strip".into(), -30.0)));
         assert_eq!(hit((10.0, 10.0), -30.0, 0.0), None, "a sideways wheel over a list that only scrolls down");
         assert_eq!(hit((10.0, 200.0), 0.0, -48.0), None);
+    }
+
+    #[test]
+    fn a_click_saves_a_param_but_never_grants_a_folder() {
+        let files = BTreeSet::from(["folder".to_string()]);
+        assert_eq!(click_param("city Oslo", &files), Ok(("city".into(), Value::Str("Oslo".into()))));
+        assert_eq!(click_param("columns 4", &files), Ok(("columns".into(), Value::Num(4.0))));
+        assert_eq!(click_param("title  Two words", &files), Ok(("title".into(), Value::Str(" Two words".into()))));
+        assert!(click_param("folder C:\\Users\\me\\Documents", &files).unwrap_err().contains("refused"));
+        assert!(click_param("city", &files).is_err());
     }
 
     #[test]

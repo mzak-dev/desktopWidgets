@@ -130,6 +130,11 @@ impl WasmSource {
         &self.launch
     }
 
+    /// Params whose folder this code may read (`fs_read_params`).
+    pub fn file_params(&self) -> &[String] {
+        &self.fs_read_params
+    }
+
     /// The folders the user picked for this Instance in the params the plugin may read.
     /// Only the Instance's own settings count, never a widget's defaults.
     fn picked(&self, cx: &SourceCx) -> Vec<PathBuf> {

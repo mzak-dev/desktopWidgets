@@ -164,8 +164,11 @@ impl App {
             }
         }
         if verb == "param" {
-            // only a drop carries a value the user chose; a click would let a widget pick its own
-            return self.log(format!("`{action}`: `param` works only in on_drop, with the dropped file as its value"));
+            match click_param(rest, &self.sources.file_params()) {
+                Ok((name, v)) => self.set_param(i, &name, &v),
+                Err(e) => self.log(format!("{}: {e}", self.ws.instances[i].id)),
+            }
+            return;
         }
         match engine_action(&mut self.wins[i].state, verb, rest) {
             VerbOutcome::Launch(target) if !crate::code::launch::allowed(&target, &self.sources.launch_rules(&self.wins[i].deps), std::env::var_os("USERPROFILE").map(PathBuf::from).as_deref()) => {

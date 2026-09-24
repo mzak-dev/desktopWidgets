@@ -58,7 +58,7 @@ pub use self::explorer::install_from_explorer;
 use self::edit_mode::UndoEntry;
 use self::first_run::{default_instances, write_missing_guides};
 use self::host::AppHost;
-use self::instance::{Drag, EXPAND_SECS, GLIDE_SECS, Instance, VerbOutcome, SizeTween, base_size_after_edit, engine_action, expand_target, on_drop, scrolled_offset, snap_offset, wheel_target, OnDrop};
+use self::instance::{Drag, EXPAND_SECS, GLIDE_SECS, Instance, VerbOutcome, SizeTween, base_size_after_edit, engine_action, expand_target, click_param, on_drop, scrolled_offset, snap_offset, wheel_target, OnDrop};
 use self::selftest::SelfTest;
 
 #[derive(Debug)]

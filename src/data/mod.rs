@@ -256,6 +256,11 @@ impl DataSources {
     }
 
     /// Whether any of `deps` reads a Code Source.
+    /// Every param that grants some plugin's code a folder (`fs_read_params`).
+    pub fn file_params(&self) -> BTreeSet<String> {
+        self.code.iter().flat_map(|(_, c)| c.file_params().iter().cloned()).collect()
+    }
+
     /// The launch rules of each Code Source `deps` reads (see `code::launch::allowed`).
     pub fn launch_rules(&self, deps: &BTreeSet<String>) -> Vec<&[crate::code::launch::LaunchRule]> {
         let names: BTreeSet<&str> = deps.iter().map(|d| d.split('.').next().unwrap_or(d)).collect();
