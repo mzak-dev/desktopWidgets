@@ -42,12 +42,32 @@ impl App {
         self.ws.instances.remove(i);
         self.wins.remove(i);
         self.remove_armed = None;
+        self.retain_code();
         self.sync_watchers();
         self.mark_save();
         if let Some(s) = &mut self.settings {
             s.invalidate();
         }
         self.log(format!("removed {id}"));
+    }
+
+    /// Saves a param of Instance `i`, from Settings, a source or a drop.
+    pub(super) fn set_param(&mut self, i: usize, name: &str, v: &Value) {
+        if self.ws.instances[i].params.get(name).map(Value::from).as_ref() == Some(v) {
+            return;
+        }
+        let was = self.card(i);
+        self.ws.instances[i].set_param(name, v);
+        if self.card(i).blur != was.blur {
+            self.refit_window_around_card(i, was);
+        }
+        self.sync_watchers(); // a param may name a path a source watches
+        self.sources.invalidate();
+        self.wins[i].redraw = true;
+        self.mark_save();
+        if let Some(s) = &mut self.settings {
+            s.invalidate();
+        }
     }
 
     pub(super) fn apply(&mut self, el: &ActiveEventLoop, cmd: Cmd) {
@@ -57,15 +77,7 @@ impl App {
             Cmd::Remove(id) => self.remove_instance(&id),
             Cmd::Param(id, name, v) => {
                 if let Some(i) = find(self, &id) {
-                    let was = self.card(i);
-                    self.ws.instances[i].set_param(&name, &v);
-                    if self.card(i).blur != was.blur {
-                        self.refit_window_around_card(i, was);
-                    }
-                    self.sync_watchers(); // a param may name a path a source watches
-                    self.sources.invalidate();
-                    self.wins[i].redraw = true;
-                    self.mark_save();
+                    self.set_param(i, &name, &v);
                 }
             }
             Cmd::Items(id, items) => {
@@ -177,11 +189,75 @@ impl App {
                 self.mark_save();
             }
             Cmd::Edit(on) => self.set_edit(on),
-            Cmd::Reload => self.reload(),
+            Cmd::Reload => self.reload(el),
             Cmd::OpenFolder => {
                 let d = self.opts.dir.join("widgets");
                 let _ = std::fs::create_dir_all(&d);
                 win32::open(&d.to_string_lossy());
+            }
+            Cmd::InstallPlugin(path) => {
+                let file = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                // code gets the same question Explorer asks, naming the hosts it may reach
+                if let Ok((m, contents)) = plugins::describe(&path) {
+                    if !m.code.is_empty() {
+                        let installed = self.plugins.iter().find(|p| p.id == m.id).and_then(|p| p.manifest.as_ref().ok());
+                        if !crate::dialog::confirm("Install a Wayfinder plugin", &plugins::install_question(&m, &contents, installed)) {
+                            return;
+                        }
+                    }
+                }
+                match PluginStore::new(&self.opts.dir).install(&path) {
+                    Ok(m) => {
+                        self.plugin_note = format!("Installed {} {}", m.name, m.version);
+                        self.log(format!("installed plugin {} {} from {}", m.id, m.version, path.display()));
+                        self.reload(el);
+                    }
+                    Err(e) => {
+                        self.plugin_note = format!("Could not install {file}: {e}");
+                        self.log(format!("could not install {}: {e}", path.display()));
+                    }
+                }
+                if let Some(s) = &mut self.settings {
+                    s.invalidate();
+                }
+            }
+            Cmd::PluginEnabled(id, on) => {
+                if on {
+                    self.ws.disabled_plugins.remove(&id);
+                } else {
+                    self.ws.disabled_plugins.insert(id.clone());
+                }
+                self.log(format!("plugin {id} switched {}", if on { "on" } else { "off" }));
+                self.mark_save();
+                self.reload(el);
+            }
+            Cmd::RemovePlugin(id) => {
+                let orphans = self.plugin_rows.iter().find(|r| r.id == id).map(|r| r.orphans(&self.ws)).unwrap_or_default();
+                match PluginStore::new(&self.opts.dir).remove(&id) {
+                    Err(e) => self.log(e),
+                    Ok(()) => {
+                        for inst in orphans {
+                            self.remove_instance(&inst);
+                        }
+                        // its saved data goes too, and a dying worker can no longer write it
+                        match self.stores.remove(&id) {
+                            Some(store) => store.purge(),
+                            None => {
+                                let _ = std::fs::remove_file(plugins::data_file(&self.opts.dir, &id));
+                            }
+                        }
+                        self.ws.disabled_plugins.remove(&id);
+                        self.log(format!("removed plugin {id}"));
+                        self.mark_save();
+                        self.reload(el);
+                    }
+                }
+            }
+            Cmd::ClaimPluginFiles => self.claim_plugin_files(true),
+            Cmd::OpenPluginsFolder => {
+                let store = PluginStore::new(&self.opts.dir);
+                let _ = std::fs::create_dir_all(store.dir());
+                win32::open(&store.dir().to_string_lossy());
             }
             Cmd::Quit => el.exit(),
             Cmd::Close => self.settings = None,

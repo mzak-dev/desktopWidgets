@@ -1,9 +1,13 @@
 //! Text over glyphon (decision 25): one buffer per node key, re-shaped only when
 //! its text, style or width changes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::SystemTime;
 
+use glyphon::cosmic_text::fontdb::{ID, Source};
 use glyphon::cosmic_text::{Align, Wrap};
 use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
 
@@ -69,6 +73,15 @@ pub struct TextEngine {
     pub swash: SwashCache,
     pub(crate) slots: HashMap<String, Slot>,
     frame: u64,
+    /// Font files registered by `sync_fonts`, with the size and time they were read at.
+    files: HashMap<PathBuf, (FileStamp, Vec<ID>)>,
+}
+
+type FileStamp = (u64, Option<SystemTime>);
+
+fn stamp(p: &Path) -> std::io::Result<FileStamp> {
+    let m = std::fs::metadata(p)?;
+    Ok((m.len(), m.modified().ok()))
 }
 
 fn sig(s: &TextSpec) -> u64 {
@@ -123,18 +136,59 @@ fn slot<'a>(
 
 impl TextEngine {
     pub fn new() -> Self {
-        Self { fs: FontSystem::new(), swash: SwashCache::new(), slots: HashMap::new(), frame: 0 }
+        Self { fs: FontSystem::new(), swash: SwashCache::new(), slots: HashMap::new(), frame: 0, files: HashMap::new() }
     }
 
-    pub fn load_font_file(&mut self, path: &std::path::Path) -> bool {
-        let before = self.fs.db().len();
-        self.fs.db_mut().load_font_file(path).is_ok() && self.fs.db().len() > before
+    /// Makes the registered font files exactly `files`: new and changed ones are read in,
+    /// gone ones removed. Files are read into memory, never mapped, so Windows can still
+    /// delete them (a removed Plugin). Returns the files that could not be used.
+    ///
+    /// ponytail: cosmic-text keeps a removed face's data in its own font cache until restart.
+    pub fn sync_fonts(&mut self, files: &[PathBuf]) -> Vec<String> {
+        let wanted: HashSet<&PathBuf> = files.iter().collect();
+        let gone: Vec<PathBuf> = self.files.keys().filter(|p| !wanted.contains(p)).cloned().collect();
+        let mut changed = !gone.is_empty();
+        for p in gone {
+            self.unload(&p);
+        }
+        let mut problems = Vec::new();
+        for p in files {
+            let st = match stamp(p) {
+                Ok(st) => st,
+                Err(e) => {
+                    changed |= self.unload(p);
+                    problems.push(format!("{}: {e}", p.display()));
+                    continue;
+                }
+            };
+            if self.files.get(p).is_some_and(|(old, _)| *old == st) {
+                continue;
+            }
+            changed |= self.unload(p);
+            match std::fs::read(p) {
+                Ok(bytes) => {
+                    let faces = self.fs.db_mut().load_font_source(Source::Binary(Arc::new(bytes)));
+                    if faces.is_empty() {
+                        problems.push(format!("{}: not a font file", p.display()));
+                    }
+                    self.files.insert(p.clone(), (st, faces.to_vec()));
+                    changed = true;
+                }
+                Err(e) => problems.push(format!("{}: {e}", p.display())),
+            }
+        }
+        if changed {
+            self.slots.clear(); // a family may now resolve to a different face
+        }
+        problems
     }
 
-    pub fn load_font_dir(&mut self, dir: &std::path::Path) -> usize {
-        let before = self.fs.db().len();
-        self.fs.db_mut().load_fonts_dir(dir);
-        self.fs.db().len() - before
+    fn unload(&mut self, p: &Path) -> bool {
+        let Some((_, faces)) = self.files.remove(p) else { return false };
+        for id in faces {
+            self.fs.db_mut().remove_face(id);
+        }
+        true
     }
 
     pub fn family_names(&self) -> Vec<String> {
@@ -222,5 +276,66 @@ impl TextEngine {
 impl Default for TextEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A copy of some installed .ttf, so the test owns (and may delete) the file.
+    fn font_copy(t: &TextEngine, name: &str) -> PathBuf {
+        let src = t
+            .fs
+            .db()
+            .faces()
+            .find_map(|f| match &f.source {
+                Source::File(p) | Source::SharedFile(p, _) if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("ttf")) => Some(p.clone()),
+                _ => None,
+            })
+            .expect("some installed .ttf font");
+        let dir = std::env::temp_dir().join(format!("wf-fonts-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("Mine.ttf");
+        std::fs::copy(src, &p).unwrap();
+        p
+    }
+
+    #[test]
+    fn sync_fonts_adds_once_and_removes_gone_files() {
+        let mut t = TextEngine::new();
+        let base = t.fs.db().len();
+        let p = font_copy(&t, "sync");
+        assert!(t.sync_fonts(std::slice::from_ref(&p)).is_empty());
+        let loaded = t.fs.db().len();
+        assert!(loaded > base);
+        assert!(t.sync_fonts(std::slice::from_ref(&p)).is_empty());
+        assert_eq!(t.fs.db().len(), loaded, "the same file is never loaded twice");
+        t.sync_fonts(&[]);
+        assert_eq!(t.fs.db().len(), base, "a file no longer wanted is removed");
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_synced_font_file_can_be_deleted_after_use() {
+        let mut t = TextEngine::new();
+        let p = font_copy(&t, "delete");
+        t.sync_fonts(std::slice::from_ref(&p));
+        let id = t.files[&p].1[0];
+        assert!(t.fs.get_font(id, Weight(400)).is_some(), "the face is usable");
+        std::fs::remove_file(&p).expect("read into memory, so nothing holds the file");
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn unusable_font_files_are_reported_not_fatal() {
+        let mut t = TextEngine::new();
+        let dir = std::env::temp_dir().join(format!("wf-fonts-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("junk.ttf"), "not a font").unwrap();
+        let problems = t.sync_fonts(&[dir.join("junk.ttf"), dir.join("missing.ttf")]);
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].contains("not a font"));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

@@ -1,0 +1,17 @@
+id = "weather"
+name = "Weather"
+version = "1.0.0"
+author = "Wayfinder"
+description = "Current temperature and sky from Open-Meteo. Click it to refresh."
+homepage = "https://open-meteo.com"
+
+[code]
+module = "code/weather.wasm"
+source = "weather"
+net = ["api.open-meteo.com"]
+
+[code.initial]
+temp = 0
+sky = ""
+wind = 0
+updated = ""

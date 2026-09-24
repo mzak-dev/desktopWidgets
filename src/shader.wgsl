@@ -150,6 +150,7 @@ struct ImgIn {
     @location(3) alpha: f32,
     @location(4) tint: vec4f,
     @location(5) clip: vec4f,
+    @location(6) uv: vec4f,
 }
 
 struct ImgOut {
@@ -172,7 +173,7 @@ fn vs_img(@builtin(vertex_index) vi: u32, in: ImgIn) -> ImgOut {
     let p = in.center + c * in.half;
     var o: ImgOut;
     o.clip_pos = to_ndc(p);
-    o.uv = c * 0.5 + vec2f(0.5);
+    o.uv = mix(in.uv.xy, in.uv.zw, c * 0.5 + vec2f(0.5));
     o.pos = p;
     o.center = in.center;
     o.half = in.half;

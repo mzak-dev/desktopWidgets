@@ -26,6 +26,10 @@ impl Host for AppHost<'_> {
         crate::dialog::pick_file(self.hwnd)
     }
 
+    fn pick_folder(&mut self) -> Option<PathBuf> {
+        crate::dialog::pick_folder(self.hwnd)
+    }
+
     fn create_shortcut(&mut self, dir: &std::path::Path, target: &std::path::Path) -> bool {
         win32::create_shortcut(dir, target).is_some()
     }

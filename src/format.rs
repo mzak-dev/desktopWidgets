@@ -2,6 +2,7 @@
 //! Authored by hand, so unknown names are rejected with a "did you mean".
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path, PathBuf};
 
 use taffy::prelude::*;
 
@@ -12,7 +13,7 @@ use crate::expr::{Scope, Template};
 use crate::theme::Theme;
 use crate::ui::*;
 use crate::value::Value;
-use crate::widgets::{Built, ExpandInfo, Inputs, ParamDef, ParamType, Seed, WidgetMeta};
+use crate::widgets::{Built, Choice, ExpandInfo, Inputs, ParamDef, ParamType, Seed, WidgetMeta};
 
 
 #[derive(Clone, Debug)]
@@ -45,7 +46,7 @@ fn parse_attr(v: &toml::Value, path: &str) -> Result<Attr, String> {
 const COMMON_ATTRS: &[&str] = &[
     "id", "width", "height", "min_width", "min_height", "max_width", "max_height", "grow", "shrink", "basis", "direction", "wrap", "align",
     "justify", "align_self", "gap", "padding", "margin", "position", "inset", "left", "top", "right", "bottom", "aspect", "fill", "fill_alpha", "border",
-    "border_color", "radius", "opacity", "shadow", "clip", "on_click", "hover", "transition", "enter", "scroll", "overlay", "hit",
+    "border_color", "radius", "opacity", "shadow", "clip", "on_click", "on_drop", "hover", "transition", "enter", "scroll", "scroll_x", "overlay", "hit",
 ];
 /// `repeat` is structural, not an element kind.
 const REPEAT_ATTRS: &[&str] = &["for", "as", "index"];
@@ -67,7 +68,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
-fn suggest(name: &str, pool: &[&[&str]]) -> String {
+pub(crate) fn suggest(name: &str, pool: &[&[&str]]) -> String {
     pool.iter()
         .flat_map(|p| p.iter())
         .map(|c| (edit_distance(name, c), *c))
@@ -132,9 +133,39 @@ pub struct WidgetDef {
     pub meta: WidgetMeta,
     pub expand: Option<Expand>,
     pub root: Elem,
+    /// Where the file lives; `None` for a built-in.
+    pub base: Option<Base>,
 }
 
-const TOP: &[&str] = &["name", "description", "size", "min_size", "max_size", "params", "state", "expand", "root"];
+/// A definition file's folder, and the content root its `./` paths must stay inside.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Base {
+    pub dir: PathBuf,
+    pub root: PathBuf,
+}
+
+impl Base {
+    /// `rel` against the file's folder, resolved without touching the disk; `None` if it
+    /// leaves the root (or is absolute).
+    pub fn resolve(&self, rel: &str) -> Option<PathBuf> {
+        let mut out = self.dir.clone();
+        for c in Path::new(rel).components() {
+            match c {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if !out.pop() {
+                        return None;
+                    }
+                }
+                Component::Normal(part) => out.push(part),
+                Component::RootDir | Component::Prefix(_) => return None,
+            }
+        }
+        out.starts_with(&self.root).then_some(out)
+    }
+}
+
+const TOP: &[&str] = &["name", "description", "size", "min_size", "max_size", "needs", "params", "state", "expand", "root"];
 
 fn pair(v: Option<&toml::Value>, default: (f32, f32), what: &str) -> Result<(f32, f32), String> {
     let Some(v) = v else { return Ok(default) };
@@ -144,6 +175,20 @@ fn pair(v: Option<&toml::Value>, default: (f32, f32), what: &str) -> Result<(f32
 }
 
 /// A `[params]` table, in file order. Also parses the style schema (`assets/style.toml`).
+/// `"fast"`, or `{ value = "fast", label = "Fast (30 fps)" }`.
+fn choice(param: &str, c: &toml::Value) -> Result<Choice, String> {
+    let bad = || format!("params.{param}.choices: each is a string or {{ value = \"...\", label = \"...\" }}");
+    match c {
+        toml::Value::String(s) => Ok(Choice { value: s.clone(), label: s.clone() }),
+        toml::Value::Table(t) => {
+            let value = t.get("value").and_then(|v| v.as_str()).ok_or_else(bad)?.to_string();
+            let label = t.get("label").and_then(|v| v.as_str()).map_or_else(|| value.clone(), String::from);
+            Ok(Choice { value, label })
+        }
+        _ => Err(bad()),
+    }
+}
+
 pub fn parse_params(pt: &toml::Table) -> Result<Vec<ParamDef>, String> {
     let mut params = Vec::new();
     for (name, v) in pt {
@@ -177,8 +222,12 @@ pub fn parse_params(pt: &toml::Table) -> Result<Vec<ParamDef>, String> {
             min: f("min"),
             max: f("max"),
             step: f("step"),
-            choices: p.get("choices").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|c| c.as_str().map(String::from)).collect()).unwrap_or_default(),
+            choices: match p.get("choices") {
+                None => vec![],
+                Some(v) => v.as_array().ok_or_else(|| format!("params.{name}.choices: expected a list"))?.iter().map(|c| choice(name, c)).collect::<Result<_, _>>()?,
+            },
             seed,
+            group: p.get("group").and_then(|v| v.as_str()).map(str::trim).filter(|g| !g.is_empty()).map(String::from),
         });
     }
     Ok(params)
@@ -222,14 +271,19 @@ impl WidgetDef {
             max_card_size,
             params,
             initial_state: state,
+            needs: match t.get("needs") {
+                None => vec![],
+                Some(v) => v.as_array().and_then(|a| a.iter().map(|x| x.as_str().map(String::from)).collect()).ok_or("needs must be a list of data source names")?,
+            },
         };
-        Ok(WidgetDef { meta, expand, root: parse_elem(root_t, "root")? })
+        Ok(WidgetDef { meta, expand, root: parse_elem(root_t, "root")?, base: None })
     }
 }
 
 
 struct TreeBuilder<'a> {
     theme: &'a Theme,
+    base: Option<&'a Base>,
     scope: Scope<'a>,
     warns: Vec<String>,
     images: BTreeSet<String>,
@@ -245,7 +299,7 @@ pub fn build(def: &WidgetDef, inp: &Inputs, theme: &Theme, image_size: &dyn Fn(&
     st.extend(inp.state.clone());
     scope.set("state", obj(&st));
     scope.set("self", Value::obj([("w", (card.0 as f64).into()), ("h", (card.1 as f64).into())]));
-    let mut b = TreeBuilder { theme, scope, warns: vec![], images: BTreeSet::new(), image_size };
+    let mut b = TreeBuilder { theme, base: def.base.as_ref(), scope, warns: vec![], images: BTreeSet::new(), image_size };
     let mut nodes = b.build_elem(&def.root, inp.key_prefix)?;
     let mut root = nodes.pop().ok_or("root produced no node")?;
     root.style.size = Size { width: length(card.0), height: length(card.1) };
@@ -302,6 +356,28 @@ impl<'a> Attrs<'_, 'a> {
 
     pub fn color(&mut self, k: &str) -> Result<Option<Color>, String> {
         self.b.color(self.e, k, self.path)
+    }
+
+    /// An image `src`: `./x.png` is a file next to the definition, inside its content root.
+    pub fn image_id(&mut self, src: &str) -> String {
+        // a full path, as a folder listing gives it (`src = "{item.path}"`)
+        if Path::new(src).is_absolute() {
+            return format!("file:{src}");
+        }
+        if !src.starts_with("./") {
+            return src.to_string();
+        }
+        match self.b.base.map(|b| b.resolve(src)) {
+            Some(Some(p)) => format!("file:{}", p.display()),
+            Some(None) => {
+                self.b.warn(format!("{}.src: `{src}` leaves the widget's folder", self.path));
+                String::new()
+            }
+            None => {
+                self.b.warn(format!("{}.src: `{src}` needs a widget file on disk", self.path));
+                String::new()
+            }
+        }
     }
 
     /// 32x32 until the image is uploaded.
@@ -580,6 +656,7 @@ impl TreeBuilder<'_> {
 
     fn interact(&mut self, e: &Elem, n: &mut Node, path: &str) -> Result<(), String> {
         n.action = self.text(e, "on_click", path)?.filter(|s| !s.is_empty());
+        n.on_drop = self.text(e, "on_drop", path)?.filter(|s| !s.is_empty());
         if let Some(Attr::Table(t)) = e.attrs.get("hover") {
             for (k, a) in t {
                 let ctx = format!("{path}.hover.{k}");
@@ -610,6 +687,9 @@ impl TreeBuilder<'_> {
         }
         if let Some(s) = self.num(e, "scroll", path)? {
             n.scroll_offset = Some(s.max(0.0));
+        }
+        if let Some(s) = self.num(e, "scroll_x", path)? {
+            n.scroll_offset_x = Some(s.max(0.0));
         }
         n.overlay = self.flag(e, "overlay", path)?.unwrap_or(false);
         n.hit_testable = self.flag(e, "hit", path)?.unwrap_or(false);
@@ -700,6 +780,85 @@ mod tests {
             },
         };
         build(&def, &inp, &theme(), &|_| None)
+    }
+
+    fn image_ids(def: &WidgetDef) -> (BTreeSet<String>, Vec<String>) {
+        let (p, st) = (BTreeMap::new(), BTreeMap::new());
+        let inp = Inputs { params: &p, state: &st, card_size: (100.0, 60.0), key_prefix: "t", read_source: &|_| None };
+        let b = build(def, &inp, &theme(), &|_| None).unwrap();
+        (b.image_ids, b.warnings)
+    }
+
+    const LOGO: &str = "[root]\ntype = 'image'\nsrc = './logo.png'";
+
+    #[test]
+    fn a_dot_slash_src_resolves_next_to_the_widget_file() {
+        let root = std::env::temp_dir().join("plug");
+        let mut def = WidgetDef::parse("t", LOGO).unwrap();
+        def.base = Some(Base { dir: root.join("widgets"), root: root.clone() });
+        let (ids, warns) = image_ids(&def);
+        assert!(warns.is_empty(), "{warns:?}");
+        assert_eq!(ids.into_iter().collect::<Vec<_>>(), [format!("file:{}", root.join("widgets").join("logo.png").display())]);
+        let shared = Base { dir: root.join("widgets"), root: root.clone() }.resolve("./../images/a.png");
+        assert_eq!(shared, Some(root.join("images").join("a.png")), "a sibling folder of the root is fine");
+    }
+
+    #[test]
+    fn a_dot_slash_src_cannot_escape_its_root() {
+        let root = std::env::temp_dir().join("plug");
+        let base = Base { dir: root.join("widgets"), root: root.clone() };
+        assert_eq!(base.resolve("./../../secret.png"), None);
+        let mut def = WidgetDef::parse("t", "[root]\ntype = 'image'\nsrc = './../../x.png'").unwrap();
+        def.base = Some(base);
+        let (ids, warns) = image_ids(&def);
+        assert!(warns.iter().any(|w| w.contains("leaves")), "{warns:?}");
+        assert!(!ids.iter().any(|i| i.contains("x.png")));
+    }
+
+    #[test]
+    fn an_image_fits_by_contain_or_cover() {
+        let fit = |f: &str| {
+            let def = WidgetDef::parse("t", &format!("[root]\ntype = 'image'\nsrc = 'icon:x'\n{f}")).unwrap();
+            let (p, st) = (BTreeMap::new(), BTreeMap::new());
+            let inp = Inputs { params: &p, state: &st, card_size: (100.0, 60.0), key_prefix: "t", read_source: &|_| None };
+            build(&def, &inp, &theme(), &|_| None).map(|b| match b.root.kind {
+                crate::ui::Kind::Image(im) => im.fit,
+                _ => panic!("not an image"),
+            })
+        };
+        assert_eq!((fit(""), fit("fit = 'cover'"), fit("fit = 'contain'")), (Ok(crate::ui::Fit::Contain), Ok(crate::ui::Fit::Cover), Ok(crate::ui::Fit::Contain)));
+        assert!(fit("fit = 'fill'").unwrap_err().contains("contain or cover"));
+    }
+
+    #[test]
+    fn a_full_path_with_max_asks_for_a_small_copy() {
+        let full = |extra: &str| image_ids(&WidgetDef::parse("t", &format!("[root]\ntype = 'image'\nsrc = 'C:\\Photos\\a.jpg'\n{extra}")).unwrap()).0.into_iter().collect::<Vec<_>>();
+        assert_eq!(full(""), ["file:C:\\Photos\\a.jpg"]);
+        assert_eq!(full("max = 256"), ["thumb:256:C:\\Photos\\a.jpg"]);
+        assert_eq!(full("max = 1"), ["thumb:8:C:\\Photos\\a.jpg"], "at least 8 px");
+        let icon = image_ids(&WidgetDef::parse("t", "[root]\ntype = 'image'\nsrc = 'icon:x'\nmax = 64").unwrap()).0;
+        assert_eq!(icon.into_iter().collect::<Vec<_>>(), ["icon:x"], "app icons are small already");
+    }
+
+    #[test]
+    fn a_dot_slash_src_in_a_builtin_warns() {
+        let (ids, warns) = image_ids(&WidgetDef::parse("t", LOGO).unwrap());
+        assert!(warns.iter().any(|w| w.contains("needs a widget file")), "{warns:?}");
+        assert!(!ids.iter().any(|i| i.contains("logo")));
+    }
+
+    #[test]
+    fn params_take_labelled_choices_and_groups() {
+        let src = "[params.speed]\ntype = 'enum'\ngroup = 'Motion'\nchoices = ['slow', { value = 'fast', label = 'Fast (30 fps)' }]\n[params.color]\ntype = 'color'\n[params.decay]\ntype = 'number'\ngroup = 'Motion'\n[params.bars]\ntype = 'number'\ngroup = 'Shape'\n[root]\ntype = 'box'";
+        let d = WidgetDef::parse("t", src).unwrap();
+        let speed = &d.meta.params[0];
+        assert_eq!(speed.choices, [Choice { value: "slow".into(), label: "slow".into() }, Choice { value: "fast".into(), label: "Fast (30 fps)".into() }]);
+        let groups: Vec<(Option<&str>, Vec<&str>)> = ParamDef::grouped(&d.meta.params).into_iter().map(|(g, ps)| (g, ps.iter().map(|p| p.name.as_str()).collect())).collect();
+        assert_eq!(groups, [(None, vec!["color"]), (Some("Motion"), vec!["speed", "decay"]), (Some("Shape"), vec!["bars"])]);
+        let pics = WidgetDef::parse("t", "[params.pics]\ntype = 'folder'\n[root]\ntype = 'box'").unwrap();
+        assert_eq!(pics.meta.params[0].ty, ParamType::Path, "a folder picker");
+        let e = WidgetDef::parse("t", "[params.s]\ntype = 'enum'\nchoices = [{ label = 'x' }]\n[root]\ntype = 'box'").err().unwrap();
+        assert!(e.contains("params.s.choices"), "{e}");
     }
 
     #[test]
@@ -802,6 +961,6 @@ fill_alpha=0.5";
         assert_eq!(b.root.children.len(), 1);
 
         let e = build_src("[root]\ntype='text'\ntext='{nope.x}'", &[]).unwrap_err();
-        assert!(e.contains("undefined name `nope`"), "{e}");
+        assert!(e.contains("`nope`"), "{e}");
     }
 }

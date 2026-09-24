@@ -1,0 +1,57 @@
+name = "Weather"
+description = "Current temperature and sky, from Open-Meteo. Click it to refresh."
+size = [220, 120]
+min_size = [140, 80]
+max_size = [480, 260]
+
+[params.latitude]
+type = "number"
+default = 52.52
+min = -90
+max = 90
+step = 0.01
+label = "Latitude"
+
+[params.longitude]
+type = "number"
+default = 13.41
+min = -180
+max = 180
+step = 0.01
+label = "Longitude"
+
+[params.fahrenheit]
+type = "bool"
+default = false
+label = "Fahrenheit"
+
+[root]
+direction = "column"
+align = "center"
+justify = "center"
+gap = 2
+fill = ["$surface", "$surface-2"]
+radius = "$radius-lg"
+border = 1
+on_click = "weather.refresh"
+
+  [[root.children]]
+  type = "text"
+  text = "{weather.loading ? '...' : weather.temp}{weather.loading ? '' : (param.fahrenheit ? '°F' : '°C')}"
+  size = "{max(14, min(self.h * 0.42, self.w * 0.3))}"
+  weight = 300
+  color = "$text"
+
+  [[root.children]]
+  type = "text"
+  when = "{self.h >= 100 && weather.error == ''}"
+  text = "{weather.sky}"
+  size = "$font-size-md"
+  color = "$text-dim"
+
+  [[root.children]]
+  type = "text"
+  when = "{self.h >= 100 && weather.error != ''}"
+  text = "{weather.error}"
+  size = "$font-size-sm"
+  color = "$danger"

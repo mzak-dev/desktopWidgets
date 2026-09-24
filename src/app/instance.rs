@@ -133,6 +133,18 @@ pub(super) fn expand_target(expand: Option<ExpandInfo>, stored: (f32, f32), coll
     Rect::new(x, y, w, h)
 }
 
+/// The scroll region a wheel turn moves, and by how much. A plain wheel over a strip that
+/// only scrolls sideways moves it sideways.
+pub(super) fn wheel_target<'a>(frame: &'a crate::ui::Frame, (mx, my): (f32, f32), dx: f32, dy: f32) -> Option<(&'a crate::ui::ScrollInfo, f32)> {
+    let under = |horizontal: bool| frame.scrolls.iter().find(|s| s.horizontal == horizontal && frame.rect_of(&s.key).is_some_and(|[x, y, w, h]| mx >= x && mx < x + w && my >= y && my < y + h));
+    match (under(false), under(true)) {
+        (Some(v), _) if dy != 0.0 => Some((v, dy)),
+        (_, Some(h)) if dx != 0.0 => Some((h, dx)),
+        (None, Some(h)) => Some((h, dy)),
+        _ => None,
+    }
+}
+
 pub(super) fn scrolled_offset(cur: f32, dy: f32, view_h: f32, content_h: f32) -> Option<f32> {
     let next = (cur - dy).clamp(0.0, (content_h - view_h).max(0.0));
     ((next - cur).abs() > 0.01).then_some(next)
@@ -148,6 +160,60 @@ pub(super) enum VerbOutcome {
 }
 
 /// `toggle` also scrolls back to the top.
+/// What a file dropped on a widget does.
+#[derive(Debug, PartialEq)]
+pub(super) enum OnDrop {
+    /// `on_drop = "param folder"`: the user chose this path by dropping it, so it is saved
+    /// like a pick in Settings.
+    SaveParam(String, Value),
+    /// Any other `on_drop` action, with the path after it.
+    Run(String),
+    /// Nothing under the cursor takes files: the Widget's own `drop` verb may.
+    Widget,
+}
+
+pub(super) fn on_drop(action: Option<&str>, path: &str) -> OnDrop {
+    match action.map(str::trim) {
+        Some(a) if a.split_whitespace().next() == Some("param") => match a.split_whitespace().nth(1) {
+            Some(name) => OnDrop::SaveParam(name.to_string(), Value::Str(path.to_string())),
+            None => OnDrop::Widget,
+        },
+        Some(a) => OnDrop::Run(format!("{a} {path}")),
+        None => OnDrop::Widget,
+    }
+}
+
+/// `param <name> <value>` from a click: the Instance setting to save. A param that holds a
+/// folder plugin code may read (`fs_read_params`) is refused: a click names a value the
+/// widget chose, and only Settings or a drop may grant a folder.
+pub(super) fn click_param(rest: &str, file_params: &BTreeSet<String>) -> Result<(String, Value), String> {
+    let (name, value) = rest.trim().split_once(' ').ok_or("`param` needs a name and a value: `param city Oslo`")?;
+    if file_params.contains(name) {
+        return Err(format!("`param {name}` from a click is refused: plugin code may read the folder in `{name}`, so only Settings or a dropped folder may set it"));
+    }
+    Ok((name.to_string(), typed(value)))
+}
+
+/// A `set` value: numbers and `true`/`false` keep their type, so `set index 2` compares
+/// equal to `2`; quotes keep text as written (`set code '007'`).
+pub(super) fn typed(v: &str) -> Value {
+    let t = v.trim();
+    let quoted = |q: char| t.strip_prefix(q).and_then(|s| s.strip_suffix(q)).filter(|_| t.len() >= 2);
+    if let Some(s) = quoted('\'').or_else(|| quoted('"')) {
+        return Value::Str(s.to_string());
+    }
+    match t {
+        "true" => return Value::Bool(true),
+        "false" => return Value::Bool(false),
+        _ => {}
+    }
+    let numeric = t.chars().any(|c| c.is_ascii_digit()) && t.chars().all(|c| c.is_ascii_digit() || "+-.eE".contains(c));
+    match t.parse::<f64>() {
+        Ok(n) if numeric && n.is_finite() => Value::Num(n),
+        _ => Value::Str(v.to_string()),
+    }
+}
+
 pub(super) fn engine_action(state: &mut BTreeMap<String, Value>, verb: &str, rest: &str) -> VerbOutcome {
     match verb {
         "launch" => VerbOutcome::Launch(rest.trim().to_string()),
@@ -159,7 +225,7 @@ pub(super) fn engine_action(state: &mut BTreeMap<String, Value>, verb: &str, res
         }
         "set" => match rest.split_once(' ') {
             Some((name, val)) => {
-                state.insert(name.to_string(), Value::Str(val.to_string()));
+                state.insert(name.to_string(), typed(val));
                 VerbOutcome::Redraw
             }
             None => VerbOutcome::Nothing,
@@ -258,6 +324,41 @@ mod tests {
     }
 
     #[test]
+    fn the_wheel_moves_the_region_under_the_cursor_along_its_axis() {
+        use crate::ui::{Frame, ScrollInfo};
+        let mut f = Frame::default();
+        f.rects.push(("list".into(), [0.0, 0.0, 100.0, 100.0]));
+        f.rects.push(("strip".into(), [0.0, 100.0, 100.0, 40.0]));
+        f.scrolls.push(ScrollInfo { key: "list".into(), view: 100.0, content: 300.0, horizontal: false });
+        f.scrolls.push(ScrollInfo { key: "strip".into(), view: 100.0, content: 500.0, horizontal: true });
+        let hit = |at: (f32, f32), dx: f32, dy: f32| wheel_target(&f, at, dx, dy).map(|(s, d)| (s.key.clone(), d));
+        assert_eq!(hit((10.0, 10.0), 0.0, -48.0), Some(("list".into(), -48.0)));
+        assert_eq!(hit((10.0, 110.0), 0.0, -48.0), Some(("strip".into(), -48.0)), "a plain wheel over a sideways strip moves it sideways");
+        assert_eq!(hit((10.0, 110.0), -30.0, 0.0), Some(("strip".into(), -30.0)));
+        assert_eq!(hit((10.0, 10.0), -30.0, 0.0), None, "a sideways wheel over a list that only scrolls down");
+        assert_eq!(hit((10.0, 200.0), 0.0, -48.0), None);
+    }
+
+    #[test]
+    fn a_click_saves_a_param_but_never_grants_a_folder() {
+        let files = BTreeSet::from(["folder".to_string()]);
+        assert_eq!(click_param("city Oslo", &files), Ok(("city".into(), Value::Str("Oslo".into()))));
+        assert_eq!(click_param("columns 4", &files), Ok(("columns".into(), Value::Num(4.0))));
+        assert_eq!(click_param("title  Two words", &files), Ok(("title".into(), Value::Str(" Two words".into()))));
+        assert!(click_param("folder C:\\Users\\me\\Documents", &files).unwrap_err().contains("refused"));
+        assert!(click_param("city", &files).is_err());
+    }
+
+    #[test]
+    fn a_drop_saves_a_param_runs_an_action_or_goes_to_the_widget() {
+        let p = "D:\\My Photos";
+        assert_eq!(on_drop(Some("param folder"), p), OnDrop::SaveParam("folder".into(), Value::Str(p.into())));
+        assert_eq!(on_drop(Some("gallery.add"), p), OnDrop::Run(format!("gallery.add {p}")));
+        assert_eq!(on_drop(Some("parameters.add"), p), OnDrop::Run(format!("parameters.add {p}")), "only the word `param`");
+        assert_eq!((on_drop(None, p), on_drop(Some("param"), p)), (OnDrop::Widget, OnDrop::Widget));
+    }
+
+    #[test]
     fn engine_verbs_change_state_and_say_what_else_to_do() {
         let mut st = BTreeMap::from([("scroll".to_string(), Value::Num(40.0))]);
         assert_eq!(engine_action(&mut st, "toggle", "expanded"), VerbOutcome::Redraw);
@@ -266,6 +367,15 @@ mod tests {
         assert_eq!(st.get("expanded"), Some(&Value::Bool(false)));
         assert_eq!(engine_action(&mut st, "set", "tab news"), VerbOutcome::Redraw);
         assert_eq!(st.get("tab"), Some(&Value::Str("news".into())));
+        engine_action(&mut st, "set", "index 2");
+        assert_eq!(st.get("index"), Some(&Value::Num(2.0)), "a number, so `state.index == 2` holds");
+        engine_action(&mut st, "set", "on true");
+        assert_eq!(st.get("on"), Some(&Value::Bool(true)));
+        engine_action(&mut st, "set", "code '007'");
+        assert_eq!(st.get("code"), Some(&Value::Str("007".into())), "quotes keep text");
+        engine_action(&mut st, "set", "title 2 cats");
+        assert_eq!(st.get("title"), Some(&Value::Str("2 cats".into())));
+        assert_eq!((typed("-1.5"), typed("1e3"), typed("inf"), typed("1.2.3"), typed("'")), (Value::Num(-1.5), Value::Num(1000.0), Value::Str("inf".into()), Value::Str("1.2.3".into()), Value::Str("'".into())));
         assert_eq!(engine_action(&mut st, "launch", " C:\\app.exe "), VerbOutcome::Launch("C:\\app.exe".into()));
         assert_eq!(engine_action(&mut st, "settings", ""), VerbOutcome::OpenSettings);
         assert_eq!(engine_action(&mut st, "add_app", ""), VerbOutcome::Unknown, "a Widget's own verb is not the engine's");

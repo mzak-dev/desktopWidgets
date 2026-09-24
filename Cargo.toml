@@ -9,15 +9,23 @@ pollster = "1.0.1"
 wgpu = "30"
 winit = "0.30.13"
 windows = { version = "0.62.2", features = [
+    "Foundation",
+    "Foundation_Collections",
+    "Media_Control",
+    "Storage_Streams",
     "Win32_Foundation",
     "Win32_Globalization",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinHttp",
     "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
     "Win32_Storage_FileSystem",
     "Win32_System_SystemInformation",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Console",
     "Win32_System_LibraryLoader",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
@@ -27,6 +35,7 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_System_Time",
+    "Win32_System_Variant",
     "Win32_UI_Accessibility",
     "Win32_UI_Controls",
     "Win32_UI_HiDpi",
@@ -34,6 +43,7 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",
 ] }
+rustfft = "6"
 taffy = "0.14.0"
 glyphon = "0.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -42,7 +52,10 @@ toml = { version = "1.1.6", features = ["preserve_order"] }
 notify = "8.2.0"
 global-hotkey = "0.8.0"
 tray-icon = "0.24.1"
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# plugin code (ADR-0008): an interpreter, no JIT, no WASI
+wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "validate", "auto-dispatch"] }
 
 [profile.release]
 debug = 1
@@ -50,3 +63,5 @@ debug = 1
 [dev-dependencies]
 # validates shader.wgsl without a GPU
 naga = { version = "30", features = ["wgsl-in"] }
+# tests write their modules as WebAssembly text
+wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "validate", "auto-dispatch", "wat"] }

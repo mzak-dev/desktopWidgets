@@ -3,6 +3,7 @@
 //! for the app, with no window or GPU, so it is unit-testable.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -19,11 +20,13 @@ use crate::data::Shortcut;
 use crate::dialog;
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
+use crate::plugins::PluginRow;
 use crate::text::TextEngine;
 use crate::theme::{Library, Selection, Theme, style_schema};
 use crate::ui::{self, Env, Frame, Kind, Node};
 use crate::value::Value;
 use crate::widgets::{ParamDef, ParamType, Registry, WidgetMeta};
+use crate::platform::win32::FileOwner;
 use crate::workspace::{Flag, Workspace};
 
 pub struct Ctx<'a> {
@@ -35,7 +38,23 @@ pub struct Ctx<'a> {
     pub gpu_info: &'a str,
     pub fonts: &'a [String],
     pub edit: bool,
-    pub parked: &'a [String],
+    /// Instances without a window, and why.
+    pub hidden: &'a [(String, Hidden)],
+    pub plugins: &'a [PluginRow],
+    /// The outcome of the last install, for the Plugins page.
+    pub plugin_note: &'a str,
+    /// Every data source the app has now, for widgets' `needs`.
+    pub sources: &'a [String],
+    /// Which exe double-clicking a `.wfplugin` runs.
+    pub plugin_files: &'a FileOwner,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Hidden {
+    /// Its monitor is missing.
+    Parked,
+    /// Only this switched-off Plugin provides its Widget.
+    PluginOff(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +79,12 @@ pub enum Cmd {
     Edit(bool),
     Reload,
     OpenFolder,
+    InstallPlugin(PathBuf),
+    PluginEnabled(String, bool),
+    RemovePlugin(String),
+    OpenPluginsFolder,
+    /// Make double-clicking a `.wfplugin` run this exe.
+    ClaimPluginFiles,
     Quit,
     Close,
     Minimize,
@@ -115,17 +140,19 @@ fn capitalized(s: &str) -> String {
 pub enum Page {
     Widgets,
     Appearance,
+    Plugins,
     General,
     Log,
 }
 
 impl Page {
-    const ALL: [Page; 4] = [Page::Widgets, Page::Appearance, Page::General, Page::Log];
+    const ALL: [Page; 5] = [Page::Widgets, Page::Appearance, Page::Plugins, Page::General, Page::Log];
 
     fn id(self) -> &'static str {
         match self {
             Page::Widgets => "widgets",
             Page::Appearance => "appearance",
+            Page::Plugins => "plugins",
             Page::General => "general",
             Page::Log => "log",
         }
@@ -134,6 +161,7 @@ impl Page {
         match self {
             Page::Widgets => "Widgets",
             Page::Appearance => "Appearance",
+            Page::Plugins => "Plugins",
             Page::General => "General",
             Page::Log => "Log",
         }
@@ -142,6 +170,7 @@ impl Page {
         match self {
             Page::Widgets => "Add, arrange and configure the widgets on your desktop",
             Page::Appearance => "Colours, fonts and icons, applied to every widget at once",
+            Page::Plugins => "Widgets, themes, fonts and icons made by others",
             Page::General => "Graphics, startup and behaviour",
             Page::Log => "What Wayfinder has been doing, and anything that went wrong",
         }
@@ -150,6 +179,7 @@ impl Page {
         match self {
             Page::Widgets => "widgets",
             Page::Appearance => "palette",
+            Page::Plugins => "plugin",
             Page::General => "gear",
             Page::Log => "info",
         }
@@ -363,11 +393,13 @@ pub struct UiState {
     pub caret_at: Instant,
     pub mods: ModifiersState,
     pub popup_anchor_rects: HashMap<String, (f32, f32, f32, f32)>,
+    /// A file is being dragged over the window.
+    pub drop_hover: bool,
 }
 
 impl Default for UiState {
     fn default() -> Self {
-        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), popup_anchor_rects: HashMap::new() }
+        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), popup_anchor_rects: HashMap::new(), drop_hover: false }
     }
 }
 
@@ -395,6 +427,12 @@ impl UiState {
 
     fn def_of<'a>(&self, ctx: &'a Ctx, widget: &str) -> Option<&'a WidgetMeta> {
         ctx.reg.get(widget).and_then(|d| d.as_ref().ok()).map(|w| w.meta())
+    }
+
+    /// "  ·  needs agents" when a data source the widget needs is missing.
+    fn needs_note(&self, ctx: &Ctx, widget: &str) -> Option<String> {
+        let unmet = self.def_of(ctx, widget)?.unmet(|n| ctx.sources.iter().any(|s| s == n));
+        (!unmet.is_empty()).then(|| format!("  ·  needs {}", unmet.join(", ")))
     }
 
     fn param_value(cfg: &crate::workspace::InstanceCfg, p: &ParamDef) -> Value {
@@ -459,7 +497,7 @@ impl UiState {
             return std::iter::once(global).chain(names.into_iter().map(|n| (n.clone(), n))).collect();
         }
         if let Some((_, tok)) = key.strip_prefix("sy:").and_then(Self::style_target) {
-            return style_schema().iter().find(|p| p.name == tok).map(|p| p.choices.iter().map(|c| (c.clone(), capitalized(c))).collect()).unwrap_or_default();
+            return style_schema().iter().find(|p| p.name == tok).map(|p| p.choices.iter().map(|c| (c.value.clone(), capitalized(&c.label))).collect()).unwrap_or_default();
         }
         if let Some(rest) = key.strip_prefix("p:") {
             if let Some((id, name)) = rest.split_once(':') {
@@ -467,7 +505,7 @@ impl UiState {
                 if let Some(p) = def.and_then(|d| d.params.iter().find(|p| p.name == name)) {
                     return match p.ty {
                         ParamType::Font => std::iter::once((String::new(), "Theme font".to_string())).chain(ctx.fonts.iter().map(|f| (f.clone(), f.clone()))).collect(),
-                        _ => p.choices.iter().map(|c| (c.clone(), c.clone())).collect(),
+                        _ => p.choices.iter().map(|c| (c.value.clone(), c.label.clone())).collect(),
                     };
                 }
             }
@@ -668,6 +706,7 @@ impl UiState {
         let body = match self.page {
             Page::Widgets => self.page_widgets(&k, ctx, &mut images),
             Page::Appearance => self.page_appearance(&k, ctx),
+            Page::Plugins => self.page_plugins(&k, ctx),
             Page::General => self.page_general(&k, ctx),
             Page::Log => self.page_log(&k, ctx),
         };
@@ -724,7 +763,11 @@ impl UiState {
         for (i, c) in ctx.ws.instances.iter().enumerate() {
             let on = sel.is_some_and(|s| s.id == c.id);
             let name = self.def_of(ctx, &c.widget).map_or(c.widget.clone(), |d| d.name.clone());
-            let parked = ctx.parked.contains(&c.id);
+            let hidden = ctx.hidden.iter().find(|(id, _)| *id == c.id).map(|(_, h)| match h {
+                Hidden::Parked => "  ·  parked (monitor missing)".to_string(),
+                Hidden::PluginOff(p) => format!("  ·  hidden (plugin {p} is off)"),
+            });
+            let hidden = hidden.or_else(|| self.needs_note(ctx, &c.widget));
             list = list.child(
                 Node::new(format!("w/i/{}", c.id))
                     .col()
@@ -738,13 +781,13 @@ impl UiState {
                     .on(format!("sel:{}", c.id))
                     .enter(220, 6.0, (i as u32) * 24)
                     .child(k.bold(format!("w/i/{}/n", c.id), &name, 13.0, k.c("text")))
-                    .child(k.txt(format!("w/i/{}/s", c.id), &format!("{}{}", c.id, if parked { "  ·  parked (monitor missing)" } else { "" }), 11.5, if parked { k.c("danger") } else { k.c("text-dim") })),
+                    .child(k.txt(format!("w/i/{}/s", c.id), &format!("{}{}", c.id, hidden.as_deref().unwrap_or("")), 11.5, if hidden.is_some() { k.c("danger") } else { k.c("text-dim") })),
             );
         }
         let mut add = Node::new("w/add").col().gap(6.0).child(k.section("w/add/h", "Add a widget"));
         let mut chips = Node::new("w/add/chips").row().wrap().gap(6.0);
         for id in ctx.reg.ids() {
-            let label = self.def_of(ctx, &id).map_or(id.clone(), |d| d.name.clone());
+            let label = self.def_of(ctx, &id).map_or(id.clone(), |d| d.name.clone()) + self.needs_note(ctx, &id).as_deref().unwrap_or("");
             chips = chips.child(
                 Node::new(format!("w/add/{id}"))
                     .row()
@@ -802,11 +845,11 @@ impl UiState {
         p = p.child(k.row(&format!("ip/{id}/pos"), "Position", &format!("{:.0}, {:.0}  ·  {:.0} x {:.0}", cfg.x, cfg.y, cfg.w, cfg.h), placement));
 
         if let Some(d) = def {
-            if !d.params.is_empty() {
-                p = p.child(k.section(&format!("ip/{id}/s2"), "Options"));
-            }
-            for pd in &d.params {
-                p = p.child(self.param_row(k, ctx, cfg, pd, images));
+            for (i, (group, params)) in ParamDef::grouped(&d.params).into_iter().enumerate() {
+                p = p.child(k.section(&format!("ip/{id}/s2/{i}"), group.unwrap_or("Options")));
+                for pd in params {
+                    p = p.child(self.param_row(k, ctx, cfg, pd, images));
+                }
             }
         } else {
             p = p.child(k.txt(format!("ip/{id}/err"), "This widget's definition failed to load; see the Log page.", 12.5, k.c("danger")).wrap_text());
@@ -894,10 +937,11 @@ impl UiState {
             ParamType::Path => {
                 let ik = format!("n:{id}:{name}");
                 let f = self.focus.as_ref().filter(|f| f.key == ik).map(|f| (f.caret, self.caret_on));
+                let has_list = self.def_of(ctx, &cfg.widget).is_some_and(|d| d.params.iter().any(|p| p.ty == ParamType::Shortcuts));
                 Node::new(format!("{rk}/pc"))
                     .col()
                     .gap(8.0)
-                    .child(k.input(&ik, &self.input_text(ctx, &ik), "no folder: use the list below", f, CONTROL_W, false))
+                    .child(k.input(&ik, &self.input_text(ctx, &ik), if has_list { "no folder: use the list below" } else { "no folder chosen" }, f, CONTROL_W, false))
                     .child(Node::new(format!("{rk}/pb")).row().gap(8.0).child(k.button(&format!("{rk}/browse"), "Browse...", format!("folder:{id}|{name}"), false)).child(k.button(&format!("{rk}/clear"), "Clear", format!("clear:{id}|{name}"), false)))
             }
             ParamType::Shortcuts => return self.shortcuts_editor(k, ctx, cfg, pd, images),
@@ -932,7 +976,7 @@ impl UiState {
             let fnm = self.focus.as_ref().filter(|f| f.key == nk).map(|f| (f.caret, self.caret_on));
             let ftg = self.focus.as_ref().filter(|f| f.key == tk).map(|f| (f.caret, self.caret_on));
             let mut img = Node::new(format!("sc/{id}/{i}/img")).wh(28.0, 28.0).no_shrink();
-            img.kind = Kind::Image(ui::ImageSpec { id: iid, w: 32.0, h: 32.0, tint: None });
+            img.kind = Kind::Image(ui::ImageSpec { id: iid, w: 32.0, h: 32.0, ..Default::default() });
             col = col.child(
                 Node::new(format!("sc/{id}/{i}"))
                     .row()
@@ -1007,6 +1051,82 @@ impl UiState {
         self.scrolling("ap/scroll", body)
     }
 
+    fn page_plugins(&self, k: &Kit, ctx: &Ctx) -> Node {
+        let mut body = Node::new("pl").col().gap(4.0).pad_xy(24.0, 4.0);
+        let actions = Node::new("pl/acts").row().gap(8.0).child(k.button("pl/install", "Install from file...", "pinstall".into(), true)).child(k.button("pl/folder", "Open plugins folder", "pfolder".into(), false));
+        body = body.child(k.row("pl/add", "Add a plugin", "A plugin brings widgets, themes, fonts and icons. It never runs programs, but only install plugins you trust.", actions));
+        if !ctx.plugin_note.is_empty() {
+            let bad = ctx.plugin_note.starts_with("Could not");
+            body = body.child(k.txt("pl/note".into(), ctx.plugin_note, 12.5, if bad { k.c("danger") } else { k.c("accent") }).wrap_text());
+        }
+        body = body.child(k.section("pl/s1", "Installed"));
+        if ctx.plugins.is_empty() {
+            body = body.child(k.txt("pl/none".into(), "No plugins yet. Drop a .wfplugin file on this window, or put a plugin's folder in Wayfinder\\plugins.", 12.5, k.c("text-dim")).wrap_text());
+        }
+        for (i, r) in ctx.plugins.iter().enumerate() {
+            body = body.child(self.plugin_card(k, ctx, r, i));
+        }
+        let page = self.scrolling("pl/scroll", body.child(Node::new("pl/pad").h(24.0)));
+        if !self.drop_hover {
+            return page;
+        }
+        let hint = Node::new("pl/drop")
+            .abs(Some(16.0), Some(8.0), Some(16.0), Some(16.0))
+            .center()
+            .radius(16.0)
+            .fill(k.c("accent").with_alpha(0.14))
+            .border(2.0, k.c("accent"))
+            .child(k.bold("pl/drop/t".into(), "Drop to install", 17.0, k.c("text")));
+        Node::new("pl/wrap").col().grow(1.0).child(page).child(hint)
+    }
+
+    fn plugin_card(&self, k: &Kit, ctx: &Ctx, r: &PluginRow, i: usize) -> Node {
+        let key = format!("pl/p/{}", r.id);
+        let confirm = self.confirm_del.as_deref() == Some(format!("plugin/{}", r.id).as_str());
+        let by = [(!r.version.is_empty()).then(|| format!("v{}", r.version)), (!r.author.is_empty()).then(|| format!("by {}", r.author))].into_iter().flatten().collect::<Vec<_>>().join("  ·  ");
+        let head_l = Node::new(format!("{key}/hl")).col().grow(1.0).min_w(0.0).gap(1.0).child(k.bold(format!("{key}/n"), &r.name, 14.0, k.c("text"))).child(k.txt(format!("{key}/by"), &by, 11.5, k.c("text-dim")));
+        let remove = if confirm {
+            k.button(&format!("{key}/rm"), "Really remove?", format!("prm:{}", r.id), true).with_danger_fill(k)
+        } else {
+            k.button(&format!("{key}/rm"), "Remove", format!("prm:{}", r.id), false)
+        };
+        let head = Node::new(format!("{key}/h")).row().align(taffy::AlignItems::CENTER).gap(12.0).child(head_l).child(k.toggle(&format!("{key}/on"), r.enabled, format!("pon:{}", r.id))).child(remove);
+        let mut card = Node::new(key.clone())
+            .col()
+            .gap(4.0)
+            .pad(14.0)
+            .radius(12.0)
+            .fill(Color([1.0, 1.0, 1.0, 0.04]))
+            .border(1.0, if confirm { k.c("danger") } else { k.c("border").mul_alpha(0.7) })
+            .ease(150)
+            .enter(220, 6.0, (i as u32) * 30)
+            .child(head);
+        if !r.description.is_empty() {
+            card = card.child(k.txt(format!("{key}/d"), &r.description, 12.5, k.c("text")).wrap_text());
+        }
+        let state = if r.enabled { r.summary.clone() } else { format!("{}  ·  off", r.summary) };
+        card = card.child(k.txt(format!("{key}/sum"), &state, 12.0, k.c("text-dim")));
+        if !r.code.is_empty() {
+            card = card.child(k.txt(format!("{key}/code"), &r.code, 11.5, k.c("text-dim")).wrap_text());
+        }
+        if r.enabled && !r.status.is_empty() {
+            let bad = r.status.contains("Error") || r.status.contains("Cannot");
+            card = card.child(k.txt(format!("{key}/status"), &r.status, 11.5, if bad { k.c("danger") } else { k.c("accent") }).wrap_text());
+        }
+        for (j, n) in r.notes.iter().enumerate() {
+            card = card.child(k.txt(format!("{key}/note/{j}"), n, 11.5, k.c("text-dim")).wrap_text());
+        }
+        for (j, e) in r.problems.iter().enumerate() {
+            card = card.child(k.txt(format!("{key}/err/{j}"), e, 11.5, k.c("danger")).wrap_text());
+        }
+        if confirm {
+            let orphans = r.orphans(ctx.ws);
+            let what = if orphans.is_empty() { "Nothing on your desktop uses it.".to_string() } else { format!("This also removes from your desktop: {}.", orphans.join(", ")) };
+            card = card.child(k.txt(format!("{key}/orph"), &what, 12.0, k.c("danger")).wrap_text());
+        }
+        card
+    }
+
     fn page_general(&self, k: &Kit, ctx: &Ctx) -> Node {
         let f = |key: &str| matches!(&self.open, Some(Open::Dropdown(o)) if o == key);
         let ws = ctx.ws;
@@ -1030,15 +1150,30 @@ impl UiState {
             .child(k.row("gn/hk", "Edit hotkey", "Toggles Edit layout from anywhere", k.txt("gn/hk/t".into(), "Ctrl + Alt + E", 13.0, k.c("text")).with_text(|t| t.weight = 600)))
             .child(k.section("gn/s3", "Files"))
             .child(k.row("gn/files", "Your widgets", "Drop .toml widget definitions here; they reload as you save", Node::new("gn/files/c").row().gap(8.0).child(k.button("gn/open", "Open folder", "openfolder".into(), false)).child(k.button("gn/reload", "Reload all", "reload".into(), false))))
+            .child(self.plugin_files_row(k, ctx))
             .child(Node::new("gn/pad").h(24.0));
         self.scrolling("gn/scroll", body)
     }
 
+    /// Which app a double-clicked `.wfplugin` opens, and a way to make it this one.
+    fn plugin_files_row(&self, k: &Kit, ctx: &Ctx) -> Node {
+        let help = match ctx.plugin_files {
+            FileOwner::Me => "Double-clicking a .wfplugin file installs it with this app".to_string(),
+            FileOwner::Other(p) => format!("Double-clicking a .wfplugin file opens {}", p.display()),
+            FileOwner::Nobody => "No app installs .wfplugin files on a double-click yet".to_string(),
+        };
+        let control = match ctx.plugin_files {
+            FileOwner::Me => k.txt("gn/pf/t".into(), "This app", 12.5, k.c("text-dim")),
+            _ => k.button("gn/pf/b", "Use this app", "claimfiles".into(), false),
+        };
+        k.row("gn/pf", "Plugin files", &help, control)
+    }
+
     fn page_log(&self, k: &Kit, ctx: &Ctx) -> Node {
         let mut body = Node::new("lg").col().gap(3.0).pad_xy(24.0, 4.0);
-        let errors = ctx.reg.errors();
+        let errors: Vec<String> = ctx.reg.errors().into_iter().chain(ctx.lib.errors.iter().cloned()).collect();
         if !errors.is_empty() {
-            body = body.child(k.section("lg/e", "Widget files with errors"));
+            body = body.child(k.section("lg/e", "Files with errors"));
             for (i, e) in errors.iter().enumerate() {
                 body = body.child(k.txt(format!("lg/e/{i}"), e, 12.0, k.c("danger")).wrap_text().with_text(|t| t.family = ctx.theme.str("font-mono")));
             }
@@ -1254,7 +1389,7 @@ impl UiState {
     /// `hwnd` parents native dialogs.
     pub fn act(&mut self, a: &str, ctx: &Ctx, hwnd: Option<windows::Win32::Foundation::HWND>) -> Vec<Cmd> {
         let (verb, rest) = a.split_once(':').unwrap_or((a, ""));
-        if verb != "del" {
+        if verb != "del" && verb != "prm" {
             self.confirm_del = None;
         }
         if !matches!(verb, "in" | "sl" | "cpsv" | "cph" | "cpset" | "pick" | "popup-close" | "drag") {
@@ -1392,13 +1527,35 @@ impl UiState {
                 cmds.extend(picks.into_iter().map(|a| Cmd::ThemePick(scope.key().into(), a.into(), None)));
                 cmds
             }
+            "pon" => ctx.plugins.iter().find(|r| r.id == rest).map(|r| vec![Cmd::PluginEnabled(rest.into(), !r.enabled)]).unwrap_or_default(),
+            "prm" => {
+                let armed = format!("plugin/{rest}");
+                if self.confirm_del.as_deref() == Some(armed.as_str()) {
+                    self.confirm_del = None;
+                    vec![Cmd::RemovePlugin(rest.into())]
+                } else {
+                    self.confirm_del = Some(armed);
+                    vec![]
+                }
+            }
+            "pfolder" => vec![Cmd::OpenPluginsFolder],
+            "pinstall" => dialog::pick_file_of(hwnd, &[("Wayfinder plugin", "*.wfplugin;*.zip")]).map(|p| vec![Cmd::InstallPlugin(p)]).unwrap_or_default(),
             "openfolder" => vec![Cmd::OpenFolder],
+            "claimfiles" => vec![Cmd::ClaimPluginFiles],
             "reload" => vec![Cmd::Reload],
             "quit" => vec![Cmd::Quit],
             "close" => vec![Cmd::Close],
             "min" => vec![Cmd::Minimize],
             _ => vec![],
         }
+    }
+
+    /// A file or folder dropped on the window is a Plugin to install.
+    pub fn dropped(&mut self, path: &Path) -> Vec<Cmd> {
+        self.drop_hover = false;
+        self.page = Page::Plugins;
+        self.open = None;
+        vec![Cmd::InstallPlugin(path.to_path_buf())]
     }
 
     /// `x` in window logical px.
@@ -1484,11 +1641,11 @@ impl UiState {
     }
 
     pub fn wheel(&mut self, dy: f32, mouse: (f32, f32), frame: &Frame) {
-        let region = frame.scrolls.iter().rev().find(|s| frame.rect_of(&s.key).is_some_and(|[x, y, w, h]| mouse.0 >= x && mouse.0 < x + w && mouse.1 >= y && mouse.1 < y + h));
+        let region = frame.scrolls.iter().rev().filter(|s| !s.horizontal).find(|s| frame.rect_of(&s.key).is_some_and(|[x, y, w, h]| mouse.0 >= x && mouse.0 < x + w && mouse.1 >= y && mouse.1 < y + h));
         // a popup list takes the wheel while a popup is open
         let region = if self.open.is_some() { frame.scrolls.iter().find(|s| s.key == "s/ov/list") } else { region };
         if let Some(r) = region {
-            let max = (r.content_h - r.view_h).max(0.0);
+            let max = (r.content - r.view).max(0.0);
             let cur = self.scroll_of(&r.key);
             self.scroll.insert(r.key.clone(), (cur - dy).clamp(0.0, max));
         }
@@ -1513,6 +1670,12 @@ pub struct SettingsWin {
 impl SettingsWin {
     /// Rebuild on the next frame, e.g. after a change made outside the window.
     pub fn invalidate(&mut self) {
+        self.redraw = true;
+    }
+
+    /// Shows a page by its id (`plugins`...).
+    pub fn show_page(&mut self, id: &str) {
+        self.ui.page = Page::parse(id);
         self.redraw = true;
     }
 
@@ -1663,6 +1826,16 @@ impl SettingsWin {
                 cmds.extend(self.ui.on_key(&event.logical_key, event.text.as_deref(), ctx));
                 self.redraw = true;
             }
+            WindowEvent::HoveredFile(_) => {
+                self.ui.drop_hover = true;
+                self.ui.page = Page::Plugins;
+                self.redraw = true;
+            }
+            WindowEvent::HoveredFileCancelled => {
+                self.ui.drop_hover = false;
+                self.redraw = true;
+            }
+            WindowEvent::DroppedFile(p) => cmds.extend(self.ui.dropped(p)),
             _ => {}
         }
         if !cmds.is_empty() {
@@ -1699,6 +1872,11 @@ impl SettingsWin {
         self.last = now;
     }
 
+    /// The images the last frame drew.
+    pub fn drawn_images(&self) -> impl Iterator<Item = &str> {
+        self.frame.iter().flat_map(|f| f.list.image_ids())
+    }
+
     pub fn next_frame(&self, now: Instant) -> Option<Instant> {
         if self.redraw {
             return Some(now);
@@ -1725,6 +1903,9 @@ mod tests {
         reg: Registry,
         lib: Library,
         theme: Theme,
+        hidden: Vec<(String, Hidden)>,
+        plugins: Vec<PluginRow>,
+        sources: Vec<String>,
     }
 
     fn world() -> World {
@@ -1735,11 +1916,45 @@ mod tests {
         let mut folder = InstanceCfg { id: "icon_folder-1".into(), widget: "icon_folder".into(), ..Default::default() };
         folder.set_items(&[Shortcut { name: "A".into(), target: "a.exe".into(), icon: String::new() }, Shortcut { name: "B".into(), target: "b.exe".into(), icon: String::new() }]);
         ws.instances.push(folder);
-        World { ws, reg: Registry::load(Path::new("no-such-dir")), lib, theme }
+        let plugins = vec![
+            PluginRow { id: "sunset".into(), name: "Sunset".into(), version: "1.2.0".into(), author: "Ada".into(), description: "Warm colours".into(), summary: "1 widget · 1 palette".into(), enabled: true, notes: vec!["Restyles Analog Clock".into()], problems: vec![], sole_widgets: vec!["weather".into()], code: "Runs code as `weather` · can reach api.open-meteo.com".into(), code_sources: vec!["weather".into()], status: "Running".into() },
+            PluginRow { id: "broken".into(), name: "broken".into(), summary: "nothing yet".into(), enabled: false, problems: vec!["no plugin.toml".into()], ..Default::default() },
+        ];
+        World { ws, reg: Registry::load(Path::new("no-such-dir")), lib, theme, hidden: vec![], plugins, sources: crate::data::DataSources::builtin().names() }
     }
 
     fn ctx(w: &World) -> Ctx<'_> {
-        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, parked: &[] }
+        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me }
+    }
+
+    #[test]
+    fn general_says_which_app_opens_plugin_files() {
+        fn has(n: &Node, key: &str) -> bool {
+            n.key == key || n.children.iter().any(|c| has(c, key))
+        }
+        let w = world();
+        let mut ui = UiState::default();
+        ui.page = Page::General;
+        let mine = ui.build(&ctx(&w), WIN).0;
+        assert!(has(&mine, "gn/pf") && !has(&mine, "gn/pf/b"), "already this app: no button");
+        let other = FileOwner::Other("C:\\Apps\\wayfinder.exe".into());
+        let theirs = ui.build(&Ctx { plugin_files: &other, ..ctx(&w) }, WIN).0;
+        assert!(has(&theirs, "gn/pf/b"), "another build has them: offer to switch");
+        assert_eq!(ui.act("claimfiles", &ctx(&w), None), [Cmd::ClaimPluginFiles]);
+    }
+
+    #[test]
+    fn a_widget_missing_a_data_source_says_so() {
+        let dir = std::env::temp_dir().join(format!("wf-settings-needs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("agents.toml"), "name = 'Agents'\nneeds = ['agents', 'clock']\n[root]\ntype = 'box'").unwrap();
+        let mut w = world();
+        w.reg.load_dir(&dir);
+        let s = UiState::default();
+        assert_eq!(s.needs_note(&ctx(&w), "agents").as_deref(), Some("  ·  needs agents"));
+        w.sources.push("agents".into());
+        assert_eq!(s.needs_note(&ctx(&w), "agents"), None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -1901,6 +2116,69 @@ mod tests {
         assert_eq!((id.as_str(), name.as_str()), ("clock-1", "accent"));
         assert!(Color::parse(hex).is_some());
         assert_eq!(ui.act("cpset:#00ff00", &c, None), vec![Cmd::Style(Scope::Instance("clock-1".into()), "accent".into(), Some(Value::Str("#00ff00".into())))]);
+    }
+
+    fn texts(n: &Node, out: &mut Vec<String>) {
+        if let Kind::Text(t) = &n.kind {
+            out.push(t.text.clone());
+        }
+        n.children.iter().for_each(|c| texts(c, out));
+    }
+
+    #[test]
+    fn plugin_remove_needs_two_clicks_and_names_its_instances() {
+        let mut w = world();
+        w.ws.instances.push(InstanceCfg { id: "weather-1".into(), widget: "weather".into(), ..Default::default() });
+        let c = ctx(&w);
+        let mut ui = UiState::default();
+        ui.act("nav:plugins", &c, None);
+        assert_eq!(ui.act("prm:sunset", &c, None), vec![], "the first click only asks");
+        let mut shown = Vec::new();
+        texts(&ui.build(&c, WIN).0, &mut shown);
+        assert!(shown.iter().any(|t| t.contains("weather-1")), "{shown:?}");
+        assert!(!shown.iter().any(|t| t.contains("clock-1")), "a built-in widget stays");
+        assert_eq!(ui.act("prm:sunset", &c, None), vec![Cmd::RemovePlugin("sunset".into())]);
+        ui.act("prm:sunset", &c, None);
+        assert_eq!(ui.act("pon:sunset", &c, None).len(), 1, "any other action disarms it");
+        assert_eq!(ui.act("prm:sunset", &c, None), vec![]);
+        ui.act("del:clock-1", &c, None);
+        assert_eq!(ui.act("prm:sunset", &c, None), vec![], "a widget's remove never confirms a plugin's");
+    }
+
+    #[test]
+    fn plugin_toggle_flips_enabled() {
+        let w = world();
+        let c = ctx(&w);
+        let mut ui = UiState::default();
+        assert_eq!(ui.act("pon:sunset", &c, None), vec![Cmd::PluginEnabled("sunset".into(), false)]);
+        assert_eq!(ui.act("pon:broken", &c, None), vec![Cmd::PluginEnabled("broken".into(), true)]);
+        assert_eq!(ui.act("pon:nope", &c, None), vec![]);
+        assert_eq!(ui.act("pfolder", &c, None), vec![Cmd::OpenPluginsFolder]);
+    }
+
+    #[test]
+    fn dropping_a_plugin_file_installs_it() {
+        let mut ui = UiState::default();
+        ui.drop_hover = true;
+        assert_eq!(ui.dropped(Path::new("C:\\Downloads\\sunset.wfplugin")), vec![Cmd::InstallPlugin("C:\\Downloads\\sunset.wfplugin".into())]);
+        assert_eq!((ui.page, ui.drop_hover), (Page::Plugins, false));
+        let w = world();
+        let c = ctx(&w);
+        ui.drop_hover = true;
+        let mut shown = Vec::new();
+        texts(&ui.build(&c, WIN).0, &mut shown);
+        assert!(shown.iter().any(|t| t == "Drop to install"));
+    }
+
+    #[test]
+    fn a_hidden_instance_says_why() {
+        let mut w = world();
+        w.hidden = vec![("clock-1".into(), Hidden::PluginOff("Sunset".into())), ("icon_folder-1".into(), Hidden::Parked)];
+        let c = ctx(&w);
+        let mut shown = Vec::new();
+        texts(&UiState::default().build(&c, WIN).0, &mut shown);
+        assert!(shown.iter().any(|t| t.contains("plugin Sunset is off")), "{shown:?}");
+        assert!(shown.iter().any(|t| t.contains("monitor missing")));
     }
 
     #[test]

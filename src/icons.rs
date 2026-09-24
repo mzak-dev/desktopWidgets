@@ -1,7 +1,7 @@
 //! Icon sourcing (decision 22): explicit path -> Icon Pack by app name -> the
 //! target's own icon -> a generic one. Uploaded once per image id.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use windows::Win32::Graphics::Gdi::{BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits, ReleaseDC};
@@ -151,21 +151,108 @@ pub fn resolve(target: &str, explicit: &str, pack_dir: Option<&Path>) -> Rgba {
     resolve_path(target).and_then(|p| shell_icon(&p)).unwrap_or_else(generic)
 }
 
+/// A `file:` image, or an app icon that may come from an Icon Pack.
+fn from_files(id: &str) -> bool {
+    id.starts_with("file:") || id.starts_with(crate::thumbs::PREFIX) || id.strip_prefix("icon:").and_then(|rest| rest.split_once(ID_SEP)).is_some_and(|(pack, _)| !matches!(pack, "Default" | ""))
+}
+
+/// Images no window draws that stay on the GPU, so a gallery flipping between a few
+/// pictures doesn't decode them again. Past this, the longest unused go first.
+pub const IDLE_BUDGET: u64 = 64 << 20;
+
+/// Which uploaded images no window draws any more, oldest first.
+#[derive(Default)]
+pub struct Residency {
+    idle: Vec<(String, u64)>,
+}
+
+impl Residency {
+    /// `loaded` is every image on the GPU with its size, `drawn` what some window draws now.
+    /// Returns the images to drop.
+    pub fn settle<'a>(&mut self, loaded: impl IntoIterator<Item = (&'a str, u64)>, drawn: &HashSet<&str>, budget: u64) -> Vec<String> {
+        let loaded: BTreeMap<&str, u64> = loaded.into_iter().collect();
+        self.idle.retain(|(id, _)| loaded.contains_key(id.as_str()) && !drawn.contains(id.as_str()));
+        for (id, bytes) in &loaded {
+            if !drawn.contains(id) && !self.idle.iter().any(|(i, _)| i == id) {
+                self.idle.push((id.to_string(), *bytes));
+            }
+        }
+        let mut total: u64 = self.idle.iter().map(|(_, b)| b).sum();
+        let mut out = vec![];
+        while total > budget && !self.idle.is_empty() {
+            let (id, bytes) = self.idle.remove(0);
+            total -= bytes;
+            out.push(id);
+        }
+        out
+    }
+
+    fn clear(&mut self) {
+        self.idle.clear();
+    }
+}
+
 /// Uploads images on demand and remembers which ids the GPU already has.
+#[derive(Default)]
 pub struct IconService {
-    /// `<data>/iconpacks`
-    pub packs_dir: PathBuf,
+    /// Icon Pack name to its folder, from every content root.
+    packs: BTreeMap<String, PathBuf>,
     seen: HashSet<String>,
+    residency: Residency,
+    /// `thumb:` images, made off the UI thread.
+    thumbs: crate::thumbs::Thumbs,
 }
 
 impl IconService {
-    pub fn new(packs_dir: PathBuf) -> Self {
-        Self { packs_dir, seen: HashSet::new() }
+    pub fn new(packs: BTreeMap<String, PathBuf>) -> Self {
+        Self { packs, ..Default::default() }
     }
 
-    /// Make sure `id` is on the GPU. Returns true when something was uploaded.
+    pub fn set_packs(&mut self, packs: BTreeMap<String, PathBuf>) {
+        self.packs = packs;
+    }
+
+    /// Where small copies of big pictures are kept (`<data>/.cache/thumbs`).
+    pub fn set_cache(&mut self, dir: PathBuf) {
+        self.thumbs.set_cache(dir);
+    }
+
+    /// Called from another thread when a `thumb:` image is ready: then call `take_ready`.
+    pub fn set_waker(&self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        self.thumbs.set_waker(wake);
+    }
+
+    /// Uploads the `thumb:` images made since last asked and returns their ids.
+    pub fn take_ready(&mut self, gpu: &mut Gpu) -> Vec<String> {
+        let ready = self.thumbs.take();
+        let mut ids = Vec::with_capacity(ready.len());
+        for (id, d) in ready {
+            match d {
+                Some(d) => gpu.upload_decoded(&id, &d),
+                None => {
+                    let g = generic();
+                    gpu.upload_image(&id, &g.px, g.w, g.h);
+                }
+            }
+            self.seen.insert(id.clone());
+            ids.push(id);
+        }
+        ids
+    }
+
+    /// Whether `thumb:` images are still being made.
+    pub fn pending(&self) -> bool {
+        self.thumbs.has_pending()
+    }
+
+    /// Make sure `id` is on the GPU. Returns true when something was uploaded. A `thumb:`
+    /// image is only queued here; `take_ready` uploads it.
     pub fn ensure(&mut self, gpu: &mut Gpu, id: &str) -> bool {
         if id.is_empty() || gpu.has_image(id) {
+            return false;
+        }
+        if id.starts_with(crate::thumbs::PREFIX) {
+            self.thumbs.request(id);
             return false;
         }
         if !self.seen.insert(id.to_string()) && gpu.has_image(GENERIC) {
@@ -174,12 +261,17 @@ impl IconService {
         let img = if id == GENERIC {
             generic()
         } else if let Some(path) = id.strip_prefix("file:") {
-            load_image(Path::new(path)).unwrap_or_else(generic)
+            match crate::images::decode_file(Path::new(path)) {
+                Some(d) => {
+                    gpu.upload_decoded(id, &d);
+                    return true;
+                }
+                None => generic(),
+            }
         } else if let Some(rest) = id.strip_prefix("icon:") {
             let mut it = rest.split(ID_SEP);
             let (pack, target, explicit) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
-            let dir = (pack != "Default" && !pack.is_empty()).then(|| self.packs_dir.join(pack));
-            resolve(target, explicit, dir.as_deref())
+            resolve(target, explicit, self.packs.get(pack).map(PathBuf::as_path))
         } else {
             generic()
         };
@@ -187,9 +279,32 @@ impl IconService {
         true
     }
 
+    /// Content was reloaded: images read from files (and Icon Packs) may have changed.
+    /// The system's own icons are kept; extracting them again is slow.
+    pub fn flush_files(&mut self, gpu: &mut Gpu) {
+        let stale: Vec<String> = self.seen.iter().filter(|id| from_files(id)).cloned().collect();
+        for id in stale {
+            gpu.drop_image(&id);
+            self.seen.remove(&id);
+        }
+    }
+
+    /// Drops images no window has drawn for a while (see `IDLE_BUDGET`). `drawn` is what
+    /// every open window draws now; the generic icon always stays.
+    pub fn release_unused<'a>(&mut self, gpu: &mut Gpu, drawn: impl IntoIterator<Item = &'a str>) {
+        let drawn: HashSet<&str> = drawn.into_iter().collect();
+        let IconService { seen, residency, .. } = self;
+        let loaded = seen.iter().filter(|id| id.as_str() != GENERIC).filter_map(|id| Some((id.as_str(), gpu.image_bytes(id)?)));
+        for id in residency.settle(loaded, &drawn, IDLE_BUDGET) {
+            gpu.drop_image(&id);
+            self.seen.remove(&id);
+        }
+    }
+
     /// The GPU was rebuilt: nothing is uploaded any more.
     pub fn forget(&mut self) {
         self.seen.clear();
+        self.residency.clear();
     }
 
     /// Forget everything (icon pack changed, so ids are new anyway, but this frees the memory).
@@ -198,12 +313,35 @@ impl IconService {
             gpu.drop_image(&id);
         }
         self.seen.clear();
+        self.residency.clear();
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_file_and_pack_images_are_flushed_on_reload() {
+        let icon = |pack: &str| format!("icon:{pack}{ID_SEP}C:\\app.exe{ID_SEP}");
+        assert!(from_files("file:C:\\x.png") && from_files("thumb:256:C:\\x.png"));
+        assert!(from_files(&icon("Neon")));
+        assert!(!from_files(&icon("Default")), "a shell icon is expensive to extract again");
+        assert!(!from_files(GENERIC));
+    }
+
+    #[test]
+    fn unused_images_stay_within_a_budget_then_go_oldest_first() {
+        let mut r = Residency::default();
+        let set = |ids: &[&'static str]| ids.iter().copied().collect::<HashSet<&str>>();
+        let loaded = |ids: &[&'static str]| ids.iter().map(|id| (*id, 10u64)).collect::<Vec<_>>();
+        assert!(r.settle(loaded(&["a", "b", "c"]), &set(&["a", "b", "c"]), 25).is_empty(), "all drawn");
+        assert!(r.settle(loaded(&["a", "b", "c"]), &set(&["c"]), 25).is_empty(), "a and b idle, 20 bytes fit");
+        assert!(r.settle(loaded(&["a", "b", "c", "d"]), &set(&["b", "d"]), 25).is_empty(), "b drawn again, a and c idle");
+        assert_eq!(r.settle(loaded(&["a", "b", "c", "d"]), &set(&[]), 30), ["a"], "a idled first, so it goes first");
+        assert_eq!(r.settle(loaded(&["b", "c", "d"]), &set(&[]), 0), ["c", "b", "d"], "then in the order they idled");
+        assert!(r.settle(loaded(&["e"]), &set(&[]), 25).is_empty() && r.idle.len() == 1, "images no longer loaded are forgotten");
+    }
 
     #[test]
     fn generic_icon_is_a_centred_shape_not_a_blank_square() {
