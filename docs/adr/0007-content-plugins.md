@@ -6,6 +6,6 @@ Widget ids stay flat. A Plugin may therefore restyle a built-in Widget, and a us
 
 Plugins carry content only. An archive may hold `toml png ttf otf ttc otc md txt` and licence or readme files, nothing else, because the `launch` verb opens files with the shell, and `launch` also refuses any target inside `plugins/`. Native code (DLLs) is ruled out: it would run with the user's rights inside the desktop process, where one crash takes every widget down, and Rust has no stable ABI to load it against.
 
-Code comes later as WebAssembly behind the Data Source seam. A module would produce values with a declared cadence and handle action verbs, while its Widgets stay TOML, the way the Drawer wraps its own definition. That keeps the redraw scheduler in charge (ADR-0004), and the runtime's fuel and epoch limits mean a module can neither hang nor crash the desktop. Until then, a manifest with `[code]` is refused as needing a newer Wayfinder rather than loaded without its code.
+Code runs as WebAssembly behind the Data Source seam: a module produces values and handles action verbs, while its Widgets stay TOML, the way the Drawer wraps its own definition. ADR-0008 records how.
 
 Installing unpacks next to the data folder (`<data>.install-…`) and renames the result in, so the folder watcher never sees half a Plugin and an upgrade either replaces the old version whole or leaves it untouched. Fonts are read into memory rather than memory-mapped, because Windows refuses to delete a mapped file, and that would make Remove fail while a Plugin's font is loaded.
