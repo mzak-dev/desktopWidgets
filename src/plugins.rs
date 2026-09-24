@@ -6,7 +6,10 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 
+use crate::code::CodeSpec;
 use crate::content::{self, Catalog, Contents, Item, Origin, Root};
+use crate::net::HostPattern;
+use crate::value::Value;
 use crate::widgets::Registry;
 use crate::workspace::Workspace;
 
@@ -23,6 +26,55 @@ pub struct Manifest {
     pub homepage: Option<String>,
     /// The oldest Wayfinder that can load it.
     pub wayfinder: Option<String>,
+    pub code: Option<Code>,
+}
+
+/// `[code]`: the module that serves this Plugin's Code Source (ADR-0008).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Code {
+    /// Relative to the Plugin's folder, e.g. `code/weather.wasm`.
+    pub module: String,
+    /// What its Widgets bind to: `{weather.temp}`.
+    pub source: String,
+    pub net: Vec<HostPattern>,
+    /// Values shown until the first sample.
+    pub initial: Value,
+}
+
+const CODE_KEYS: &[&str] = &["module", "source", "net", "initial"];
+/// Data Source names and repeat variables a Code Source must not shadow.
+const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "param", "state", "self", "item", "index"];
+
+fn parse_code(t: &toml::Table) -> Result<Code, String> {
+    for k in t.keys() {
+        if !CODE_KEYS.contains(&k.as_str()) {
+            return Err(format!("unknown key `code.{k}`{}", crate::format::suggest(k, &[CODE_KEYS])));
+        }
+    }
+    let text = |k: &str| t.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| format!("missing `code.{k}`"));
+    let module = text("module")?.replace('\\', "/");
+    let inside = !module.starts_with('/') && !module.contains(':') && Path::new(&module).components().all(|c| matches!(c, Component::Normal(_)));
+    if !module.ends_with(".wasm") || !inside {
+        return Err(format!("code.module `{module}` must be a .wasm file inside the plugin"));
+    }
+    let source = text("source")?.to_string();
+    let ident = source.chars().next().is_some_and(|c| c.is_ascii_lowercase()) && source.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if !ident {
+        return Err(format!("code.source `{source}`: use lower-case letters, digits and `_`, starting with a letter"));
+    }
+    if RESERVED_SOURCES.contains(&source.as_str()) {
+        return Err(format!("code.source `{source}` is taken by Wayfinder"));
+    }
+    let net = match t.get("net") {
+        None => vec![],
+        Some(v) => v.as_array().ok_or("code.net must be a list of hosts")?.iter().map(|h| h.as_str().ok_or("code.net must be a list of hosts".to_string()).and_then(HostPattern::parse)).collect::<Result<_, _>>()?,
+    };
+    let initial = match t.get("initial") {
+        None => Value::Obj(BTreeMap::new()),
+        Some(v @ toml::Value::Table(_)) => Value::from(v),
+        Some(_) => return Err("code.initial must be a table".into()),
+    };
+    Ok(Code { module, source, net, initial })
 }
 
 fn version_parts(v: &str) -> Vec<u64> {
@@ -50,9 +102,11 @@ impl Manifest {
                 return Err(format!("unknown key `{k}`{}", crate::format::suggest(k, &[KEYS])));
             }
         }
-        if t.contains_key("code") {
-            return Err("it runs code, which needs a newer Wayfinder".into());
-        }
+        let code = match t.get("code") {
+            None => None,
+            Some(toml::Value::Table(c)) => Some(parse_code(c)?),
+            Some(_) => return Err("`code` must be a table".into()),
+        };
         let text = |k: &str| -> Result<Option<String>, String> {
             match t.get(k) {
                 None => Ok(None),
@@ -68,7 +122,7 @@ impl Manifest {
                 return Err(format!("needs Wayfinder {w} or newer (this is {engine})"));
             }
         }
-        Ok(Manifest { id, name: need("name")?, version: need("version")?, author: text("author")?.unwrap_or_default(), description: text("description")?.unwrap_or_default(), homepage: text("homepage")?, wayfinder })
+        Ok(Manifest { id, name: need("name")?, version: need("version")?, author: text("author")?.unwrap_or_default(), description: text("description")?.unwrap_or_default(), homepage: text("homepage")?, wayfinder, code })
     }
 }
 
@@ -292,7 +346,7 @@ impl Budget {
 }
 
 /// Content only: definitions, images, fonts and notes. Nothing a `launch` could run.
-const ALLOWED: &[&str] = &["toml", "png", "ttf", "otf", "ttc", "otc", "md", "txt"];
+const ALLOWED: &[&str] = &["toml", "png", "ttf", "otf", "ttc", "otc", "md", "txt", "wasm"];
 const ALLOWED_BARE: &[&str] = &["license", "licence", "readme", "notice", "copying", "authors"];
 
 fn allowed_file(name: &str) -> bool {
@@ -446,6 +500,12 @@ pub struct PluginRow {
     pub problems: Vec<String>,
     /// Widget ids nothing else provides: removing the Plugin removes their Instances.
     pub sole_widgets: Vec<String>,
+    /// "Runs code as `weather` · can reach api.open-meteo.com"; empty without code.
+    pub code: String,
+    /// Its Code Source's name while it runs, to match the live status to the row.
+    pub code_source: Option<String>,
+    /// How the code is doing, kept current by the app.
+    pub status: String,
 }
 
 impl PluginRow {
@@ -467,6 +527,7 @@ fn item_word(item: Item) -> &'static str {
 
 /// The Plugins page's rows, from what the Catalog made of the enabled ones.
 pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog) -> Vec<PluginRow> {
+    let (_, code_lost) = code_specs(list, disabled);
     let errors: Vec<String> = cat.registry.errors().into_iter().chain(cat.library.errors.iter().cloned()).collect();
     let builtin = Registry::builtin(); // the names of what a Plugin restyles
     let widget_name = |reg: &Registry, id: &str| reg.get(id).and_then(|d| d.as_ref().ok()).map_or(id.to_string(), |w| w.meta().name.clone());
@@ -500,6 +561,15 @@ pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog) -> Vec<
             let providers = |w: &str| -> Vec<&Origin> { cat.origins.get(&(Item::Widget, w.to_string())).into_iter().chain(cat.shadows.iter().filter(|s| s.item == Item::Widget && s.name == w).map(|s| &s.loser)).collect() };
             let sole_widgets = p.contents.widgets.iter().filter(|w| providers(w).iter().all(|o| **o == me)).cloned().collect();
             let m = p.manifest.as_ref().ok();
+            let code = m.and_then(|m| m.code.as_ref());
+            if let (Some(c), Some(winner)) = (code, code_lost.get(&p.id)) {
+                problems.push(format!("Its data source `{}` is hidden: {} has one too, and wins", c.source, named(&Origin::Plugin(winner.clone()))));
+            }
+            let code_line = code.map_or(String::new(), |c| {
+                let reach = if c.net.is_empty() { "no network".to_string() } else { format!("can reach {}", c.net.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(", ")) };
+                format!("Runs code as `{}` · {reach}", c.source)
+            });
+            let runs = code.is_some() && !disabled.contains(&p.id) && !code_lost.contains_key(&p.id);
             PluginRow {
                 id: p.id.clone(),
                 name: p.name().to_string(),
@@ -511,12 +581,15 @@ pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog) -> Vec<
                 notes,
                 problems,
                 sole_widgets,
+                code: code_line,
+                code_source: code.filter(|_| runs).map(|c| c.source.clone()),
+                status: String::new(),
             }
         })
         .collect()
 }
 
-const CONTENT_EXTENSIONS: &[&str] = &["toml", "png", "ttf", "otf", "ttc", "otc"];
+const CONTENT_EXTENSIONS: &[&str] = &["toml", "png", "ttf", "otf", "ttc", "otc", "wasm"];
 
 /// Whether a change under the data folder can change content. Our own writes
 /// (`workspace.json`, the log) and dot-folders (the store's staging) do not.
@@ -546,10 +619,71 @@ fn lexical(p: &Path) -> PathBuf {
     out
 }
 
-/// A `launch` target inside the plugins folder: content must never start a program.
+/// A `launch` target inside the plugins folder or their saved data: content must never
+/// start a program.
 pub fn inside_plugins(data: &Path, target: &str) -> bool {
     let lower = |p: &Path| PathBuf::from(lexical(p).to_string_lossy().to_lowercase().replace('/', "\\"));
-    lower(Path::new(target.trim())).starts_with(lower(&data.join("plugins")))
+    let t = lower(Path::new(target.trim()));
+    t.starts_with(lower(&data.join("plugins"))) || t.starts_with(lower(&data.join(DATA_DIR)))
+}
+
+/// What a Widget reading a Code Source may `launch`: web links only, so text from a server
+/// can never become a network path or a protocol handler for the shell.
+pub fn launch_allowed(target: &str, uses_code: bool) -> bool {
+    !uses_code || target.trim().get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://"))
+}
+
+/// Where Plugins keep their saved data: `<data>/plugin-data/<id>.json`.
+pub const DATA_DIR: &str = "plugin-data";
+
+pub fn data_file(data: &Path, id: &str) -> PathBuf {
+    data.join(DATA_DIR).join(format!("{id}.json"))
+}
+
+/// The Code Sources to run: enabled Plugins with a valid `[code]`, keyed so that an unchanged
+/// one keeps running. Two with one source name follow ADR-0007: the later id wins. Returns
+/// (key, spec) pairs and, per losing Plugin id, the winner's id.
+pub fn code_specs(list: &[Plugin], disabled: &BTreeSet<String>) -> (Vec<(String, CodeSpec)>, BTreeMap<String, String>) {
+    let mut by_source: BTreeMap<String, (String, CodeSpec)> = BTreeMap::new();
+    let mut lost = BTreeMap::new();
+    for p in list.iter().filter(|p| !disabled.contains(&p.id)) {
+        let Some(code) = p.manifest.as_ref().ok().and_then(|m| m.code.as_ref()) else { continue };
+        let module = p.dir.join(&code.module);
+        let stamp = std::fs::metadata(&module).map(|m| (m.len(), m.modified().ok())).ok();
+        let key = format!("{}|{:?}|{:?}", p.id, code, stamp);
+        let spec = CodeSpec { plugin: p.id.clone(), source: code.source.clone(), module, hosts: code.net.clone(), initial: code.initial.clone() };
+        if let Some((_, old)) = by_source.insert(code.source.clone(), (key, spec)) {
+            lost.insert(old.plugin, p.id.clone());
+        }
+    }
+    (by_source.into_values().collect(), lost)
+}
+
+/// The question before installing: what it adds and, for code, what it may reach.
+pub fn install_question(m: &Manifest, contents: &Contents, installed: Option<&Manifest>) -> String {
+    let by = if m.author.is_empty() { String::new() } else { format!(" by {}", m.author) };
+    let verb = match installed {
+        Some(old) => format!("Replace {} {} with {}", old.name, old.version, m.version),
+        None => format!("Install {} {}{by}", m.name, m.version),
+    };
+    let about = if m.description.is_empty() { String::new() } else { format!("\n{}", m.description) };
+    let mut q = format!("{verb}?\n\n{}{about}\n\n", contents.summary());
+    match &m.code {
+        None => q += "Plugins add widgets, themes, fonts and icons, and never run programs.",
+        Some(code) => {
+            q += "This plugin runs sandboxed code. It cannot read your files or start programs.";
+            if !code.net.is_empty() {
+                let hosts: Vec<String> = code.net.iter().map(|h| h.to_string()).collect();
+                q += &format!(" It can connect to: {}.", hosts.join(", "));
+                let before: Vec<String> = installed.and_then(|o| o.code.as_ref()).map(|c| c.net.iter().map(|h| h.to_string()).collect()).unwrap_or_default();
+                let new: Vec<&String> = hosts.iter().filter(|h| !before.contains(h)).collect();
+                if installed.is_some() && !new.is_empty() {
+                    q += &format!(" New in this version: {}.", new.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
+                }
+            }
+        }
+    }
+    q + " Only install plugins you trust."
 }
 
 #[cfg(test)]
@@ -589,9 +723,114 @@ mod tests {
     }
 
     #[test]
-    fn manifest_rejects_code_in_v1() {
-        let e = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'x.wasm'")).unwrap_err();
-        assert!(e.contains("newer Wayfinder"), "{e}");
+    fn manifest_reads_a_code_table() {
+        let src = format!("{OK}\n[code]\nmodule = 'code\\weather.wasm'\nsource = 'weather'\nnet = ['api.open-meteo.com', '*.example.org']\n[code.initial]\ntemp = 0\nsky = '...'");
+        let c = Manifest::parse(&src).unwrap().code.expect("a code table");
+        assert_eq!((c.module.as_str(), c.source.as_str()), ("code/weather.wasm", "weather"));
+        assert_eq!(c.net.iter().map(|h| h.to_string()).collect::<Vec<_>>(), ["api.open-meteo.com", "*.example.org"]);
+        assert_eq!(c.initial.get("sky").map(|v| v.to_string()), Some("...".into()));
+        assert_eq!(Manifest::parse(OK).unwrap().code, None);
+    }
+
+    #[test]
+    fn code_table_rejects_bad_sources_hosts_and_paths() {
+        let with = |code: &str| Manifest::parse(&format!("{OK}\n[code]\n{code}")).unwrap_err();
+        assert!(with("source = 'weather'").contains("code.module"));
+        assert!(with("module = 'w.wasm'").contains("code.source"));
+        for (bad, why) in [
+            ("module = '../w.wasm'\nsource = 'w'", "inside"),
+            ("module = 'C:/w.wasm'\nsource = 'w'", "inside"),
+            ("module = 'w.dll'\nsource = 'w'", ".wasm"),
+            ("module = 'w.wasm'\nsource = 'Weather'", "lower-case"),
+            ("module = 'w.wasm'\nsource = 'my-weather'", "lower-case"),
+            ("module = 'w.wasm'\nsource = 'clock'", "taken"),
+            ("module = 'w.wasm'\nsource = 'item'", "taken"),
+            ("module = 'w.wasm'\nsource = 'w'\nnet = ['127.0.0.1']", "IP"),
+            ("module = 'w.wasm'\nsource = 'w'\nnet = ['*']", "wildcard"),
+            ("module = 'w.wasm'\nsource = 'w'\nnet = 'x.com'", "list"),
+            ("module = 'w.wasm'\nsource = 'w'\nmodul = 'x'", "did you mean `module`"),
+        ] {
+            let e = with(bad);
+            assert!(e.contains(why), "{bad}: {e}");
+        }
+    }
+
+    fn code_plugin(data: &Path, id: &str, source: &str) {
+        put(data, &format!("plugins/{id}/plugin.toml"), &format!("{}\n[code]\nmodule = 'code/m.wasm'\nsource = '{source}'\nnet = ['api.open-meteo.com']", OK.replace("sunset", id)));
+        put(data, &format!("plugins/{id}/code/m.wasm"), "(module)");
+    }
+
+    #[test]
+    fn code_specs_skip_disabled_and_collide_like_content() {
+        let data = tmp("specs");
+        code_plugin(&data, "alpha", "weather");
+        code_plugin(&data, "beta", "weather");
+        code_plugin(&data, "gamma", "news");
+        put(&data, "plugins/plain/plugin.toml", &OK.replace("sunset", "plain"));
+        let list = PluginStore::new(&data).list();
+        let (specs, lost) = code_specs(&list, &BTreeSet::from(["gamma".to_string()]));
+        let who: Vec<(&str, &str)> = specs.iter().map(|(_, s)| (s.source.as_str(), s.plugin.as_str())).collect();
+        assert_eq!(who, [("weather", "beta")], "gamma is off; beta, the later id, wins weather");
+        assert_eq!(lost, BTreeMap::from([("alpha".to_string(), "beta".to_string())]));
+        assert_eq!(specs[0].1.module, data.join("plugins/beta/code/m.wasm"));
+        let key = specs[0].0.clone();
+        assert_eq!(code_specs(&list, &BTreeSet::from(["gamma".to_string()])).0[0].0, key, "same files, same key");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        put(&data, "plugins/beta/code/m.wasm", "(module) ;; rebuilt");
+        assert_ne!(code_specs(&PluginStore::new(&data).list(), &BTreeSet::new()).0.iter().find(|(_, s)| s.source == "weather").unwrap().0, key, "a rebuilt module restarts");
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn rows_say_what_code_runs_and_reaches() {
+        let data = tmp("coderows");
+        code_plugin(&data, "alpha", "weather");
+        code_plugin(&data, "beta", "weather");
+        let list = PluginStore::new(&data).list();
+        let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
+        let r = rows(&list, &BTreeSet::new(), &cat);
+        assert_eq!(r[1].code, "Runs code as `weather` · can reach api.open-meteo.com");
+        assert_eq!((r[0].code_source.as_deref(), r[1].code_source.as_deref()), (None, Some("weather")));
+        assert!(r[0].problems.iter().any(|p| p.contains("data source `weather` is hidden") && p.contains("wins")), "{:?}", r[0].problems);
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn install_question_names_hosts_and_new_hosts() {
+        let plain = Manifest::parse(OK).unwrap();
+        let c = Contents { widgets: vec!["weather".into()], ..Default::default() };
+        let q = install_question(&plain, &c, None);
+        assert!(q.starts_with("Install Sunset 1.2.0 by Ada?") && q.contains("1 widget") && q.contains("never run programs"), "{q}");
+        let v1 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'w.wasm'\nsource = 'w'\nnet = ['api.open-meteo.com']")).unwrap();
+        let q = install_question(&v1, &c, None);
+        assert!(q.contains("runs sandboxed code") && q.contains("can connect to: api.open-meteo.com") && q.contains("trust"), "{q}");
+        let mut v2 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'w.wasm'\nsource = 'w'\nnet = ['api.open-meteo.com', 'news.example.com']")).unwrap();
+        v2.version = "1.3.0".into();
+        let q = install_question(&v2, &c, Some(&v1));
+        assert!(q.starts_with("Replace Sunset 1.2.0 with 1.3.0?") && q.contains("New in this version: news.example.com."), "{q}");
+    }
+
+    #[test]
+    fn plugin_data_is_never_launched() {
+        let data = Path::new("C:\\Users\\a\\AppData\\Roaming\\Wayfinder");
+        assert!(inside_plugins(data, "C:\\Users\\a\\AppData\\Roaming\\Wayfinder\\plugin-data\\x.exe"));
+        assert_eq!(data_file(data, "sunset"), data.join("plugin-data").join("sunset.json"));
+    }
+
+    #[test]
+    fn wasm_changes_reload() {
+        let data = Path::new("C:\\Users\\a\\AppData\\Roaming\\Wayfinder");
+        assert!(is_content_change(data, &data.join("plugins\\sunset\\code\\weather.wasm")));
+        assert!(!is_content_change(data, &data.join("plugin-data\\sunset.json")), "saved data is not content");
+    }
+
+    #[test]
+    fn code_values_launch_web_links_only() {
+        assert!(launch_allowed("C:\\Windows\\notepad.exe", false), "no code: as before");
+        assert!(launch_allowed("https://open-meteo.com/", true) && launch_allowed(" HTTPS://x.com", true));
+        for bad in ["\\\\host\\share\\x.exe", "ms-msdt:/id", "search-ms:query=x", "http://x.com", "C:\\x.exe", "file:///C:/x"] {
+            assert!(!launch_allowed(bad, true), "{bad}");
+        }
     }
 
     #[test]

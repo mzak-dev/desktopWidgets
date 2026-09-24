@@ -135,7 +135,23 @@ impl App {
                 return;
             }
         }
+        // `weather.refresh`: a Code Source's own verb
+        if let Some((source, v)) = verb.split_once('.') {
+            let cfg = &self.ws.instances[i];
+            let params = match self.reg.get(&cfg.widget) {
+                Some(Ok(w)) => w.meta().effective_params(&cfg.params_map()),
+                _ => cfg.params_map(),
+            };
+            let icon_pack = cfg.theme.resolve(&self.ws.theme).icon_pack;
+            let cx = crate::data::SourceCx { cfg, params: &params, tm: crate::data::now_local(), icon_pack: &icon_pack };
+            if self.sources.act(source, v, rest, &cx) {
+                return;
+            }
+        }
         match engine_action(&mut self.wins[i].state, verb, rest) {
+            VerbOutcome::Launch(target) if !crate::plugins::launch_allowed(&target, self.sources.uses_code(&self.wins[i].deps)) => {
+                self.log(format!("refused to open `{target}`: a widget showing plugin data may only open https:// links"));
+            }
             VerbOutcome::Redraw => self.wins[i].redraw = true,
             VerbOutcome::Launch(target) if crate::plugins::inside_plugins(&self.opts.dir, &target) => {
                 self.log(format!("refused to open `{target}`: plugins never start programs"));

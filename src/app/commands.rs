@@ -42,6 +42,7 @@ impl App {
         self.ws.instances.remove(i);
         self.wins.remove(i);
         self.remove_armed = None;
+        self.retain_code();
         self.sync_watchers();
         self.mark_save();
         if let Some(s) = &mut self.settings {
@@ -185,6 +186,15 @@ impl App {
             }
             Cmd::InstallPlugin(path) => {
                 let file = path.file_name().map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into_owned());
+                // code gets the same question Explorer asks, naming the hosts it may reach
+                if let Ok((m, contents)) = plugins::describe(&path) {
+                    if m.code.is_some() {
+                        let installed = self.plugins.iter().find(|p| p.id == m.id).and_then(|p| p.manifest.as_ref().ok());
+                        if !crate::dialog::confirm("Install a Wayfinder plugin", &plugins::install_question(&m, &contents, installed)) {
+                            return;
+                        }
+                    }
+                }
                 match PluginStore::new(&self.opts.dir).install(&path) {
                     Ok(m) => {
                         self.plugin_note = format!("Installed {} {}", m.name, m.version);
@@ -217,6 +227,13 @@ impl App {
                     Ok(()) => {
                         for inst in orphans {
                             self.remove_instance(&inst);
+                        }
+                        // its saved data goes too, and a dying worker can no longer write it
+                        match self.stores.remove(&id) {
+                            Some(store) => store.purge(),
+                            None => {
+                                let _ = std::fs::remove_file(plugins::data_file(&self.opts.dir, &id));
+                            }
                         }
                         self.ws.disabled_plugins.remove(&id);
                         self.log(format!("removed plugin {id}"));

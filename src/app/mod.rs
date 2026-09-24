@@ -15,7 +15,7 @@ mod tray;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
@@ -33,12 +33,16 @@ use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
 use crate::anim::{self, Anim, Ease};
 use crate::card::Card;
+use crate::code::runtime::Limits;
+use crate::code::store::KvStore;
+use crate::code::{Deps, WasmSource};
 use crate::content::{Catalog, Root};
 use crate::data::{self, DataSources};
 use crate::draw::DrawList;
 use crate::edit::{self, Handle, Rect, Snap};
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
+use crate::net::Fetch;
 use crate::platform::win32::{self, ZMode};
 use crate::plugins::{self, Plugin, PluginRow, PluginStore};
 use crate::settings::{self, Cmd, Scope, SettingsWin};
@@ -65,6 +69,8 @@ pub enum UserEvent {
     FilesChanged,
     ForegroundChanged,
     DisplaysChanged,
+    /// A Code Source has new values, logs or status.
+    SourceNews,
 }
 
 pub struct Options {
@@ -121,6 +127,10 @@ pub struct App {
     plugin_rows: Vec<PluginRow>,
     /// The last install's outcome, shown on the Plugins page.
     plugin_note: String,
+    /// Each code Plugin's saved data, shared by every generation of its Code Source.
+    stores: BTreeMap<String, Arc<KvStore>>,
+    /// The network for plugin code, opened the first time a Plugin lists hosts.
+    fetch: Option<Arc<dyn Fetch>>,
 }
 
 impl App {
@@ -175,6 +185,8 @@ impl App {
             plugins: Vec::new(),
             plugin_rows: Vec::new(),
             plugin_note: String::new(),
+            stores: BTreeMap::new(),
+            fetch: None,
         };
         app.load_content();
         app.rebuild_theme();
@@ -291,6 +303,7 @@ impl App {
                 _ => {}
             }
         }
+        self.retain_code();
     }
 
     fn create_window(&mut self, el: &ActiveEventLoop, i: usize, pos: (i32, i32)) -> Result<(), String> {
@@ -423,6 +436,72 @@ impl App {
         for e in self.lib.errors.clone().into_iter().chain(self.reg.errors()).chain(font_problems) {
             self.log(e);
         }
+        self.sync_code();
+    }
+
+    /// Starts the Code Sources of enabled Plugins and stops the rest; unchanged ones keep running.
+    fn sync_code(&mut self) {
+        let (specs, _) = plugins::code_specs(&self.plugins, &self.ws.disabled_plugins);
+        if self.fetch.is_none() && specs.iter().any(|(_, s)| !s.hosts.is_empty()) {
+            match crate::platform::winhttp::WinHttp::new() {
+                Ok(w) => self.fetch = Some(Arc::new(w)),
+                Err(e) => self.log(format!("plugins cannot use the network: {e}")),
+            }
+        }
+        for (_, spec) in &specs {
+            let path = plugins::data_file(&self.opts.dir, &spec.plugin);
+            self.stores.entry(spec.plugin.clone()).or_insert_with(|| Arc::new(KvStore::open(&path)));
+        }
+        let proxy = Mutex::new(self.proxy.clone());
+        let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let _ = proxy.lock().unwrap().send_event(UserEvent::SourceNews);
+        });
+        let (fetch, stores) = (self.fetch.clone(), &self.stores);
+        self.sources.sync_code(specs, |spec| {
+            let deps = Deps { fetch: fetch.clone(), store: stores.get(&spec.plugin).cloned(), notify: notify.clone(), limits: Limits::default() };
+            WasmSource::start(spec, deps)
+        });
+        self.refresh_code_status();
+    }
+
+    /// Copies each Code Source's status onto its Plugins page row.
+    fn refresh_code_status(&mut self) {
+        for (name, status) in self.sources.code_status() {
+            for row in self.plugin_rows.iter_mut().filter(|r| r.code_source.as_deref() == Some(name.as_str())) {
+                row.status = status.line();
+            }
+        }
+    }
+
+    fn take_source_news(&mut self) {
+        let mut status = false;
+        for (name, news) in self.sources.take_news() {
+            for l in news.logs {
+                self.log(format!("{name}: {l}"));
+            }
+            status |= news.status_changed;
+            for id in news.changed {
+                if let Some(iw) = self.ws.instances.iter().position(|c| c.id == id).and_then(|i| self.wins.get_mut(i)) {
+                    iw.redraw = true;
+                }
+            }
+        }
+        if status {
+            self.refresh_code_status();
+            let failing: Vec<String> = self.plugin_rows.iter().filter(|r| r.status.starts_with("Error") || r.status.starts_with("Cannot")).map(|r| format!("plugin {}: {}", r.id, r.status)).collect();
+            for l in failing {
+                self.log(l);
+            }
+            if let Some(s) = &mut self.settings {
+                s.invalidate();
+            }
+        }
+    }
+
+    /// Code Sources keep values only for Instances on screen.
+    fn retain_code(&self) {
+        let live: BTreeSet<String> = self.ws.instances.iter().zip(&self.wins).filter(|(_, w)| w.window.is_some()).map(|(c, _)| c.id.clone()).collect();
+        self.sources.retain(&live);
     }
 
     fn reload(&mut self, el: &ActiveEventLoop) {
@@ -567,6 +646,7 @@ impl ApplicationHandler<UserEvent> for App {
                 self.show_desktop_checks = [4u64, 20, 60, 140, 300, 700].iter().map(|ms| now + Duration::from_millis(*ms)).collect();
             }
             UserEvent::DisplaysChanged => self.display_at = Some(Instant::now() + Duration::from_millis(500)),
+            UserEvent::SourceNews => self.take_source_news(),
         }
     }
 

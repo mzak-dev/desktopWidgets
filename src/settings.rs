@@ -1091,6 +1091,13 @@ impl UiState {
         }
         let state = if r.enabled { r.summary.clone() } else { format!("{}  ·  off", r.summary) };
         card = card.child(k.txt(format!("{key}/sum"), &state, 12.0, k.c("text-dim")));
+        if !r.code.is_empty() {
+            card = card.child(k.txt(format!("{key}/code"), &r.code, 11.5, k.c("text-dim")).wrap_text());
+        }
+        if r.enabled && !r.status.is_empty() {
+            let bad = r.status.starts_with("Error") || r.status.starts_with("Cannot");
+            card = card.child(k.txt(format!("{key}/status"), &r.status, 11.5, if bad { k.c("danger") } else { k.c("accent") }).wrap_text());
+        }
         for (j, n) in r.notes.iter().enumerate() {
             card = card.child(k.txt(format!("{key}/note/{j}"), n, 11.5, k.c("text-dim")).wrap_text());
         }
@@ -1873,7 +1880,7 @@ mod tests {
         folder.set_items(&[Shortcut { name: "A".into(), target: "a.exe".into(), icon: String::new() }, Shortcut { name: "B".into(), target: "b.exe".into(), icon: String::new() }]);
         ws.instances.push(folder);
         let plugins = vec![
-            PluginRow { id: "sunset".into(), name: "Sunset".into(), version: "1.2.0".into(), author: "Ada".into(), description: "Warm colours".into(), summary: "1 widget · 1 palette".into(), enabled: true, notes: vec!["Restyles Analog Clock".into()], problems: vec![], sole_widgets: vec!["weather".into()] },
+            PluginRow { id: "sunset".into(), name: "Sunset".into(), version: "1.2.0".into(), author: "Ada".into(), description: "Warm colours".into(), summary: "1 widget · 1 palette".into(), enabled: true, notes: vec!["Restyles Analog Clock".into()], problems: vec![], sole_widgets: vec!["weather".into()], code: "Runs code as `weather` · can reach api.open-meteo.com".into(), code_source: Some("weather".into()), status: "Running".into() },
             PluginRow { id: "broken".into(), name: "broken".into(), summary: "nothing yet".into(), enabled: false, problems: vec!["no plugin.toml".into()], ..Default::default() },
         ];
         World { ws, reg: Registry::load(Path::new("no-such-dir")), lib, theme, hidden: vec![], plugins }
