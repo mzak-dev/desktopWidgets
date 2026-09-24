@@ -1,6 +1,6 @@
 # Making Wayfinder plugins
 
-A plugin packs widgets, palettes, font sets, glyph sets and icon packs into one thing people can install, switch off and remove in **Settings → Plugins**. It holds content only: it never runs programs.
+A plugin packs widgets, palettes, font sets, glyph sets and icon packs into one thing people can install, switch off and remove in **Settings → Plugins**. It can also carry sandboxed code for live data (see **Code** below), but it never starts programs.
 
 ## Layout
 
@@ -40,8 +40,24 @@ Unknown keys are refused, so a typo shows up at once.
 - **Order:** built-ins, then plugins by id, then the user's own files. The user's `widgets/clock.toml` beats yours.
 - **Images next to a widget:** `src = "./logo.png"` is a file in the widget's own folder, and `src = "./../images/logo.png"` reaches the plugin's `images/`. A path may not leave the plugin.
 - **Fonts:** put `.ttf` / `.otf` files in `fonts/` and name the family (as it is inside the font) in a font set.
-- **Allowed files:** `toml png ttf otf ttc otc md txt`, plus `LICENSE`, `README` and `NOTICE`. Anything else stops the install.
+- **Allowed files:** `toml png ttf otf ttc otc md txt wasm`, plus `LICENSE`, `README` and `NOTICE`. Anything else stops the install.
 - A widget's `launch` can never open a file inside `plugins/`.
+
+## Code
+
+For live data (weather, feeds, prices, a to-do list), a plugin can carry one WebAssembly module written in Rust with the `wayfinder-plugin` crate. It serves a data source that the plugin's widgets bind to like any other:
+
+```toml
+[code]
+module = "code/weather.wasm"          # inside the plugin
+source = "weather"                    # widgets read {weather.temp}; on_click = "weather.refresh"
+net = ["api.open-meteo.com"]          # the only hosts it may reach, over HTTPS
+
+[code.initial]                        # shown until the first answer, with {weather.loading}
+temp = 0
+```
+
+The module runs sandboxed: no files, no programs, only the hosts listed, up to 1 MB of saved data, and a time limit on every call. `{weather.error}` holds its last error. The install prompt and the Plugins page show what it can reach. How to write and build one: the SDK's README, https://github.com/mzak-dev/desktopWidgets/tree/main/sdk.
 
 ## Try it, then share it
 

@@ -72,8 +72,15 @@ Where an Instance sits relative to other windows: Desktop, Bottom, Normal or Top
 To hide an Instance whose monitor is absent while remembering it, instead of relocating or deleting it.
 
 **Plugin**:
-A package of content (Widgets, palettes, font sets, glyph sets, Icon Packs) that is installed, switched off and on, and removed as one unit. Its folder under `plugins/` has the data folder's layout plus a `plugin.toml` manifest; it is shared as a `.wfplugin` file, a zip of that folder.
+A package of content (Widgets, palettes, font sets, glyph sets, Icon Packs), and optionally one Code Source, that is installed, switched off and on, and removed as one unit. Its folder under `plugins/` has the data folder's layout plus a `plugin.toml` manifest; it is shared as a `.wfplugin` file, a zip of that folder.
 _Avoid_: add-on, extension, skin, package (for the installed folder)
+
+**Code Source**:
+A Data Source whose values come from a Plugin's WebAssembly module (written in Rust with the `wayfinder-plugin` crate), run sandboxed on its own thread. The Plugin's Widgets stay TOML Widgets that bind to it (`{weather.temp}`) and send it actions (`weather.refresh`).
+_Avoid_: Rust Widget (that is engine code, like the Drawer), script, native plugin
+
+**Plugin data**:
+What a Plugin's code saves between runs, up to 1 MB, in `plugin-data/<id>.json`. It survives upgrades and goes when the Plugin is removed.
 
 **Content root**:
 A folder laid out like the data folder that content is read from: each enabled Plugin, then the data folder itself, after the built-ins. A later root wins, so a Plugin may restyle a built-in Widget and the user's own file still beats the Plugin's.
@@ -89,7 +96,7 @@ Everything the engine can show once every content root is read, and which root e
 - A **Widget** binds to one or more **Data Sources**; its appearance resolves through the active **Theme**.
 - An **Instance** takes the global **Style** and axes unless it overrides them; its own values win.
 - An **Instance** has exactly one **Z-mode** and is anchored to one monitor; if that monitor is absent it is **Parked**.
-- A **Plugin** is a **Content root** while it is on. An **Instance** whose Widget only a switched-off Plugin provides is hidden like a Parked one, and shows again when the Plugin is back on.
+- A **Plugin** is a **Content root** while it is on, and runs its **Code Source** while it is on. An **Instance** whose Widget only a switched-off Plugin provides is hidden like a Parked one, and shows again when the Plugin is back on.
 
 ## Commit messages
 

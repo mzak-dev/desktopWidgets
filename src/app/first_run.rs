@@ -74,6 +74,9 @@ mod tests {
         let example = guide.split("```toml\n").nth(1).and_then(|b| b.split("```").next()).expect("a toml example");
         let m = crate::plugins::Manifest::parse(example).expect("the example parses");
         assert_eq!(m.id, "sunset");
+        let code = guide.split("```toml\n").nth(2).and_then(|b| b.split("```").next()).expect("a [code] example");
+        let with_code = crate::plugins::Manifest::parse(&format!("{example}\n{code}")).expect("the [code] example parses");
+        assert_eq!(with_code.code.map(|c| c.source), Some("weather".into()));
     }
 
     #[test]
