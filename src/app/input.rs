@@ -137,6 +137,9 @@ impl App {
         }
         match engine_action(&mut self.wins[i].state, verb, rest) {
             VerbOutcome::Redraw => self.wins[i].redraw = true,
+            VerbOutcome::Launch(target) if crate::plugins::inside_plugins(&self.opts.dir, &target) => {
+                self.log(format!("refused to open `{target}`: plugins never start programs"));
+            }
             VerbOutcome::Launch(target) => {
                 if !win32::open(&target) {
                     self.log(format!("could not open `{target}`"));

@@ -68,7 +68,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
     prev[b.len()]
 }
 
-fn suggest(name: &str, pool: &[&[&str]]) -> String {
+pub(crate) fn suggest(name: &str, pool: &[&[&str]]) -> String {
     pool.iter()
         .flat_map(|p| p.iter())
         .map(|c| (edit_distance(name, c), *c))

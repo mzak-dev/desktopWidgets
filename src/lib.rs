@@ -15,6 +15,7 @@ pub mod format;
 pub mod gfx;
 pub mod icons;
 pub mod platform;
+pub mod plugins;
 pub mod settings;
 pub mod text;
 pub mod theme;

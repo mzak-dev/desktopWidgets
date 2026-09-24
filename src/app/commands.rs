@@ -177,7 +177,7 @@ impl App {
                 self.mark_save();
             }
             Cmd::Edit(on) => self.set_edit(on),
-            Cmd::Reload => self.reload(),
+            Cmd::Reload => self.reload(el),
             Cmd::OpenFolder => {
                 let d = self.opts.dir.join("widgets");
                 let _ = std::fs::create_dir_all(&d);

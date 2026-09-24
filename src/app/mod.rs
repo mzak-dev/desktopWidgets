@@ -39,6 +39,7 @@ use crate::edit::{self, Handle, Rect, Snap};
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
 use crate::platform::win32::{self, ZMode};
+use crate::plugins::{self, Plugin, PluginStore};
 use crate::settings::{self, Cmd, Scope, SettingsWin};
 use crate::text::TextEngine;
 use crate::theme::{Library, Theme};
@@ -109,6 +110,7 @@ pub struct App {
     gpu_recoveries: Vec<Instant>,
     forced_software: bool,
     families: Vec<String>,
+    plugins: Vec<Plugin>,
 }
 
 impl App {
@@ -158,6 +160,7 @@ impl App {
             gpu_recoveries: Vec::new(),
             forced_software: false,
             families: Vec::new(),
+            plugins: Vec::new(),
         };
         app.load_content();
         app.rebuild_theme();
@@ -245,8 +248,10 @@ impl App {
             self.wins.push(Instance::new());
         }
         self.wins.truncate(self.ws.instances.len());
+        let hidden = plugins::hidden_instances(&self.ws, &self.reg, &self.plugins);
         for i in 0..self.ws.instances.len() {
-            let pos = workspace::resolve(&self.ws.instances[i], &self.monitors);
+            let id = &self.ws.instances[i].id;
+            let pos = if hidden.contains_key(id) { None } else { workspace::resolve(&self.ws.instances[i], &self.monitors) };
             match (pos, self.wins[i].window.is_some()) {
                 (Some(p), false) => {
                     if let Err(e) = self.create_window(el, i, p) {
@@ -256,7 +261,10 @@ impl App {
                 }
                 (None, true) => {
                     let id = self.ws.instances[i].id.clone();
-                    self.log(format!("monitor for {id} is gone: parked (kept in place for when it returns)"));
+                    match hidden.get(&id) {
+                        Some(p) => self.log(format!("{id} is hidden while the plugin {p} is off")),
+                        None => self.log(format!("monitor for {id} is gone: parked (kept in place for when it returns)")),
+                    }
                     let iw = &mut self.wins[i];
                     iw.target = None;
                     iw.window = None;
@@ -371,11 +379,19 @@ impl App {
 
     /// The folders content is read from, after the built-ins; later ones win.
     fn content_roots(&self) -> Vec<Root> {
-        vec![Root::user(&self.opts.dir)]
+        let mut roots = plugins::roots(&self.plugins, &self.ws.disabled_plugins);
+        roots.push(Root::user(&self.opts.dir));
+        roots
     }
 
-    /// Widgets, themes and Icon Packs from every content root, and their errors logged.
+    /// Plugins, then Widgets, themes and Icon Packs from every content root, with their
+    /// errors logged.
     fn load_content(&mut self) {
+        self.plugins = PluginStore::new(&self.opts.dir).list();
+        let broken: Vec<String> = self.plugins.iter().filter_map(|p| p.manifest.as_ref().err().map(|e| format!("plugin {}: {e}", p.id))).collect();
+        for e in broken {
+            self.log(e);
+        }
         let cat = Catalog::load(&self.content_roots());
         self.reg = cat.registry;
         self.lib = cat.library;
@@ -390,8 +406,9 @@ impl App {
         }
     }
 
-    fn reload(&mut self) {
+    fn reload(&mut self, el: &ActiveEventLoop) {
         self.load_content();
+        self.sync_windows(el);
         self.rebuild_theme();
         self.sources.invalidate();
         if let Some(s) = &mut self.settings {
@@ -403,14 +420,13 @@ impl App {
     /// With `only_assets`, our own log and workspace.json don't count, or saving would reload forever.
     fn watcher(&self, only_assets: bool) -> Option<RecommendedWatcher> {
         let proxy = self.proxy.clone();
+        let data = self.opts.dir.clone();
         notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             let Ok(ev) = res else { return };
             if matches!(ev.kind, notify::EventKind::Access(_)) {
                 return;
             }
-            let relevant = ev.paths.iter().any(|p| {
-                !only_assets || p.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "toml" | "png" | "ttf" | "otf" | "ttc"))
-            });
+            let relevant = ev.paths.iter().any(|p| !only_assets || plugins::is_content_change(&data, p));
             if relevant {
                 let _ = proxy.send_event(UserEvent::FilesChanged);
             }
@@ -505,7 +521,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Menu(id) => match id.as_str() {
                 "edit" => self.set_edit(!self.edit),
                 "settings" => self.open_settings(el),
-                "reload" => self.reload(),
+                "reload" => self.reload(el),
                 "folder" => self.apply(el, Cmd::OpenFolder),
                 "quit" => el.exit(),
                 _ => {}
@@ -600,7 +616,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         if self.reload_at.is_some_and(|t| t <= now) {
             self.reload_at = None;
-            self.reload();
+            self.reload(el);
         }
         if self.save_at.is_some_and(|t| t <= now) {
             self.save_at = None;

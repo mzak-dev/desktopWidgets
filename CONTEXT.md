@@ -71,6 +71,16 @@ Where an Instance sits relative to other windows: Desktop, Bottom, Normal or Top
 **Park**:
 To hide an Instance whose monitor is absent while remembering it, instead of relocating or deleting it.
 
+**Plugin**:
+A package of content (Widgets, palettes, font sets, glyph sets, Icon Packs) that is installed, switched off and on, and removed as one unit. Its folder under `plugins/` has the data folder's layout plus a `plugin.toml` manifest; it is shared as a `.wfplugin` file, a zip of that folder.
+_Avoid_: add-on, extension, skin, package (for the installed folder)
+
+**Content root**:
+A folder laid out like the data folder that content is read from: each enabled Plugin, then the data folder itself, after the built-ins. A later root wins, so a Plugin may restyle a built-in Widget and the user's own file still beats the Plugin's.
+
+**Catalog**:
+Everything the engine can show once every content root is read, and which root each piece came from.
+
 ## Relationships
 
 - A **Widget** is instantiated as zero or more **Instances**; a **Workspace** is the set of all Instances.
@@ -79,6 +89,7 @@ To hide an Instance whose monitor is absent while remembering it, instead of rel
 - A **Widget** binds to one or more **Data Sources**; its appearance resolves through the active **Theme**.
 - An **Instance** takes the global **Style** and axes unless it overrides them; its own values win.
 - An **Instance** has exactly one **Z-mode** and is anchored to one monitor; if that monitor is absent it is **Parked**.
+- A **Plugin** is a **Content root** while it is on. An **Instance** whose Widget only a switched-off Plugin provides is hidden like a Parked one, and shows again when the Plugin is back on.
 
 ## Commit messages
 
