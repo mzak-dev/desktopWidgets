@@ -65,6 +65,12 @@ fs_read = ["~/.claude"]               # read-only, shown when installing
 fs_read_params = ["folder"]           # the folder the user chose in this param
 ```
 
+A widget showing its values opens only `https://` links, unless the plugin lists more:
+
+```toml
+launch = ["vscode", "~/.claude"]      # vscode:// links; folders and documents in ~/.claude
+```
+
 The module runs sandboxed: it cannot write files or start programs, reads only the folders listed, reaches only the hosts listed, keeps up to 1 MB of saved data, and has a time limit on every call. `{weather.error}` holds its last error. The install prompt and the Plugins page show what it can reach. How to write and build one: the SDK's README, https://github.com/mzak-dev/desktopWidgets/tree/main/sdk.
 
 ## Try it, then share it

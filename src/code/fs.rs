@@ -20,7 +20,7 @@ pub const CALL_OPS: usize = 5000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FsRoot(String);
 
-fn bad_part(p: &str) -> bool {
+pub(crate) fn bad_part(p: &str) -> bool {
     // Windows drops trailing dots and spaces, so `.. ` would mean `..`
     p == "." || p == ".." || p.ends_with('.') || p.ends_with(' ') || p.chars().any(|c| c.is_control() || "<>:\"|?*".contains(c))
 }
@@ -29,14 +29,14 @@ impl FsRoot {
     pub fn parse(s: &str) -> Result<FsRoot, String> {
         let s = s.trim().replace('\\', "/");
         let Some(rest) = s.strip_prefix("~/") else {
-            return Err(format!("code.fs_read `{s}`: start it with ~/ (the user's home folder)"));
+            return Err(format!("`{s}`: start it with ~/ (the user's home folder)"));
         };
         let parts: Vec<&str> = rest.split('/').filter(|p| !p.is_empty()).collect();
         if parts.is_empty() {
-            return Err("code.fs_read: name a folder inside ~/, not the whole home folder".into());
+            return Err(format!("`{s}`: name a folder inside ~/, not the whole home folder"));
         }
         if let Some(p) = parts.iter().find(|p| bad_part(p)) {
-            return Err(format!("code.fs_read `{s}`: `{p}` is not a plain folder name"));
+            return Err(format!("`{s}`: `{p}` is not a plain folder name"));
         }
         Ok(FsRoot(format!("~/{}", parts.join("/"))))
     }
@@ -65,7 +65,7 @@ fn key(p: &Path) -> Vec<String> {
     p.components().map(|c| c.as_os_str().to_string_lossy().to_lowercase()).collect()
 }
 
-fn under(p: &Path, root: &Path) -> bool {
+pub(crate) fn under(p: &Path, root: &Path) -> bool {
     let (p, r) = (key(p), key(root));
     p.len() >= r.len() && p[..r.len()] == r[..]
 }

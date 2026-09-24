@@ -225,8 +225,10 @@ impl DataSources {
     }
 
     /// Whether any of `deps` reads a Code Source.
-    pub fn uses_code(&self, deps: &BTreeSet<String>) -> bool {
-        deps.iter().any(|d| self.code(d.split('.').next().unwrap_or(d)).is_some())
+    /// The launch rules of each Code Source `deps` reads (see `code::launch::allowed`).
+    pub fn launch_rules(&self, deps: &BTreeSet<String>) -> Vec<&[crate::code::launch::LaunchRule]> {
+        let names: BTreeSet<&str> = deps.iter().map(|d| d.split('.').next().unwrap_or(d)).collect();
+        names.into_iter().filter_map(|n| self.code(n)).map(|s| s.launch_rules()).collect()
     }
 
     pub fn value(&self, name: &str, cx: &SourceCx) -> Option<Value> {
@@ -340,7 +342,7 @@ mod tests {
         use crate::code::runtime::{Limits, tests::returning};
         use crate::code::tests::start;
         let mut src = DataSources::builtin();
-        let spec = |n: &str| CodeSpec { plugin: n.into(), source: n.into(), module: "nope.wasm".into(), hosts: vec![], fs_read: vec![], fs_read_params: vec![], initial: Value::Nil };
+        let spec = |n: &str| CodeSpec { plugin: n.into(), source: n.into(), module: "nope.wasm".into(), hosts: vec![], fs_read: vec![], fs_read_params: vec![], launch: vec![], initial: Value::Nil };
         let started = std::cell::RefCell::new(Vec::new());
         let launch = |s: CodeSpec| {
             started.borrow_mut().push(s.source.clone());
@@ -359,7 +361,7 @@ mod tests {
         let before = src.get("sys").unwrap() as *const dyn DataSource as *const u8;
         src.sync_code(vec![], |_| unreachable!());
         assert!(std::ptr::eq(before, src.get("sys").unwrap() as *const dyn DataSource as *const u8), "Sys keeps its history");
-        assert!(!src.uses_code(&deps(&["sys.gauges", "clock.minute"])));
+        assert!(src.launch_rules(&deps(&["sys.gauges", "clock.minute"])).is_empty(), "no Code Source read");
     }
 
     /// A native source like an app built on Wayfinder would add.

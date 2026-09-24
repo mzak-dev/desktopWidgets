@@ -142,8 +142,8 @@ impl App {
             }
         }
         match engine_action(&mut self.wins[i].state, verb, rest) {
-            VerbOutcome::Launch(target) if !crate::plugins::launch_allowed(&target, self.sources.uses_code(&self.wins[i].deps)) => {
-                self.log(format!("refused to open `{target}`: a widget showing plugin data may only open https:// links"));
+            VerbOutcome::Launch(target) if !crate::code::launch::allowed(&target, &self.sources.launch_rules(&self.wins[i].deps), std::env::var_os("USERPROFILE").map(PathBuf::from).as_deref()) => {
+                self.log(format!("refused to open `{target}`: a widget showing plugin data may only open https:// links and what its plugin lists under [code] launch"));
             }
             VerbOutcome::Redraw => self.wins[i].redraw = true,
             VerbOutcome::Launch(target) if crate::plugins::inside_plugins(&self.opts.dir, &target) => {

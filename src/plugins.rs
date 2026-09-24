@@ -9,6 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use crate::code::CodeSpec;
 use crate::content::{self, Catalog, Contents, Item, Origin, Root};
 use crate::code::fs::FsRoot;
+use crate::code::launch::LaunchRule;
 use crate::net::HostPattern;
 use crate::value::Value;
 use crate::widgets::Registry;
@@ -42,6 +43,8 @@ pub struct Code {
     pub fs_read: Vec<FsRoot>,
     /// Params (by name) whose folder, as the user picked it, it may read.
     pub fs_read_params: Vec<String>,
+    /// What its Widgets may open besides https:// links.
+    pub launch: Vec<LaunchRule>,
     /// Values shown until the first sample.
     pub initial: Value,
 }
@@ -57,7 +60,7 @@ impl Code {
     }
 }
 
-const CODE_KEYS: &[&str] = &["module", "source", "net", "fs_read", "fs_read_params", "initial"];
+const CODE_KEYS: &[&str] = &["module", "source", "net", "fs_read", "fs_read_params", "launch", "initial"];
 /// Data Source names and repeat variables a Code Source must not shadow.
 const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "param", "state", "self", "item", "index"];
 
@@ -91,7 +94,8 @@ fn parse_code(t: &toml::Table) -> Result<Code, String> {
             Some(v) => v.as_array().and_then(|a| a.iter().map(|x| x.as_str().map(String::from)).collect()).ok_or(format!("code.{k} must be a list of text")),
         }
     };
-    let fs_read = list("fs_read")?.iter().map(|s| FsRoot::parse(s)).collect::<Result<Vec<_>, _>>()?;
+    let fs_read = list("fs_read")?.iter().map(|s| FsRoot::parse(s).map_err(|e| format!("code.fs_read {e}"))).collect::<Result<Vec<_>, _>>()?;
+    let launch = list("launch")?.iter().map(|s| LaunchRule::parse(s)).collect::<Result<Vec<_>, _>>()?;
     let fs_read_params = list("fs_read_params")?;
     if let Some(p) = fs_read_params.iter().find(|p| p.is_empty() || !p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
         return Err(format!("code.fs_read_params: `{p}` is not a param name"));
@@ -101,7 +105,7 @@ fn parse_code(t: &toml::Table) -> Result<Code, String> {
         Some(v @ toml::Value::Table(_)) => Value::from(v),
         Some(_) => return Err("code.initial must be a table".into()),
     };
-    Ok(Code { module, source, net, fs_read, fs_read_params, initial })
+    Ok(Code { module, source, net, fs_read, fs_read_params, launch, initial })
 }
 
 fn version_parts(v: &str) -> Vec<u64> {
@@ -596,7 +600,8 @@ pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog) -> Vec<
                 let reach = if c.net.is_empty() { "no network".to_string() } else { format!("can reach {}", c.net.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(", ")) };
                 let reads = c.reads();
                 let reads = if reads.is_empty() { String::new() } else { format!(" · reads {}", reads.join(", ")) };
-                format!("Runs code as `{}` · {reach}{reads}", c.source)
+                let opens = if c.launch.is_empty() { String::new() } else { format!(" · opens {}", c.launch.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ")) };
+                format!("Runs code as `{}` · {reach}{reads}{opens}", c.source)
             });
             let runs = code.is_some() && !disabled.contains(&p.id) && !code_lost.contains_key(&p.id);
             PluginRow {
@@ -656,12 +661,6 @@ pub fn inside_plugins(data: &Path, target: &str) -> bool {
     t.starts_with(lower(&data.join("plugins"))) || t.starts_with(lower(&data.join(DATA_DIR)))
 }
 
-/// What a Widget reading a Code Source may `launch`: web links only, so text from a server
-/// can never become a network path or a protocol handler for the shell.
-pub fn launch_allowed(target: &str, uses_code: bool) -> bool {
-    !uses_code || target.trim().get(..8).is_some_and(|s| s.eq_ignore_ascii_case("https://"))
-}
-
 /// Where Plugins keep their saved data: `<data>/plugin-data/<id>.json`.
 pub const DATA_DIR: &str = "plugin-data";
 
@@ -680,7 +679,7 @@ pub fn code_specs(list: &[Plugin], disabled: &BTreeSet<String>) -> (Vec<(String,
         let module = p.dir.join(&code.module);
         let stamp = std::fs::metadata(&module).map(|m| (m.len(), m.modified().ok())).ok();
         let key = format!("{}|{:?}|{:?}", p.id, code, stamp);
-        let spec = CodeSpec { plugin: p.id.clone(), source: code.source.clone(), module, hosts: code.net.clone(), fs_read: code.fs_read.clone(), fs_read_params: code.fs_read_params.clone(), initial: code.initial.clone() };
+        let spec = CodeSpec { plugin: p.id.clone(), source: code.source.clone(), module, hosts: code.net.clone(), fs_read: code.fs_read.clone(), fs_read_params: code.fs_read_params.clone(), launch: code.launch.clone(), initial: code.initial.clone() };
         if let Some((_, old)) = by_source.insert(code.source.clone(), (key, spec)) {
             lost.insert(old.plugin, p.id.clone());
         }
@@ -709,7 +708,10 @@ pub fn install_question(m: &Manifest, contents: &Contents, installed: Option<&Ma
             if !hosts.is_empty() {
                 q += &format!(" It can connect to: {}.", hosts.join(", "));
             }
-            let reach = |c: &Code| c.net.iter().map(|h| h.to_string()).chain(c.reads()).collect::<Vec<_>>();
+            if !code.launch.is_empty() {
+                q += &format!(" Its widgets can open {}.", code.launch.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", "));
+            }
+            let reach = |c: &Code| c.net.iter().map(|h| h.to_string()).chain(c.reads()).chain(c.launch.iter().map(|l| l.to_string())).collect::<Vec<_>>();
             let before = installed.and_then(|o| o.code.as_ref()).map(reach).unwrap_or_default();
             let new: Vec<String> = reach(code).into_iter().filter(|h| !before.contains(h)).collect();
             if installed.is_some() && !new.is_empty() {
@@ -795,6 +797,18 @@ mod tests {
         assert!(q.contains("cannot change your files") && q.contains("can read files in: ~/.claude.") && !q.contains("connect"), "{q}");
         let v2 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'w.wasm'\nsource = 'w'\nfs_read = ['~/.claude', '~/.gemini']")).unwrap();
         assert!(install_question(&v2, &c, Some(&v1)).contains("New in this version: ~/.gemini."));
+    }
+
+    #[test]
+    fn code_may_let_its_widgets_open_more_than_web_links() {
+        let v1 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'agents'\nlaunch = ['vscode', '~/.claude']")).unwrap();
+        assert_eq!(v1.code.as_ref().unwrap().launch.iter().map(|l| l.to_string()).collect::<Vec<_>>(), ["vscode: links", "folders and documents in ~/.claude"]);
+        let q = install_question(&v1, &Contents::default(), None);
+        assert!(q.contains("Its widgets can open vscode: links, folders and documents in ~/.claude."), "{q}");
+        let v2 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'agents'\nlaunch = ['vscode', '~/.claude', 'slack']")).unwrap();
+        assert!(install_question(&v2, &Contents::default(), Some(&v1)).contains("New in this version: slack: links."));
+        let bad = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'a'\nlaunch = ['ms-msdt']")).unwrap_err();
+        assert!(bad.contains("never"), "{bad}");
     }
 
     #[test]
@@ -888,15 +902,6 @@ mod tests {
         assert!(is_content_change(data, &data.join("plugins\\sunset\\code\\weather.wasm")));
         assert!(is_content_change(data, &data.join("plugins\\sunset\\images\\dusk.GIF")), "any image a widget can show");
         assert!(!is_content_change(data, &data.join("plugin-data\\sunset.json")), "saved data is not content");
-    }
-
-    #[test]
-    fn code_values_launch_web_links_only() {
-        assert!(launch_allowed("C:\\Windows\\notepad.exe", false), "no code: as before");
-        assert!(launch_allowed("https://open-meteo.com/", true) && launch_allowed(" HTTPS://x.com", true));
-        for bad in ["\\\\host\\share\\x.exe", "ms-msdt:/id", "search-ms:query=x", "http://x.com", "C:\\x.exe", "file:///C:/x"] {
-            assert!(!launch_allowed(bad, true), "{bad}");
-        }
     }
 
     #[test]

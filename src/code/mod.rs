@@ -2,6 +2,7 @@
 //! owns a worker thread; the UI thread only reads the last values and never waits.
 
 pub mod fs;
+pub mod launch;
 pub mod runtime;
 pub mod schedule;
 pub mod store;
@@ -33,6 +34,8 @@ pub struct CodeSpec {
     pub fs_read: Vec<fs::FsRoot>,
     /// Params whose value, a folder the user picked, it may read for that Instance.
     pub fs_read_params: Vec<String>,
+    /// What Widgets showing its values may open besides https:// links.
+    pub launch: Vec<launch::LaunchRule>,
     /// Shown until the first sample, with `loading` set.
     pub initial: Value,
 }
@@ -92,6 +95,7 @@ pub struct WasmSource {
     shared: Arc<Shared>,
     initial: Value,
     fs_read_params: Vec<String>,
+    launch: Vec<launch::LaunchRule>,
     worker: JoinHandle<()>,
 }
 
@@ -114,12 +118,16 @@ impl WasmSource {
     pub fn start(spec: CodeSpec, deps: Deps) -> WasmSource {
         let (tx, rx) = mpsc::channel();
         let shared = Arc::new(Shared { slots: Mutex::new(HashMap::new()), news: Mutex::new(News::default()), status: Mutex::new(Status::Starting) });
-        let (name, initial, fs_read_params) = (spec.source.clone(), with_state(&spec.initial, true, ""), spec.fs_read_params.clone());
+        let (name, initial, fs_read_params, launch) = (spec.source.clone(), with_state(&spec.initial, true, ""), spec.fs_read_params.clone(), spec.launch.clone());
         let worker = {
             let shared = shared.clone();
             std::thread::Builder::new().name(format!("plugin {}", spec.plugin)).spawn(move || Worker::new(spec, deps, shared).run(rx)).expect("spawn a plugin worker")
         };
-        WasmSource { name, tx, shared, initial, fs_read_params, worker }
+        WasmSource { name, tx, shared, initial, fs_read_params, launch, worker }
+    }
+
+    pub fn launch_rules(&self) -> &[launch::LaunchRule] {
+        &self.launch
     }
 
     /// The folders the user picked for this Instance in the params the plugin may read.
@@ -434,7 +442,7 @@ pub(crate) mod tests {
         let tx = Mutex::new(tx);
         let deps = Deps { fetch: None, store, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits, places: Default::default() };
         let initial = Value::obj([("temp", 0.into())]);
-        let mut spec = CodeSpec { plugin: "p".into(), source: "weather".into(), module: path, hosts: vec![], fs_read: vec![], fs_read_params: vec![], initial };
+        let mut spec = CodeSpec { plugin: "p".into(), source: "weather".into(), module: path, hosts: vec![], fs_read: vec![], fs_read_params: vec![], launch: vec![], initial };
         edit(&mut spec);
         (WasmSource::start(spec, deps), rx)
     }
@@ -612,7 +620,7 @@ pub(crate) mod tests {
         let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/examples/weather/plugin");
         let manifest = crate::plugins::Manifest::parse(&std::fs::read_to_string(plugin.join("plugin.toml")).unwrap()).unwrap();
         let code = manifest.code.expect("the example has code");
-        let src = WasmSource::start(CodeSpec { plugin: "weather".into(), source: code.source, module: wasm, hosts: code.net, fs_read: code.fs_read, fs_read_params: code.fs_read_params, initial: code.initial }, deps);
+        let src = WasmSource::start(CodeSpec { plugin: "weather".into(), source: code.source, module: wasm, hosts: code.net, fs_read: code.fs_read, fs_read_params: code.fs_read_params, launch: code.launch, initial: code.initial }, deps);
         let c = cfg("weather-1");
         let params = BTreeMap::from([("latitude".to_string(), Value::Num(59.91)), ("longitude".to_string(), Value::Num(10.75))]);
         assert!(read(&src, &c, &params).get("loading").is_some_and(Value::truthy));
