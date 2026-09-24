@@ -183,6 +183,36 @@ impl App {
                 let _ = std::fs::create_dir_all(&d);
                 win32::open(&d.to_string_lossy());
             }
+            Cmd::PluginEnabled(id, on) => {
+                if on {
+                    self.ws.disabled_plugins.remove(&id);
+                } else {
+                    self.ws.disabled_plugins.insert(id.clone());
+                }
+                self.log(format!("plugin {id} switched {}", if on { "on" } else { "off" }));
+                self.mark_save();
+                self.reload(el);
+            }
+            Cmd::RemovePlugin(id) => {
+                let orphans = self.plugin_rows.iter().find(|r| r.id == id).map(|r| r.orphans(&self.ws)).unwrap_or_default();
+                match PluginStore::new(&self.opts.dir).remove(&id) {
+                    Err(e) => self.log(e),
+                    Ok(()) => {
+                        for inst in orphans {
+                            self.remove_instance(&inst);
+                        }
+                        self.ws.disabled_plugins.remove(&id);
+                        self.log(format!("removed plugin {id}"));
+                        self.mark_save();
+                        self.reload(el);
+                    }
+                }
+            }
+            Cmd::OpenPluginsFolder => {
+                let store = PluginStore::new(&self.opts.dir);
+                let _ = std::fs::create_dir_all(store.dir());
+                win32::open(&store.dir().to_string_lossy());
+            }
             Cmd::Quit => el.exit(),
             Cmd::Close => self.settings = None,
             Cmd::Minimize => {} // handled by the settings window itself

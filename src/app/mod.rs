@@ -39,7 +39,7 @@ use crate::edit::{self, Handle, Rect, Snap};
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
 use crate::platform::win32::{self, ZMode};
-use crate::plugins::{self, Plugin, PluginStore};
+use crate::plugins::{self, Plugin, PluginRow, PluginStore};
 use crate::settings::{self, Cmd, Scope, SettingsWin};
 use crate::text::TextEngine;
 use crate::theme::{Library, Theme};
@@ -111,6 +111,7 @@ pub struct App {
     forced_software: bool,
     families: Vec<String>,
     plugins: Vec<Plugin>,
+    plugin_rows: Vec<PluginRow>,
 }
 
 impl App {
@@ -119,6 +120,7 @@ impl App {
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::remove_file(dir.join("wayfinder.log")); // one log per run
         let guide_errors = write_missing_guides(&dir);
+        PluginStore::new(&dir).sweep();
         let (ws, ws_err) = Workspace::load(&dir);
         let theme = Theme::default(); // composed by `rebuild_theme` below
         let text = TextEngine::new();
@@ -161,6 +163,7 @@ impl App {
             forced_software: false,
             families: Vec::new(),
             plugins: Vec::new(),
+            plugin_rows: Vec::new(),
         };
         app.load_content();
         app.rebuild_theme();
@@ -393,6 +396,7 @@ impl App {
             self.log(e);
         }
         let cat = Catalog::load(&self.content_roots());
+        self.plugin_rows = plugins::rows(&self.plugins, &self.ws.disabled_plugins, &cat);
         self.reg = cat.registry;
         self.lib = cat.library;
         self.icons.set_packs(cat.icon_packs);
@@ -541,9 +545,10 @@ impl ApplicationHandler<UserEvent> for App {
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
         if self.settings.as_ref().is_some_and(|s| s.window.id() == id) {
             let gpu_info = self.gpu.as_ref().map(|g| g.info.clone()).unwrap_or_else(|| "no GPU yet".into());
-            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, .. } = self;
-            let parked: Vec<String> = ws.instances.iter().zip(wins.iter()).filter(|(_, w)| w.window.is_none()).map(|(c, _)| c.id.clone()).collect();
-            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, parked: &parked };
+            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, .. } = self;
+            let off = plugins::hidden_instances(ws, reg, installed);
+            let hidden: Vec<(String, settings::Hidden)> = ws.instances.iter().zip(wins.iter()).filter(|(_, w)| w.window.is_none()).map(|(c, _)| (c.id.clone(), off.get(&c.id).map_or(settings::Hidden::Parked, |p| settings::Hidden::PluginOff(p.clone())))).collect();
+            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows };
             let s = settings.as_mut().unwrap();
             let cmds = s.event(&ev, &ctx, text);
             if matches!(ev, WindowEvent::RedrawRequested) {

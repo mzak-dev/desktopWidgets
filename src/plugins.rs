@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
-use crate::content::{self, Contents, Root};
+use crate::content::{self, Catalog, Contents, Item, Origin, Root};
 use crate::widgets::Registry;
 use crate::workspace::Workspace;
 
@@ -115,12 +115,61 @@ impl PluginStore {
         &self.dir
     }
 
+    /// The data folder's sibling `<data>.<what>-<pid>-<n>`: on the same volume, so a
+    /// rename is atomic, but outside the watched folder.
+    fn scratch(&self, what: &str) -> PathBuf {
+        let data = self.dir.parent().unwrap_or(&self.dir);
+        let name = data.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "wayfinder".into());
+        (0..).map(|n| data.with_file_name(format!("{name}.{what}-{}-{n}", std::process::id()))).find(|p| !p.exists()).expect("a free name")
+    }
+
+    /// Moves the Plugin out first, so a locked file fails the whole removal before
+    /// anything is deleted; then deletes it (leftovers go at the next `sweep`).
+    pub fn remove(&self, id: &str) -> Result<(), String> {
+        valid_id(id)?;
+        let dir = self.dir.join(id);
+        if !dir.is_dir() {
+            return Err(format!("{id} is not installed"));
+        }
+        let trash = self.scratch("trash");
+        rename_retrying(&dir, &trash).map_err(|e| format!("could not remove {id}: {e}"))?;
+        let _ = std::fs::remove_dir_all(&trash);
+        Ok(())
+    }
+
+    /// Deletes what an interrupted install or removal left next to the data folder.
+    pub fn sweep(&self) {
+        let data = self.dir.parent().unwrap_or(&self.dir);
+        let (Some(name), Some(parent)) = (data.file_name().map(|n| n.to_string_lossy().into_owned()), data.parent()) else { return };
+        let Ok(rd) = std::fs::read_dir(parent) else { return };
+        for e in rd.filter_map(|e| e.ok()) {
+            let n = e.file_name().to_string_lossy().into_owned();
+            if [".install-", ".trash-"].iter().any(|w| n.starts_with(&format!("{name}{w}"))) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+
     /// Every Plugin folder, sorted by id. Dot-folders are the store's own.
     pub fn list(&self) -> Vec<Plugin> {
         let Ok(rd) = std::fs::read_dir(&self.dir) else { return vec![] };
         let mut dirs: Vec<(String, PathBuf)> = rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).filter_map(|e| Some((e.file_name().into_string().ok()?, e.path()))).filter(|(n, _)| !n.starts_with('.')).collect();
         dirs.sort();
         dirs.into_iter().map(|(id, dir)| Plugin { manifest: read_manifest(&id, &dir), contents: content::scan(&dir), id, dir }).collect()
+    }
+}
+
+/// Antivirus and indexers hold new files for a moment; a rename retries for half a second.
+fn rename_retrying(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(_) if tries < 10 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => return other,
+        }
     }
 }
 
@@ -146,6 +195,91 @@ pub fn hidden_instances(ws: &Workspace, reg: &Registry, list: &[Plugin]) -> BTre
         .iter()
         .filter(|c| reg.get(&c.widget).is_none())
         .filter_map(|c| off.iter().find(|p| p.contents.widgets.contains(&c.widget)).map(|p| (c.id.clone(), p.name().to_string())))
+        .collect()
+}
+
+/// What the Plugins page shows for one Plugin.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PluginRow {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub author: String,
+    pub description: String,
+    /// "3 widgets · 2 palettes"
+    pub summary: String,
+    pub enabled: bool,
+    pub notes: Vec<String>,
+    pub problems: Vec<String>,
+    /// Widget ids nothing else provides: removing the Plugin removes their Instances.
+    pub sole_widgets: Vec<String>,
+}
+
+impl PluginRow {
+    /// The Instances that go with it when it is removed.
+    pub fn orphans(&self, ws: &Workspace) -> Vec<String> {
+        ws.instances.iter().filter(|c| self.sole_widgets.contains(&c.widget)).map(|c| c.id.clone()).collect()
+    }
+}
+
+fn item_word(item: Item) -> &'static str {
+    match item {
+        Item::Widget => "widget",
+        Item::Palette => "palette",
+        Item::FontSet => "font set",
+        Item::GlyphSet => "glyph set",
+        Item::IconPack => "icon pack",
+    }
+}
+
+/// The Plugins page's rows, from what the Catalog made of the enabled ones.
+pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog) -> Vec<PluginRow> {
+    let errors: Vec<String> = cat.registry.errors().into_iter().chain(cat.library.errors.iter().cloned()).collect();
+    let builtin = Registry::builtin(); // the names of what a Plugin restyles
+    let widget_name = |reg: &Registry, id: &str| reg.get(id).and_then(|d| d.as_ref().ok()).map_or(id.to_string(), |w| w.meta().name.clone());
+    let label = |item: Item, name: &str| if item == Item::Widget { widget_name(&cat.registry, name) } else { name.to_string() };
+    list.iter()
+        .map(|p| {
+            let me = Origin::Plugin(p.id.clone());
+            let named = |o: &Origin| match o {
+                Origin::Plugin(id) => list.iter().find(|q| &q.id == id).map_or(id.clone(), |q| q.name().to_string()),
+                Origin::BuiltIn => "Wayfinder".into(),
+                Origin::User => "your own files".into(),
+            };
+            let mut problems: Vec<String> = p.manifest.as_ref().err().cloned().into_iter().collect();
+            let dir = p.dir.display().to_string();
+            problems.extend(errors.iter().filter(|e| e.starts_with(&dir)).map(|e| e[dir.len()..].trim_start_matches(['\\', '/']).to_string()));
+            let mut restyles = Vec::new();
+            let mut notes = Vec::new();
+            for sh in &cat.shadows {
+                let what = format!("{} {}", item_word(sh.item), label(sh.item, &sh.name));
+                if sh.winner == me && sh.loser == Origin::BuiltIn {
+                    restyles.push(if sh.item == Item::Widget { widget_name(&builtin, &sh.name) } else { sh.name.clone() });
+                } else if sh.loser == me && sh.winner == Origin::User {
+                    notes.push(format!("Your own files replace its {what}"));
+                } else if sh.loser == me {
+                    problems.push(format!("Its {what} is hidden: {} has one too, and wins", named(&sh.winner)));
+                }
+            }
+            if !restyles.is_empty() {
+                notes.insert(0, format!("Restyles {}", restyles.join(", ")));
+            }
+            let providers = |w: &str| -> Vec<&Origin> { cat.origins.get(&(Item::Widget, w.to_string())).into_iter().chain(cat.shadows.iter().filter(|s| s.item == Item::Widget && s.name == w).map(|s| &s.loser)).collect() };
+            let sole_widgets = p.contents.widgets.iter().filter(|w| providers(w).iter().all(|o| **o == me)).cloned().collect();
+            let m = p.manifest.as_ref().ok();
+            PluginRow {
+                id: p.id.clone(),
+                name: p.name().to_string(),
+                version: m.map(|m| m.version.clone()).unwrap_or_default(),
+                author: m.map(|m| m.author.clone()).unwrap_or_default(),
+                description: m.map(|m| m.description.clone()).unwrap_or_default(),
+                summary: p.contents.summary(),
+                enabled: !disabled.contains(&p.id),
+                notes,
+                problems,
+                sole_widgets,
+            }
+        })
         .collect()
 }
 
@@ -322,6 +456,49 @@ mod tests {
         assert!(!inside_plugins(data, "C:\\Windows\\notepad.exe"));
         assert!(!inside_plugins(data, "https://example.com"));
         assert!(!inside_plugins(data, "C:\\Users\\a\\AppData\\Roaming\\Wayfinder\\drawers\\drawer-1\\app.lnk"));
+    }
+
+    #[test]
+    fn rows_say_what_a_plugin_restyles_loses_and_takes_with_it() {
+        let data = tmp("rows");
+        put(&data, "plugins/sunset/plugin.toml", OK);
+        put(&data, "plugins/sunset/widgets/clock.toml", "name = 'Sunset Clock'\n[root]\ntype = 'box'");
+        put(&data, "plugins/sunset/widgets/weather.toml", "[root]\ntype = 'box'");
+        put(&data, "plugins/sunset/widgets/radar.toml", "[root]\ntype = 'box'");
+        put(&data, "plugins/sunset/widgets/bad.toml", "[root]\ntype='text'\ncolour='#fff'");
+        put(&data, "plugins/zeta/plugin.toml", &OK.replace("sunset", "zeta").replace("'Sunset'", "'Zeta'"));
+        put(&data, "plugins/zeta/widgets/radar.toml", "[root]\ntype = 'box'");
+        put(&data, "widgets/weather.toml", "[root]\ntype = 'box'");
+        let list = PluginStore::new(&data).list();
+        let mut roots = roots(&list, &BTreeSet::new());
+        roots.push(Root::user(&data));
+        let cat = Catalog::load(&roots);
+        let r = &rows(&list, &BTreeSet::new(), &cat)[0];
+        assert_eq!((r.name.as_str(), r.version.as_str(), r.summary.as_str(), r.enabled), ("Sunset", "1.2.0", "4 widgets", true));
+        assert_eq!(r.notes, ["Restyles Analog Clock", "Your own files replace its widget weather"]);
+        assert!(r.problems.iter().any(|p| p.starts_with("widgets") && p.contains("colour")), "{:?}", r.problems);
+        assert!(r.problems.iter().any(|p| p.contains("Zeta has one too")), "{:?}", r.problems);
+        assert_eq!(r.sole_widgets, ["bad"], "clock is built in, weather is the user's, radar is Zeta's too");
+        let mut ws = Workspace::default();
+        ws.instances = vec![InstanceCfg { id: "bad-1".into(), widget: "bad".into(), ..Default::default() }, InstanceCfg { id: "clock-1".into(), widget: "clock".into(), ..Default::default() }];
+        assert_eq!(r.orphans(&ws), ["bad-1"]);
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn remove_moves_the_folder_out_then_deletes_it() {
+        let data = tmp("remove").join("Wayfinder");
+        put(&data, "plugins/sunset/plugin.toml", OK);
+        let store = PluginStore::new(&data);
+        store.remove("sunset").unwrap();
+        assert!(!data.join("plugins").join("sunset").exists());
+        assert!(store.remove("sunset").is_err(), "already gone");
+        assert!(store.remove("../x").is_err(), "never outside the store");
+        let leftover = data.with_file_name("Wayfinder.trash-1-0");
+        std::fs::create_dir_all(leftover.join("x")).unwrap();
+        store.sweep();
+        assert!(!leftover.exists());
+        std::fs::remove_dir_all(data.parent().unwrap()).ok();
     }
 
     #[test]

@@ -19,6 +19,7 @@ use crate::data::Shortcut;
 use crate::dialog;
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
+use crate::plugins::PluginRow;
 use crate::text::TextEngine;
 use crate::theme::{Library, Selection, Theme, style_schema};
 use crate::ui::{self, Env, Frame, Kind, Node};
@@ -35,7 +36,17 @@ pub struct Ctx<'a> {
     pub gpu_info: &'a str,
     pub fonts: &'a [String],
     pub edit: bool,
-    pub parked: &'a [String],
+    /// Instances without a window, and why.
+    pub hidden: &'a [(String, Hidden)],
+    pub plugins: &'a [PluginRow],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Hidden {
+    /// Its monitor is missing.
+    Parked,
+    /// Only this switched-off Plugin provides its Widget.
+    PluginOff(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -60,6 +71,9 @@ pub enum Cmd {
     Edit(bool),
     Reload,
     OpenFolder,
+    PluginEnabled(String, bool),
+    RemovePlugin(String),
+    OpenPluginsFolder,
     Quit,
     Close,
     Minimize,
@@ -115,17 +129,19 @@ fn capitalized(s: &str) -> String {
 pub enum Page {
     Widgets,
     Appearance,
+    Plugins,
     General,
     Log,
 }
 
 impl Page {
-    const ALL: [Page; 4] = [Page::Widgets, Page::Appearance, Page::General, Page::Log];
+    const ALL: [Page; 5] = [Page::Widgets, Page::Appearance, Page::Plugins, Page::General, Page::Log];
 
     fn id(self) -> &'static str {
         match self {
             Page::Widgets => "widgets",
             Page::Appearance => "appearance",
+            Page::Plugins => "plugins",
             Page::General => "general",
             Page::Log => "log",
         }
@@ -134,6 +150,7 @@ impl Page {
         match self {
             Page::Widgets => "Widgets",
             Page::Appearance => "Appearance",
+            Page::Plugins => "Plugins",
             Page::General => "General",
             Page::Log => "Log",
         }
@@ -142,6 +159,7 @@ impl Page {
         match self {
             Page::Widgets => "Add, arrange and configure the widgets on your desktop",
             Page::Appearance => "Colours, fonts and icons, applied to every widget at once",
+            Page::Plugins => "Widgets, themes, fonts and icons made by others",
             Page::General => "Graphics, startup and behaviour",
             Page::Log => "What Wayfinder has been doing, and anything that went wrong",
         }
@@ -150,6 +168,7 @@ impl Page {
         match self {
             Page::Widgets => "widgets",
             Page::Appearance => "palette",
+            Page::Plugins => "plugin",
             Page::General => "gear",
             Page::Log => "info",
         }
@@ -668,6 +687,7 @@ impl UiState {
         let body = match self.page {
             Page::Widgets => self.page_widgets(&k, ctx, &mut images),
             Page::Appearance => self.page_appearance(&k, ctx),
+            Page::Plugins => self.page_plugins(&k, ctx),
             Page::General => self.page_general(&k, ctx),
             Page::Log => self.page_log(&k, ctx),
         };
@@ -724,7 +744,10 @@ impl UiState {
         for (i, c) in ctx.ws.instances.iter().enumerate() {
             let on = sel.is_some_and(|s| s.id == c.id);
             let name = self.def_of(ctx, &c.widget).map_or(c.widget.clone(), |d| d.name.clone());
-            let parked = ctx.parked.contains(&c.id);
+            let hidden = ctx.hidden.iter().find(|(id, _)| *id == c.id).map(|(_, h)| match h {
+                Hidden::Parked => "  ·  parked (monitor missing)".to_string(),
+                Hidden::PluginOff(p) => format!("  ·  hidden (plugin {p} is off)"),
+            });
             list = list.child(
                 Node::new(format!("w/i/{}", c.id))
                     .col()
@@ -738,7 +761,7 @@ impl UiState {
                     .on(format!("sel:{}", c.id))
                     .enter(220, 6.0, (i as u32) * 24)
                     .child(k.bold(format!("w/i/{}/n", c.id), &name, 13.0, k.c("text")))
-                    .child(k.txt(format!("w/i/{}/s", c.id), &format!("{}{}", c.id, if parked { "  ·  parked (monitor missing)" } else { "" }), 11.5, if parked { k.c("danger") } else { k.c("text-dim") })),
+                    .child(k.txt(format!("w/i/{}/s", c.id), &format!("{}{}", c.id, hidden.as_deref().unwrap_or("")), 11.5, if hidden.is_some() { k.c("danger") } else { k.c("text-dim") })),
             );
         }
         let mut add = Node::new("w/add").col().gap(6.0).child(k.section("w/add/h", "Add a widget"));
@@ -1007,6 +1030,60 @@ impl UiState {
         self.scrolling("ap/scroll", body)
     }
 
+    fn page_plugins(&self, k: &Kit, ctx: &Ctx) -> Node {
+        let mut body = Node::new("pl").col().gap(4.0).pad_xy(24.0, 4.0);
+        let actions = Node::new("pl/acts").row().gap(8.0).child(k.button("pl/folder", "Open plugins folder", "pfolder".into(), false));
+        body = body.child(k.row("pl/add", "Add a plugin", "A plugin brings widgets, themes, fonts and icons. It never runs programs, but only install plugins you trust.", actions));
+        body = body.child(k.section("pl/s1", "Installed"));
+        if ctx.plugins.is_empty() {
+            body = body.child(k.txt("pl/none".into(), "No plugins yet. Drop a .wfplugin file on this window, or put a plugin's folder in Wayfinder\\plugins.", 12.5, k.c("text-dim")).wrap_text());
+        }
+        for (i, r) in ctx.plugins.iter().enumerate() {
+            body = body.child(self.plugin_card(k, ctx, r, i));
+        }
+        self.scrolling("pl/scroll", body.child(Node::new("pl/pad").h(24.0)))
+    }
+
+    fn plugin_card(&self, k: &Kit, ctx: &Ctx, r: &PluginRow, i: usize) -> Node {
+        let key = format!("pl/p/{}", r.id);
+        let confirm = self.confirm_del.as_deref() == Some(format!("plugin/{}", r.id).as_str());
+        let by = [(!r.version.is_empty()).then(|| format!("v{}", r.version)), (!r.author.is_empty()).then(|| format!("by {}", r.author))].into_iter().flatten().collect::<Vec<_>>().join("  ·  ");
+        let head_l = Node::new(format!("{key}/hl")).col().grow(1.0).min_w(0.0).gap(1.0).child(k.bold(format!("{key}/n"), &r.name, 14.0, k.c("text"))).child(k.txt(format!("{key}/by"), &by, 11.5, k.c("text-dim")));
+        let remove = if confirm {
+            k.button(&format!("{key}/rm"), "Really remove?", format!("prm:{}", r.id), true).with_danger_fill(k)
+        } else {
+            k.button(&format!("{key}/rm"), "Remove", format!("prm:{}", r.id), false)
+        };
+        let head = Node::new(format!("{key}/h")).row().align(taffy::AlignItems::CENTER).gap(12.0).child(head_l).child(k.toggle(&format!("{key}/on"), r.enabled, format!("pon:{}", r.id))).child(remove);
+        let mut card = Node::new(key.clone())
+            .col()
+            .gap(4.0)
+            .pad(14.0)
+            .radius(12.0)
+            .fill(Color([1.0, 1.0, 1.0, 0.04]))
+            .border(1.0, if confirm { k.c("danger") } else { k.c("border").mul_alpha(0.7) })
+            .ease(150)
+            .enter(220, 6.0, (i as u32) * 30)
+            .child(head);
+        if !r.description.is_empty() {
+            card = card.child(k.txt(format!("{key}/d"), &r.description, 12.5, k.c("text")).wrap_text());
+        }
+        let state = if r.enabled { r.summary.clone() } else { format!("{}  ·  off", r.summary) };
+        card = card.child(k.txt(format!("{key}/sum"), &state, 12.0, k.c("text-dim")));
+        for (j, n) in r.notes.iter().enumerate() {
+            card = card.child(k.txt(format!("{key}/note/{j}"), n, 11.5, k.c("text-dim")).wrap_text());
+        }
+        for (j, e) in r.problems.iter().enumerate() {
+            card = card.child(k.txt(format!("{key}/err/{j}"), e, 11.5, k.c("danger")).wrap_text());
+        }
+        if confirm {
+            let orphans = r.orphans(ctx.ws);
+            let what = if orphans.is_empty() { "Nothing on your desktop uses it.".to_string() } else { format!("This also removes from your desktop: {}.", orphans.join(", ")) };
+            card = card.child(k.txt(format!("{key}/orph"), &what, 12.0, k.c("danger")).wrap_text());
+        }
+        card
+    }
+
     fn page_general(&self, k: &Kit, ctx: &Ctx) -> Node {
         let f = |key: &str| matches!(&self.open, Some(Open::Dropdown(o)) if o == key);
         let ws = ctx.ws;
@@ -1254,7 +1331,7 @@ impl UiState {
     /// `hwnd` parents native dialogs.
     pub fn act(&mut self, a: &str, ctx: &Ctx, hwnd: Option<windows::Win32::Foundation::HWND>) -> Vec<Cmd> {
         let (verb, rest) = a.split_once(':').unwrap_or((a, ""));
-        if verb != "del" {
+        if verb != "del" && verb != "prm" {
             self.confirm_del = None;
         }
         if !matches!(verb, "in" | "sl" | "cpsv" | "cph" | "cpset" | "pick" | "popup-close" | "drag") {
@@ -1392,6 +1469,18 @@ impl UiState {
                 cmds.extend(picks.into_iter().map(|a| Cmd::ThemePick(scope.key().into(), a.into(), None)));
                 cmds
             }
+            "pon" => ctx.plugins.iter().find(|r| r.id == rest).map(|r| vec![Cmd::PluginEnabled(rest.into(), !r.enabled)]).unwrap_or_default(),
+            "prm" => {
+                let armed = format!("plugin/{rest}");
+                if self.confirm_del.as_deref() == Some(armed.as_str()) {
+                    self.confirm_del = None;
+                    vec![Cmd::RemovePlugin(rest.into())]
+                } else {
+                    self.confirm_del = Some(armed);
+                    vec![]
+                }
+            }
+            "pfolder" => vec![Cmd::OpenPluginsFolder],
             "openfolder" => vec![Cmd::OpenFolder],
             "reload" => vec![Cmd::Reload],
             "quit" => vec![Cmd::Quit],
@@ -1725,6 +1814,8 @@ mod tests {
         reg: Registry,
         lib: Library,
         theme: Theme,
+        hidden: Vec<(String, Hidden)>,
+        plugins: Vec<PluginRow>,
     }
 
     fn world() -> World {
@@ -1735,11 +1826,15 @@ mod tests {
         let mut folder = InstanceCfg { id: "icon_folder-1".into(), widget: "icon_folder".into(), ..Default::default() };
         folder.set_items(&[Shortcut { name: "A".into(), target: "a.exe".into(), icon: String::new() }, Shortcut { name: "B".into(), target: "b.exe".into(), icon: String::new() }]);
         ws.instances.push(folder);
-        World { ws, reg: Registry::load(Path::new("no-such-dir")), lib, theme }
+        let plugins = vec![
+            PluginRow { id: "sunset".into(), name: "Sunset".into(), version: "1.2.0".into(), author: "Ada".into(), description: "Warm colours".into(), summary: "1 widget · 1 palette".into(), enabled: true, notes: vec!["Restyles Analog Clock".into()], problems: vec![], sole_widgets: vec!["weather".into()] },
+            PluginRow { id: "broken".into(), name: "broken".into(), summary: "nothing yet".into(), enabled: false, problems: vec!["no plugin.toml".into()], ..Default::default() },
+        ];
+        World { ws, reg: Registry::load(Path::new("no-such-dir")), lib, theme, hidden: vec![], plugins }
     }
 
     fn ctx(w: &World) -> Ctx<'_> {
-        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, parked: &[] }
+        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins }
     }
 
     #[test]
@@ -1901,6 +1996,55 @@ mod tests {
         assert_eq!((id.as_str(), name.as_str()), ("clock-1", "accent"));
         assert!(Color::parse(hex).is_some());
         assert_eq!(ui.act("cpset:#00ff00", &c, None), vec![Cmd::Style(Scope::Instance("clock-1".into()), "accent".into(), Some(Value::Str("#00ff00".into())))]);
+    }
+
+    fn texts(n: &Node, out: &mut Vec<String>) {
+        if let Kind::Text(t) = &n.kind {
+            out.push(t.text.clone());
+        }
+        n.children.iter().for_each(|c| texts(c, out));
+    }
+
+    #[test]
+    fn plugin_remove_needs_two_clicks_and_names_its_instances() {
+        let mut w = world();
+        w.ws.instances.push(InstanceCfg { id: "weather-1".into(), widget: "weather".into(), ..Default::default() });
+        let c = ctx(&w);
+        let mut ui = UiState::default();
+        ui.act("nav:plugins", &c, None);
+        assert_eq!(ui.act("prm:sunset", &c, None), vec![], "the first click only asks");
+        let mut shown = Vec::new();
+        texts(&ui.build(&c, WIN).0, &mut shown);
+        assert!(shown.iter().any(|t| t.contains("weather-1")), "{shown:?}");
+        assert!(!shown.iter().any(|t| t.contains("clock-1")), "a built-in widget stays");
+        assert_eq!(ui.act("prm:sunset", &c, None), vec![Cmd::RemovePlugin("sunset".into())]);
+        ui.act("prm:sunset", &c, None);
+        assert_eq!(ui.act("pon:sunset", &c, None).len(), 1, "any other action disarms it");
+        assert_eq!(ui.act("prm:sunset", &c, None), vec![]);
+        ui.act("del:clock-1", &c, None);
+        assert_eq!(ui.act("prm:sunset", &c, None), vec![], "a widget's remove never confirms a plugin's");
+    }
+
+    #[test]
+    fn plugin_toggle_flips_enabled() {
+        let w = world();
+        let c = ctx(&w);
+        let mut ui = UiState::default();
+        assert_eq!(ui.act("pon:sunset", &c, None), vec![Cmd::PluginEnabled("sunset".into(), false)]);
+        assert_eq!(ui.act("pon:broken", &c, None), vec![Cmd::PluginEnabled("broken".into(), true)]);
+        assert_eq!(ui.act("pon:nope", &c, None), vec![]);
+        assert_eq!(ui.act("pfolder", &c, None), vec![Cmd::OpenPluginsFolder]);
+    }
+
+    #[test]
+    fn a_hidden_instance_says_why() {
+        let mut w = world();
+        w.hidden = vec![("clock-1".into(), Hidden::PluginOff("Sunset".into())), ("icon_folder-1".into(), Hidden::Parked)];
+        let c = ctx(&w);
+        let mut shown = Vec::new();
+        texts(&UiState::default().build(&c, WIN).0, &mut shown);
+        assert!(shown.iter().any(|t| t.contains("plugin Sunset is off")), "{shown:?}");
+        assert!(shown.iter().any(|t| t.contains("monitor missing")));
     }
 
     #[test]
