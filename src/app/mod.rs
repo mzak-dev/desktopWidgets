@@ -218,7 +218,7 @@ impl App {
     pub fn new(proxy: EventLoopProxy<UserEvent>, mut opts: Options) -> App {
         let dir = opts.dir.clone();
         let extra_sources = std::mem::take(&mut opts.extra_sources);
-        let mut sources = DataSources::builtin();
+        let mut sources = DataSources::builtin_in(&opts.dir);
         let waker = Mutex::new(proxy.clone());
         sources.set_waker(Arc::new(move || {
             let _ = waker.lock().unwrap().send_event(UserEvent::SourceNews);

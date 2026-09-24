@@ -62,7 +62,7 @@ impl Code {
 
 const CODE_KEYS: &[&str] = &["module", "source", "net", "fs_read", "fs_read_params", "launch", "initial"];
 /// Data Source names and repeat variables a Code Source must not shadow.
-const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "param", "state", "self", "item", "index"];
+const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "media", "audio", "param", "state", "self", "item", "index"];
 
 fn parse_code(t: &toml::Table) -> Result<Code, String> {
     for k in t.keys() {
@@ -1298,11 +1298,12 @@ mod tests {
         let root = tmp("check");
         let good = root.join("good");
         put(&good, "plugin.toml", OK);
-        put(&good, "widgets/card.toml", "needs = ['media']\n[root]\ntype = 'box'");
+        put(&good, "widgets/card.toml", "needs = ['radio', 'media']\n[root]\ntype = 'box'");
         let r = check(&good);
         assert!(r.problems.is_empty(), "{:?}", r.problems);
         assert_eq!(r.manifest.map(|m| m.id), Some("sunset".into()));
-        assert!(r.warnings.iter().any(|w| w.contains("`media`")), "{:?}", r.warnings);
+        assert!(r.warnings.iter().any(|w| w.contains("`radio`")), "{:?}", r.warnings);
+        assert!(!r.warnings.iter().any(|w| w.contains("`media`")), "media is built in: {:?}", r.warnings);
         let bad = root.join("bad");
         put(&bad, "plugin.toml", &format!("{OK}\n[code]\nmodule = 'code/m.wasm'\nsource = 'm'"));
         put(&bad, "widgets/card.toml", "[root]\ntype = 'box'\ncolour = 'red'");

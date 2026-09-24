@@ -2,6 +2,7 @@
 //! only when a bound value can differ (decision 16, ADR-0004).
 
 mod clock;
+mod media;
 mod shortcuts;
 mod sys;
 
@@ -15,6 +16,7 @@ use crate::value::Value;
 use crate::workspace::InstanceCfg;
 
 pub use clock::{Clock, Tm, clock_value, now_local};
+pub use media::Media;
 pub use shortcuts::{ID_SEP, Shortcut, Shortcuts, file_stem, folder_items, icon_id, shortcuts_value, starter_apps};
 pub use sys::Sys;
 
@@ -158,8 +160,16 @@ impl Default for DataSources {
 }
 
 impl DataSources {
+    /// The built-in sources, with their caches (album art) in the temp folder. The app uses
+    /// `builtin_in` with its data folder.
     pub fn builtin() -> Self {
-        Self::new(vec![Box::new(Clock), Box::new(Sys::default()), Box::new(Shortcuts::default())])
+        Self::builtin_in(&std::env::temp_dir().join("wayfinder"))
+    }
+
+    /// The built-in sources, caching under `<data>/.cache` (a dot-folder never reloads content).
+    pub fn builtin_in(data: &Path) -> Self {
+        let cache = data.join(".cache");
+        Self::new(vec![Box::new(Clock), Box::new(Sys::default()), Box::new(Shortcuts::default()), Box::new(Media::new(cache.join("media")))])
     }
 
     pub fn new(list: Vec<Box<dyn DataSource>>) -> Self {
@@ -367,7 +377,7 @@ mod tests {
         }
         impl DataSource for Player {
             fn name(&self) -> &str {
-                "media"
+                "player"
             }
             fn value(&self, _: &SourceCx) -> Value {
                 Value::Nil
@@ -392,7 +402,7 @@ mod tests {
         }
         let mut src = DataSources::builtin();
         src.register(Box::new(Shared(player.clone()))).unwrap();
-        let bar = deps(&["media.position"]);
+        let bar = deps(&["player.position"]);
         assert_eq!(wake(&src, &bar, tm(1, 2, 3, 0)), None, "paused: the bar sleeps");
         player.playing.store(true, Ordering::Relaxed);
         assert_eq!(wake(&src, &bar, tm(1, 2, 3, 0)), Some(Duration::from_millis(1002)), "playing: once a second");
@@ -446,7 +456,7 @@ mod tests {
 
     impl DataSource for Media {
         fn name(&self) -> &str {
-            "media"
+            "player"
         }
         fn value(&self, _: &SourceCx) -> Value {
             Value::obj([("title", "Song".into())])
@@ -467,7 +477,7 @@ mod tests {
     }
 
     fn with_cx<R>(f: impl FnOnce(&SourceCx) -> R) -> R {
-        let cfg = InstanceCfg { id: "media-1".into(), ..Default::default() };
+        let cfg = InstanceCfg { id: "player-1".into(), ..Default::default() };
         let params = cfg.params_map();
         f(&SourceCx { cfg: &cfg, params: &params, tm: tm(1, 2, 3, 0), icon_pack: "Default" })
     }
@@ -476,12 +486,12 @@ mod tests {
     fn a_registered_source_is_read_acted_on_and_retained() {
         let mut src = DataSources::builtin();
         src.register(Box::new(Media::default())).unwrap();
-        assert!(with_cx(|cx| src.value("media", cx)).is_some_and(|v| v.get("title").is_some()));
-        assert!(with_cx(|cx| src.act("media", "play_pause", "", cx)), "on_click = \"media.play_pause\"");
-        assert!(!with_cx(|cx| src.act("media", "eject", "", cx)), "a verb it does not know");
+        assert!(with_cx(|cx| src.value("player", cx)).is_some_and(|v| v.get("title").is_some()));
+        assert!(with_cx(|cx| src.act("player", "play_pause", "", cx)), "on_click = \"player.play_pause\"");
+        assert!(!with_cx(|cx| src.act("player", "eject", "", cx)), "a verb it does not know");
         assert!(!with_cx(|cx| src.act("nope", "x", "", cx)));
-        src.retain(&BTreeSet::from(["media-1".to_string()]));
-        assert!(src.names().contains(&"media".to_string()));
+        src.retain(&BTreeSet::from(["player-1".to_string()]));
+        assert!(src.names().contains(&"player".to_string()));
         assert!(src.register(Box::new(Media::default())).unwrap_err().contains("already"));
         struct Named(&'static str);
         impl DataSource for Named {
@@ -511,7 +521,7 @@ mod tests {
         struct Shared(Arc<Media>);
         impl DataSource for Shared {
             fn name(&self) -> &str {
-                "media"
+                "player"
             }
             fn value(&self, cx: &SourceCx) -> Value {
                 self.0.value(cx)
@@ -526,7 +536,7 @@ mod tests {
         src.register(Box::new(Shared(media.clone()))).unwrap();
         let notify = media.notify.lock().unwrap().clone().expect("attached on register");
         std::thread::spawn(move || {
-            notify.changed_for("media-1");
+            notify.changed_for("player-1");
             notify.changed();
             notify.log("new track");
             notify.set_param("gallery-1", "folder", Value::Str("D:\\Photos".into()));
@@ -536,10 +546,10 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(5)).expect("the app was woken");
         let news = src.take_news();
         let (name, n) = &news[0];
-        assert_eq!((name.as_str(), n.all, n.changed.contains("media-1"), n.logs.clone()), ("media", true, true, vec!["new track".to_string()]));
+        assert_eq!((name.as_str(), n.all, n.changed.contains("player-1"), n.logs.clone()), ("player", true, true, vec!["new track".to_string()]));
         assert_eq!(n.params, [("gallery-1".to_string(), "folder".to_string(), Value::Str("D:\\Photos".into()))], "a param for the app to save");
         assert!(src.take_news().is_empty(), "taken once");
-        assert!(DataSources::reads(&deps(&["media.title"]), "media") && !DataSources::reads(&deps(&["mediaplayer.x"]), "media"));
+        assert!(DataSources::reads(&deps(&["player.title"]), "player") && !DataSources::reads(&deps(&["playerx.x"]), "player"));
     }
 
     #[test]

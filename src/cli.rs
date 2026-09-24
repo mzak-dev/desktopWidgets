@@ -224,7 +224,7 @@ fn render(r: &Render) -> Result<bool, String> {
     let card = Card::new(&theme);
 
     // plugin code runs as in the app, without the user's saved data
-    let mut sources = DataSources::builtin();
+    let mut sources = DataSources::builtin_in(&r.data);
     let (news_tx, news) = mpsc::channel();
     let news_tx = Mutex::new(news_tx);
     let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
