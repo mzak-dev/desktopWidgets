@@ -3,6 +3,7 @@
 pub mod anim;
 pub mod app;
 pub mod card;
+pub mod code;
 pub mod color;
 pub mod content;
 pub mod data;
