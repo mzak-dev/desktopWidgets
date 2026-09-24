@@ -528,6 +528,61 @@ pub(crate) mod tests {
         }
     }
 
+    /// The SDK's weather example, built: `WF_EXAMPLE_WASM=<path to weather.wasm>`
+    /// (`cargo build --release --target wasm32-unknown-unknown` in `sdk/examples/weather`).
+    /// Skipped without it.
+    #[test]
+    fn the_weather_example_runs_end_to_end() {
+        let Some(wasm) = std::env::var_os("WF_EXAMPLE_WASM").map(PathBuf::from) else { return };
+        use crate::net::{FakeFetch, Response};
+        use crate::widgets::{Inputs, TomlWidget, Widget};
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let fake = FakeFetch(Box::new(move |to, _| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(to.host, "api.open-meteo.com");
+            assert!(to.path.starts_with("/v1/forecast?latitude=59.91&longitude=10.75"), "{}", to.path);
+            Ok(Response { status: 200, content_type: "application/json".into(), location: None, body: r#"{"current":{"temperature_2m":12.6,"weather_code":3,"wind_speed_10m":9.4}}"#.into() })
+        }));
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let deps = Deps { fetch: Some(Arc::new(fake)), store: None, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits: Limits::default() };
+        let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/examples/weather/plugin");
+        let manifest = crate::plugins::Manifest::parse(&std::fs::read_to_string(plugin.join("plugin.toml")).unwrap()).unwrap();
+        let code = manifest.code.expect("the example has code");
+        let src = WasmSource::start(CodeSpec { plugin: "weather".into(), source: code.source, module: wasm, hosts: code.net, initial: code.initial }, deps);
+        let c = cfg("weather-1");
+        let params = BTreeMap::from([("latitude".to_string(), Value::Num(59.91)), ("longitude".to_string(), Value::Num(10.75))]);
+        assert!(read(&src, &c, &params).get("loading").is_some_and(Value::truthy));
+        wait_for(&src, &rx, "weather-1");
+        let v = read(&src, &c, &params);
+        assert_eq!((num(&v, "temp"), v.get("sky").map(|s| s.to_string())), (13.0, Some("Cloudy".into())), "{v:?}; {:?}", src.status());
+        let cx = SourceCx { cfg: &c, params: &params, tm: crate::data::Tm { year: 2026, month: 9, day: 24, dow: 4, hour: 12, minute: 0, second: 0, ms: 0 }, icon_pack: "Default" };
+        src.act("refresh", "", &cx);
+        wait_for(&src, &rx, "weather-1");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "the click fetched again");
+
+        // and the example's widget builds against those values
+        let def = crate::format::WidgetDef::parse("weather", &std::fs::read_to_string(plugin.join("widgets/weather.toml")).unwrap()).unwrap();
+        let w = TomlWidget::new(def);
+        let full = w.meta().effective_params(&params);
+        let st = BTreeMap::new();
+        let source = |n: &str| (n == "weather").then(|| v.clone());
+        let theme = crate::theme::Theme::compose(&crate::theme::Library::load(std::path::Path::new("nope")), &crate::theme::Selection::default(), &[]);
+        let b = w.build(&Inputs { params: &full, state: &st, card_size: (220.0, 120.0), key_prefix: "weather-1", read_source: &source }, &theme, &|_| None).unwrap();
+        assert!(b.warnings.is_empty(), "{:?}", b.warnings);
+        assert!(b.deps.contains("weather.temp"));
+        fn texts(n: &crate::ui::Node, out: &mut Vec<String>) {
+            if let crate::ui::Kind::Text(t) = &n.kind {
+                out.push(t.text.clone());
+            }
+            n.children.iter().for_each(|c| texts(c, out));
+        }
+        let mut shown = Vec::new();
+        texts(&b.root, &mut shown);
+        assert!(shown.iter().any(|t| t == "13°C") && shown.iter().any(|t| t == "Cloudy"), "{shown:?}");
+    }
+
     impl WasmSource {
         fn status_fuel(&self) -> u64 {
             match self.status() {
