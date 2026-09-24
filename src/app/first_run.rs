@@ -1,9 +1,11 @@
 use super::*;
 
-/// How-tos for editing the data folder with Claude Code, as path parts under it.
+/// How-tos for editing the data folder (themes, plugins) with Claude Code, as path parts under it.
 const GUIDES: &[(&[&str], &str)] = &[
     (&["THEMES.md"], include_str!("../../assets/guides/THEMES.md")),
     (&[".claude", "skills", "wayfinder-theme", "SKILL.md"], include_str!("../../assets/guides/wayfinder-theme/SKILL.md")),
+    (&["PLUGINS.md"], include_str!("../../assets/guides/PLUGINS.md")),
+    (&[".claude", "skills", "wayfinder-plugin", "SKILL.md"], include_str!("../../assets/guides/wayfinder-plugin/SKILL.md")),
 ];
 
 /// Written only when missing, so the user's own edits survive every start.
@@ -64,6 +66,14 @@ mod tests {
         assert!(write_missing_guides(&dir).is_empty());
         assert_eq!(std::fs::read_to_string(dir.join("THEMES.md")).unwrap(), "mine");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_plugins_guide_example_manifest_is_valid() {
+        let guide = GUIDES.iter().find(|(p, _)| p == &["PLUGINS.md"]).unwrap().1;
+        let example = guide.split("```toml\n").nth(1).and_then(|b| b.split("```").next()).expect("a toml example");
+        let m = crate::plugins::Manifest::parse(example).expect("the example parses");
+        assert_eq!(m.id, "sunset");
     }
 
     #[test]

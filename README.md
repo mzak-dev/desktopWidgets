@@ -15,7 +15,7 @@ Move and resize them in real time, restyle everything, and pay nothing while the
 [![DirectX 12](https://img.shields.io/badge/DirectX_12-DirectComposition-107C10?style=for-the-badge&logo=xbox&logoColor=white)](docs/adr/0001-dx12-dcomp-presentation.md)
 
 ![Status](https://img.shields.io/badge/status-alpha-F5A623?style=flat-square)
-![Tests](https://img.shields.io/badge/unit_tests-114_passing-2EA44F?style=flat-square)
+![Tests](https://img.shields.io/badge/unit_tests-160_passing-2EA44F?style=flat-square)
 ![Idle](https://img.shields.io/badge/idle_CPU-0%25-2EA44F?style=flat-square)
 ![Layout](https://img.shields.io/badge/layout-taffy_flexbox-8A63D2?style=flat-square)
 ![Text](https://img.shields.io/badge/text-glyphon-3B82F6?style=flat-square)
@@ -51,6 +51,7 @@ Rainmeter and the Windows Vista/7 sidebar showed how good widgets on a desktop c
 | 😴 **Free when idle** | A widget redraws only when something it displays *can* have changed: the next minute, the next second, an animation frame, a click. A desktop of clocks sits at 0% CPU. |
 | 📄 **Widgets are text files** | Describe a widget in TOML with bindings like `{clock.hour}` and design tokens like `$accent`. Save the file and it reloads instantly. Mistakes show a red error card in place. |
 | 🎛️ **Settings for free** | Declare a typed option once (`color`, `number`, `bool`, `font`, `shortcuts`...) and Wayfinder builds the settings form for it: sliders, toggles, colour picker, dropdowns. |
+| 🧩 **Plugins** | Share widgets, palettes, fonts and icons as one `.wfplugin` file. Double-click it to install, switch it off or remove it in Settings. Plugins hold content only and never run programs. |
 | 🎨 **Themeable end to end** | Swap palette, font set, glyph set and icon pack independently, for all widgets or just one. Transparency, blur, shadow, outlines, roundness, text size and animation speed are global settings any widget can override. Drop in your own `.ttf` fonts, palettes and app icons. |
 | 🛡️ **Hard to break** | The binding language cannot loop or hang. A broken widget file never crashes the desktop, and a GPU reset rebuilds the renderer instead of taking widgets down. |
 
@@ -113,7 +114,7 @@ Press **`Ctrl` + `Alt` + `E`** (or use the tray menu) to enter Edit Mode. Every 
 
 <img src="docs/img/settings_widgets_folder.png" alt="The Widgets page of the settings window" width="100%">
 
-Add and remove widgets, choose which layer each sits on (desktop, bottom, normal, always on top), make one click-through, and edit its options.
+Add and remove widgets, choose which layer each sits on (desktop, bottom, normal, always on top), make one click-through, and edit its options. The Plugins page installs, switches off and removes plugins.
 
 </td>
 </tr>
@@ -148,11 +149,27 @@ Wayfinder/
 ├─ fonts/                *.toml font sets, plus .ttf / .otf files to make selectable
 ├─ glyphs/               *.toml  icon sets for buttons and chrome
 ├─ iconpacks/<name>/     chrome.png ...  replaces the icon of a matching app
+├─ plugins/<id>/         installed plugins, each laid out like this folder
 ├─ THEMES.md             how to make palettes, font sets, glyph sets and icon packs
-└─ .claude/skills/       a Claude Code skill for making themes
+├─ PLUGINS.md            how to make and share a plugin
+└─ .claude/skills/       Claude Code skills for making themes and plugins
 ```
 
-Wayfinder writes `THEMES.md` and the `wayfinder-theme` skill at startup when they are missing, and never overwrites your edits. Run `claude` in the data folder and ask for a theme ("a warm sunset palette") to have Claude Code write the files for you.
+Wayfinder writes `THEMES.md`, `PLUGINS.md` and their Claude Code skills at startup when they are missing, and never overwrites your edits. Run `claude` in the data folder and ask for a theme ("a warm sunset palette") or a plugin to have Claude Code write the files for you.
+
+### Plugins
+
+A plugin bundles widgets, palettes, font sets, glyph sets and icon packs. It is a folder laid out like the data folder, with a `plugin.toml`:
+
+```toml
+id = "sunset"
+name = "Sunset"
+version = "1.2.0"
+author = "Ada"
+description = "Warm evening colours and a weather card."
+```
+
+To share one, zip its folder and rename the zip to `.wfplugin`. Double-click the file, drop it on the Settings window or use **Install from file...** in **Settings → Plugins**, where each plugin can be switched off or removed. A switched-off plugin's widgets are hidden and come back in place when it is switched on again. Plugins load after the built-ins and before your own files, so a plugin can restyle a built-in widget and your own copy still wins. A plugin's widgets can show its own images with `src = "./logo.png"`. Only content files unpack (`toml png ttf otf ttc otc md txt`), and a widget can never launch anything inside `plugins/`. See `PLUGINS.md` in the data folder and [ADR-007](docs/adr/0007-content-plugins.md).
 
 <table>
 <tr>
@@ -238,6 +255,7 @@ The settings window is built from the same element tree in Rust, so widgets and 
 | | |
 |---|---|
 | `src/widgets/` | the Widget seam: TOML and Rust Widgets, the registry, the build pipeline |
+| `src/content.rs` `plugins.rs` | the Catalog: content from the built-ins, each Plugin and the data folder, in that order; installing and removing Plugins |
 | `src/format.rs` `expr.rs` | TOML widget format and the total expression language |
 | `src/elements/` | one file per element kind: its attributes, build and drawing |
 | `src/data/` | one file per Data Source (`clock`, `sys`, `shortcuts`) and how often it changes |
@@ -260,6 +278,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 | [Declarative animation](docs/adr/0004-declarative-animation.md) | The engine owns the clock, so it always knows whether anything is animating, which is what makes "free when idle" possible. |
 | [Adapter and present mode](docs/adr/0005-adapter-and-present-mode.md) | `Mailbox` presentation, and the integrated GPU by default (see below). |
 | [Swapchain sizing and GPU loss](docs/adr/0006-swapchain-resize-and-gpu-loss.md) | Resizing a composition swapchain every frame is fragile, so it is sized in buckets, and a lost device is rebuilt. |
+| [Content plugins](docs/adr/0007-content-plugins.md) | A `.wfplugin` is a zip that installs by unpacking. Widget ids stay flat, so a plugin can restyle built-ins. No native code; WebAssembly later, behind the Data Source seam. |
 
 > [!IMPORTANT]
 > **Which GPU?** Wayfinder defaults to the **integrated** GPU (`"gpu": "low"`). On the AMD machine it was developed on, selecting the dedicated GPU pinned one CPU core at 99% while idle with two or more widgets on screen, in a driver thread outside Wayfinder, whereas the integrated GPU idled at 0.00%. Widgets are tiny, so the integrated GPU is plenty. You can change it in **Settings → General**, or set `"gpu": "high"` in `workspace.json`. `"software"` renders on the CPU. Details in [ADR-005](docs/adr/0005-adapter-and-present-mode.md).
@@ -276,7 +295,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 
 **✅ Verified**
 
-- 114 unit tests (`cargo test --lib`)
+- 160 unit tests (`cargo test --lib`)
 - All four widgets and the settings window rendered offscreen
 - A 35-check scripted run of the live app, on the **software** renderer: drag, live resize, undo, saving, folder expand and z-raise, hot reload with error cards, the settings commands, and Show Desktop detection and response (against a stand-in host window)
 
@@ -294,14 +313,14 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 </tr>
 </table>
 
-**Ideas, not promises:** scripted widgets in Lua (the Widget seam is in place: a Widget supplies an element tree and never draws), shader widgets, more data sources (network, media), an installer.
+**Ideas, not promises:** plugins with code, as sandboxed WebAssembly Data Sources ([ADR-007](docs/adr/0007-content-plugins.md)), shader widgets, more data sources (network, media), an installer.
 
 <br>
 
 ## 🛠️ Development
 
 ```powershell
-cargo test --lib                     # 114 unit tests, pure logic, no GPU
+cargo test --lib                     # 160 unit tests, pure logic, no GPU
 cargo run --release -- --selftest --gpu software --data $env:TEMP\wf-test
 ```
 
@@ -323,6 +342,7 @@ Each kind of extension is one file plus one line of registration:
 | a data source | `src/data/<name>.rs` implementing `DataSource`, with the cadence of each field | `DataSources::builtin` |
 | an element kind | `src/elements/<name>.rs` with a `KIND` and, if it draws, a `Shape` | `elements::KINDS` |
 | a Workspace-wide style switch | a `Flag` variant and its `Workspace` field | a `flag_row` in Settings |
+| widgets and themes to share | a folder with `plugin.toml` in `<data>/plugins/` (see `assets/guides/PLUGINS.md`) | nothing: it loads as you save |
 
 > [!WARNING]
 > `examples/phase0_spike.rs` is kept only as the record of the early measurements. **Do not run it**: it stress-tests multi-window swapchains and, together with the bug fixed in ADR-006, crashed an AMD driver during development.
