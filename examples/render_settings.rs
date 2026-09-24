@@ -23,7 +23,7 @@ fn main() {
     let mut gpu = Gpu::new_headless(power).expect("gpu");
     println!("gpu: {}", gpu.info);
     let mut text = TextEngine::new();
-    let mut icons = IconService::new("iconpacks".into());
+    let mut icons = IconService::default();
     let lib = Library::load(Path::new("nope"));
     let theme = Theme::compose(&lib, &Selection::default(), &[]);
     let reg = Registry::load(Path::new("nope"));

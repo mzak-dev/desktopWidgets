@@ -32,6 +32,7 @@ use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
 use crate::anim::{self, Anim, Ease};
 use crate::card::Card;
+use crate::content::{Catalog, Root};
 use crate::data::{self, DataSources};
 use crate::draw::DrawList;
 use crate::edit::{self, Handle, Rect, Snap};
@@ -117,19 +118,17 @@ impl App {
         let _ = std::fs::remove_file(dir.join("wayfinder.log")); // one log per run
         let guide_errors = write_missing_guides(&dir);
         let (ws, ws_err) = Workspace::load(&dir);
-        let lib = Library::load(&dir);
         let theme = Theme::default(); // composed by `rebuild_theme` below
-        let reg = Registry::load(&dir.join("widgets"));
         let mut text = TextEngine::new();
         let fonts = text.load_font_dir(&dir.join("fonts"));
         let mut app = App {
             proxy,
-            icons: IconService::new(dir.join("iconpacks")),
+            icons: IconService::default(),
             opts,
             ws,
-            lib,
+            lib: Library::default(), // filled by `load_content` below
             theme,
-            reg,
+            reg: Registry::default(),
             sources: DataSources::builtin(),
             gpu: None,
             text,
@@ -161,6 +160,7 @@ impl App {
             forced_software: false,
             families: Vec::new(),
         };
+        app.load_content();
         app.rebuild_theme();
         app.families = app.text.family_names();
         app.selftest = app.opts.selftest.then(|| SelfTest { step: 0, at: Instant::now() + Duration::from_millis(2200), checks: Vec::new(), rect: None, collapsed: None, configures0: 0, fake: None });
@@ -170,7 +170,7 @@ impl App {
         if fonts > 0 {
             app.log(format!("loaded {fonts} user font faces"));
         }
-        for e in guide_errors.into_iter().chain(app.lib.errors.clone()).chain(app.reg.errors()) {
+        for e in guide_errors {
             app.log(e);
         }
         app
@@ -379,14 +379,29 @@ impl App {
         }
     }
 
-    fn reload(&mut self) {
-        self.lib = Library::load(&self.opts.dir);
-        self.reg = Registry::load(&self.opts.dir.join("widgets"));
+    /// The folders content is read from, after the built-ins; later ones win.
+    fn content_roots(&self) -> Vec<Root> {
+        vec![Root::user(&self.opts.dir)]
+    }
+
+    /// Widgets, themes and Icon Packs from every content root, and their errors logged.
+    fn load_content(&mut self) {
+        let cat = Catalog::load(&self.content_roots());
+        self.reg = cat.registry;
+        self.lib = cat.library;
+        self.icons.set_packs(cat.icon_packs);
         for e in self.lib.errors.clone().into_iter().chain(self.reg.errors()) {
             self.log(e);
         }
+    }
+
+    fn reload(&mut self) {
+        self.load_content();
         self.rebuild_theme();
         self.sources.invalidate();
+        if let Some(s) = &mut self.settings {
+            s.invalidate();
+        }
         self.log("reloaded widget definitions, themes and folders");
     }
 

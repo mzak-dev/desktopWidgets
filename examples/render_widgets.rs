@@ -55,7 +55,7 @@ fn main() {
 
     let mut gpu = Gpu::new_headless(Power::parse(&std::env::var("WAYFINDER_GPU").unwrap_or_else(|_| "software".into()))).expect("gpu");
     let mut text = TextEngine::new();
-    let mut icons = IconService::new("iconpacks".into());
+    let mut icons = IconService::default();
     let lib = Library::load(Path::new("nope"));
     let sel = Selection { palette: palette.clone(), ..Default::default() };
     let theme = Theme::compose(&lib, &sel, &[]);

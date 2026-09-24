@@ -26,7 +26,7 @@ use crate::workspace::InstanceCfg;
 
 pub use drawer::Drawer;
 pub use meta::{ParamDef, ParamType, Seed, WidgetMeta};
-pub use registry::{Def, Registry};
+pub use registry::{Def, Registry, widget_files};
 pub use toml_widget::TomlWidget;
 
 pub trait Widget: Send + Sync {

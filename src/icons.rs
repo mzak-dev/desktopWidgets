@@ -1,7 +1,7 @@
 //! Icon sourcing (decision 22): explicit path -> Icon Pack by app name -> the
 //! target's own icon -> a generic one. Uploaded once per image id.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use windows::Win32::Graphics::Gdi::{BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits, ReleaseDC};
@@ -152,15 +152,20 @@ pub fn resolve(target: &str, explicit: &str, pack_dir: Option<&Path>) -> Rgba {
 }
 
 /// Uploads images on demand and remembers which ids the GPU already has.
+#[derive(Default)]
 pub struct IconService {
-    /// `<data>/iconpacks`
-    pub packs_dir: PathBuf,
+    /// Icon Pack name to its folder, from every content root.
+    packs: BTreeMap<String, PathBuf>,
     seen: HashSet<String>,
 }
 
 impl IconService {
-    pub fn new(packs_dir: PathBuf) -> Self {
-        Self { packs_dir, seen: HashSet::new() }
+    pub fn new(packs: BTreeMap<String, PathBuf>) -> Self {
+        Self { packs, seen: HashSet::new() }
+    }
+
+    pub fn set_packs(&mut self, packs: BTreeMap<String, PathBuf>) {
+        self.packs = packs;
     }
 
     /// Make sure `id` is on the GPU. Returns true when something was uploaded.
@@ -178,8 +183,7 @@ impl IconService {
         } else if let Some(rest) = id.strip_prefix("icon:") {
             let mut it = rest.split(ID_SEP);
             let (pack, target, explicit) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
-            let dir = (pack != "Default" && !pack.is_empty()).then(|| self.packs_dir.join(pack));
-            resolve(target, explicit, dir.as_deref())
+            resolve(target, explicit, self.packs.get(pack).map(PathBuf::as_path))
         } else {
             generic()
         };

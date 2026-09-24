@@ -118,25 +118,37 @@ pub struct Library {
     base: BTreeMap<String, Value>,
 }
 
-fn load_dir(dir: &Path, into: &mut Vec<Axis>, errors: &mut Vec<String>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    let mut paths: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();
-    paths.sort();
-    for p in paths {
-        match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| Axis::parse(&s, p.parent())) {
-            // a user file with the same name replaces the built-in, in its place
-            Ok(a) => match into.iter_mut().find(|x| x.name == a.name) {
-                Some(slot) => *slot = a,
-                None => into.push(a),
-            },
-            Err(e) => errors.push(format!("{}: {e}", p.display())),
+/// The three token axes, each read from its own folder of a content root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AxisKind {
+    Palette,
+    Fonts,
+    Glyphs,
+}
+
+impl AxisKind {
+    pub const ALL: [AxisKind; 3] = [AxisKind::Palette, AxisKind::Fonts, AxisKind::Glyphs];
+
+    pub fn folder(self) -> &'static str {
+        match self {
+            AxisKind::Palette => "palettes",
+            AxisKind::Fonts => "fonts",
+            AxisKind::Glyphs => "glyphs",
         }
     }
 }
 
+/// Subfolders of `<root>/iconpacks`, sorted; "Default" is the engine's own and never a folder.
+pub fn icon_pack_dirs(root: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(rd) = std::fs::read_dir(root.join("iconpacks")) else { return vec![] };
+    let mut packs: Vec<(String, PathBuf)> = rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).filter_map(|e| Some((e.file_name().into_string().ok()?, e.path()))).filter(|(n, _)| n != "Default").collect();
+    packs.sort();
+    packs
+}
+
 impl Library {
-    /// Built-ins plus anything in `<data>/{palettes,fonts,glyphs,iconpacks}`.
-    pub fn load(data: &Path) -> Library {
+    /// Only what ships inside the engine.
+    pub fn builtin() -> Library {
         let mut lib = Library::default();
         for (src, into) in [
             (BUILTIN_PALETTES, &mut lib.palettes),
@@ -151,16 +163,53 @@ impl Library {
         for axis in [Self::pick(&lib.glyphs, &d.glyphs), Self::pick(&lib.fonts, &d.fonts), Self::pick(&lib.palettes, &d.palette)] {
             lib.base.extend(axis.tokens.clone());
         }
-        load_dir(&data.join("palettes"), &mut lib.palettes, &mut lib.errors);
-        load_dir(&data.join("fonts"), &mut lib.fonts, &mut lib.errors);
-        load_dir(&data.join("glyphs"), &mut lib.glyphs, &mut lib.errors);
         lib.icon_packs = vec!["Default".into()];
-        if let Ok(rd) = std::fs::read_dir(data.join("iconpacks")) {
-            let mut names: Vec<String> = rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).filter_map(|e| e.file_name().into_string().ok()).collect();
-            names.sort();
-            lib.icon_packs.extend(names);
-        }
         lib
+    }
+
+    /// Built-ins plus anything in `<data>/{palettes,fonts,glyphs,iconpacks}`.
+    pub fn load(data: &Path) -> Library {
+        let mut lib = Library::builtin();
+        for kind in AxisKind::ALL {
+            lib.load_axes(kind, &data.join(kind.folder()));
+        }
+        lib.icon_packs.extend(icon_pack_dirs(data).into_iter().map(|(n, _)| n));
+        lib
+    }
+
+    pub fn axes(&self, kind: AxisKind) -> &[Axis] {
+        match kind {
+            AxisKind::Palette => &self.palettes,
+            AxisKind::Fonts => &self.fonts,
+            AxisKind::Glyphs => &self.glyphs,
+        }
+    }
+
+    /// Every `*.toml` in `dir`; one named like an existing axis replaces it in its place.
+    /// A broken file is skipped and reported. Returns the names it read.
+    pub fn load_axes(&mut self, kind: AxisKind, dir: &Path) -> Vec<String> {
+        let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+        let mut paths: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();
+        paths.sort();
+        let mut names = Vec::new();
+        for p in paths {
+            match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| Axis::parse(&s, p.parent())) {
+                Ok(a) => {
+                    names.push(a.name.clone());
+                    let into = match kind {
+                        AxisKind::Palette => &mut self.palettes,
+                        AxisKind::Fonts => &mut self.fonts,
+                        AxisKind::Glyphs => &mut self.glyphs,
+                    };
+                    match into.iter_mut().find(|x| x.name == a.name) {
+                        Some(slot) => *slot = a,
+                        None => into.push(a),
+                    }
+                }
+                Err(e) => self.errors.push(format!("{}: {e}", p.display())),
+            }
+        }
+        names
     }
 
     fn pick<'a>(axes: &'a [Axis], name: &str) -> &'a Axis {
