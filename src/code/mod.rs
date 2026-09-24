@@ -156,6 +156,9 @@ impl DataSource for WasmSource {
 
     /// Never blocks: the last value for this Instance, or the placeholder while one is fetched.
     fn value(&self, cx: &SourceCx) -> Value {
+        if let Status::Broken(e) = &*self.shared.status.lock().unwrap() {
+            return with_state(&self.initial, false, &format!("the plugin's code cannot run: {e}"));
+        }
         let params = params_json(cx.params);
         let mut slots = self.shared.slots.lock().unwrap();
         if let Some(s) = slots.get(&cx.cfg.id).filter(|s| s.params == params) {
@@ -514,6 +517,8 @@ pub(crate) mod tests {
         let (src, rx) = start("broken", "(module)", Limits::default(), None);
         let _ = rx.recv_timeout(Duration::from_secs(10));
         assert!(matches!(src.status(), Status::Broken(ref e) if e.contains("memory")), "{:?}", src.status());
+        let v = read(&src, &cfg("w-1"), &BTreeMap::new());
+        assert!(!v.get("loading").is_some_and(Value::truthy) && v.get("error").is_some_and(|e| e.to_string().contains("cannot run")), "the widget says why, never loads forever: {v:?}");
         assert!(src.stop().join().is_ok());
     }
 
