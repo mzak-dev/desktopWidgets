@@ -77,7 +77,11 @@ impl ParamType {
         }
     }
 
+    /// `folder` names the folder picker too.
     pub fn parse(s: &str) -> Option<Self> {
+        if s == "folder" {
+            return Some(Self::Path);
+        }
         Self::ALL.into_iter().find(|t| t.id() == s)
     }
 }

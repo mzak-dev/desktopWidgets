@@ -58,7 +58,7 @@ pub use self::explorer::install_from_explorer;
 use self::edit_mode::UndoEntry;
 use self::first_run::{default_instances, write_missing_guides};
 use self::host::AppHost;
-use self::instance::{Drag, EXPAND_SECS, GLIDE_SECS, Instance, VerbOutcome, SizeTween, base_size_after_edit, engine_action, expand_target, scrolled_offset, snap_offset};
+use self::instance::{Drag, EXPAND_SECS, GLIDE_SECS, Instance, VerbOutcome, SizeTween, base_size_after_edit, engine_action, expand_target, scrolled_offset, snap_offset, wheel_target};
 use self::selftest::SelfTest;
 
 #[derive(Debug)]
@@ -798,6 +798,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::MouseInput { state, button, .. } => self.on_mouse(i, state, button),
             WindowEvent::MouseWheel { delta, .. } => self.on_wheel(i, delta),
+            WindowEvent::DroppedFile(path) => self.on_drop(i, &path),
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput { event, .. } => self.on_key(i, &event.logical_key, event.state),
             WindowEvent::Resized(s) => {

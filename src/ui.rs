@@ -142,6 +142,10 @@ pub struct Node {
     pub enter: Option<Enter>,
     /// Makes it a clipping, vertically scrolling container.
     pub scroll_offset: Option<f32>,
+    /// Makes it a clipping, sideways scrolling container.
+    pub scroll_offset_x: Option<f32>,
+    /// A file dropped on it runs this action with the file's path after it.
+    pub on_drop: Option<String>,
     pub clip: bool,
     pub overlay: bool,
     pub hit_testable: bool,
@@ -161,6 +165,8 @@ impl Node {
             transition: Transition::default(),
             enter: None,
             scroll_offset: None,
+            scroll_offset_x: None,
+            on_drop: None,
             clip: false,
             overlay: false,
             hit_testable: false,
@@ -343,13 +349,24 @@ pub struct Hit {
     pub clip: [f32; 4],
     pub key: String,
     pub action: Option<String>,
+    pub on_drop: Option<String>,
+}
+
+impl Hit {
+    fn contains(&self, x: f32, y: f32) -> bool {
+        let [rx, ry, rw, rh] = self.rect;
+        let c = self.clip;
+        x >= rx && x < rx + rw && y >= ry && y < ry + rh && x >= c[0] && x < c[2] && y >= c[1] && y < c[3]
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct ScrollInfo {
     pub key: String,
-    pub view_h: f32,
-    pub content_h: f32,
+    /// Along its axis.
+    pub view: f32,
+    pub content: f32,
+    pub horizontal: bool,
 }
 
 #[derive(Default)]
@@ -367,11 +384,12 @@ pub struct Frame {
 
 impl Frame {
     pub fn hit_at(&self, x: f32, y: f32) -> Option<&Hit> {
-        self.hits.iter().rev().find(|h| {
-            let [rx, ry, rw, rh] = h.rect;
-            let c = h.clip;
-            x >= rx && x < rx + rw && y >= ry && y < ry + rh && x >= c[0] && x < c[2] && y >= c[1] && y < c[3]
-        })
+        self.hits.iter().rev().find(|h| h.contains(x, y))
+    }
+
+    /// The `on_drop` action of the topmost element under `(x, y)` that takes files.
+    pub fn drop_at(&self, x: f32, y: f32) -> Option<&str> {
+        self.hits.iter().rev().find(|h| h.on_drop.is_some() && h.contains(x, y)).and_then(|h| h.on_drop.as_deref())
     }
 
     pub fn rect_of(&self, key: &str) -> Option<[f32; 4]> {
@@ -413,8 +431,9 @@ fn build<'a>(tree: &mut TaffyTree<usize>, n: &'a Node, nodes: &mut Vec<&'a Node>
     if in_scroll {
         style.flex_shrink = 0.0;
     }
-    if n.scroll_offset.is_some() {
-        style.overflow = taffy::Point { x: taffy::Overflow::Visible, y: taffy::Overflow::Scroll };
+    let scroll = |on: bool| if on { taffy::Overflow::Scroll } else { taffy::Overflow::Visible };
+    if n.scroll_offset.is_some() || n.scroll_offset_x.is_some() {
+        style.overflow = taffy::Point { x: scroll(n.scroll_offset_x.is_some()), y: scroll(n.scroll_offset.is_some()) };
     }
     let id = if n.children.is_empty() {
         match n.kind {
@@ -423,7 +442,7 @@ fn build<'a>(tree: &mut TaffyTree<usize>, n: &'a Node, nodes: &mut Vec<&'a Node>
         }
         .expect("leaf")
     } else {
-        let kids: Vec<NodeId> = n.children.iter().map(|c| build(tree, c, nodes, ids, n.scroll_offset.is_some())).collect();
+        let kids: Vec<NodeId> = n.children.iter().map(|c| build(tree, c, nodes, ids, n.scroll_offset.is_some() || n.scroll_offset_x.is_some())).collect();
         tree.new_with_children(style, &kids).expect("node")
     };
     ids[idx] = id;
@@ -618,20 +637,24 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
         }
     }
 
-    if n.hit_testable || n.action.is_some() || n.hover.any() {
-        let h = Hit { rect, clip: [clip[0] / s, clip[1] / s, clip[2] / s, clip[3] / s], key: key.to_string(), action: n.action.clone() };
+    if n.hit_testable || n.action.is_some() || n.on_drop.is_some() || n.hover.any() {
+        let h = Hit { rect, clip: [clip[0] / s, clip[1] / s, clip[2] / s, clip[3] / s], key: key.to_string(), action: n.action.clone(), on_drop: n.on_drop.clone() };
         if layer == 1 { out.overlay_hits.push(h) } else { out.hits.push(h) }
     }
     out.rects.push((key.to_string(), rect));
 
     let mut child_ctx = Ctx { clip, opacity: op, layer, depth: ctx.depth + 1 };
     let mut child_origin = (x, y);
+    if n.clip || n.scroll_offset.is_some() || n.scroll_offset_x.is_some() {
+        child_ctx.clip = intersect(clip, [x * s, y * s, (x + w) * s, (y + h) * s]);
+    }
     if let Some(off) = n.scroll_offset {
-        child_ctx.clip = intersect(clip, [x * s, y * s, (x + w) * s, (y + h) * s]);
         child_origin.1 -= off;
-        out.scrolls.push(ScrollInfo { key: key.to_string(), view_h: h, content_h: l.scrollable_overflow_rect.bottom.max(h) });
-    } else if n.clip {
-        child_ctx.clip = intersect(clip, [x * s, y * s, (x + w) * s, (y + h) * s]);
+        out.scrolls.push(ScrollInfo { key: key.to_string(), view: h, content: l.scrollable_overflow_rect.bottom.max(h), horizontal: false });
+    }
+    if let Some(off) = n.scroll_offset_x {
+        child_origin.0 -= off;
+        out.scrolls.push(ScrollInfo { key: key.to_string(), view: w, content: l.scrollable_overflow_rect.right.max(w), horizontal: true });
     }
     for c in &n.children {
         emit(c, ids, next, tree, child_origin, &child_ctx, env, out);
@@ -656,6 +679,22 @@ mod tests {
         assert_eq!(Fit::Cover.place((200.0, 100.0), 100.0, 100.0), ((100.0, 100.0), [0.25, 0.0, 0.75, 1.0]));
         assert_eq!(Fit::Cover.place((100.0, 400.0), 50.0, 100.0), ((50.0, 100.0), [0.0, 0.25, 1.0, 0.75]));
         assert_eq!(Fit::Cover.place((64.0, 64.0), 32.0, 32.0).1, [0.0, 0.0, 1.0, 1.0], "same shape: nothing cropped");
+    }
+
+    #[test]
+    fn a_sideways_strip_scrolls_and_takes_drops() {
+        let strip = Node::new("w/s").row().wh(100.0, 40.0).kids((0..5).map(|i| Node::new(format!("w/s/{i}")).wh(60.0, 40.0)));
+        let mut strip = strip;
+        strip.scroll_offset_x = Some(70.0);
+        strip.children[1].on_drop = Some("gallery.add".into());
+        let root = Node::new("w").wh(100.0, 40.0).child(strip);
+        let mut env = Env { text: &mut TextEngine::new(), anim: &mut Anim::default(), hover: None, now: Instant::now(), scale: 1.0 };
+        let f = layout(&root, (100.0, 40.0), &mut env);
+        let s = f.scrolls.iter().find(|s| s.key == "w/s").unwrap();
+        assert_eq!((s.horizontal, s.view, s.content), (true, 100.0, 300.0), "five 60 px cards in 100 px");
+        assert_eq!(f.rect_of("w/s/1").unwrap()[0], -10.0, "moved left by the offset");
+        assert_eq!(f.drop_at(5.0, 20.0), Some("gallery.add"));
+        assert_eq!(f.drop_at(60.0, 20.0), None, "the next card takes no files");
     }
 
     #[test]

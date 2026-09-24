@@ -932,10 +932,11 @@ impl UiState {
             ParamType::Path => {
                 let ik = format!("n:{id}:{name}");
                 let f = self.focus.as_ref().filter(|f| f.key == ik).map(|f| (f.caret, self.caret_on));
+                let has_list = self.def_of(ctx, &cfg.widget).is_some_and(|d| d.params.iter().any(|p| p.ty == ParamType::Shortcuts));
                 Node::new(format!("{rk}/pc"))
                     .col()
                     .gap(8.0)
-                    .child(k.input(&ik, &self.input_text(ctx, &ik), "no folder: use the list below", f, CONTROL_W, false))
+                    .child(k.input(&ik, &self.input_text(ctx, &ik), if has_list { "no folder: use the list below" } else { "no folder chosen" }, f, CONTROL_W, false))
                     .child(Node::new(format!("{rk}/pb")).row().gap(8.0).child(k.button(&format!("{rk}/browse"), "Browse...", format!("folder:{id}|{name}"), false)).child(k.button(&format!("{rk}/clear"), "Clear", format!("clear:{id}|{name}"), false)))
             }
             ParamType::Shortcuts => return self.shortcuts_editor(k, ctx, cfg, pd, images),
@@ -1619,11 +1620,11 @@ impl UiState {
     }
 
     pub fn wheel(&mut self, dy: f32, mouse: (f32, f32), frame: &Frame) {
-        let region = frame.scrolls.iter().rev().find(|s| frame.rect_of(&s.key).is_some_and(|[x, y, w, h]| mouse.0 >= x && mouse.0 < x + w && mouse.1 >= y && mouse.1 < y + h));
+        let region = frame.scrolls.iter().rev().filter(|s| !s.horizontal).find(|s| frame.rect_of(&s.key).is_some_and(|[x, y, w, h]| mouse.0 >= x && mouse.0 < x + w && mouse.1 >= y && mouse.1 < y + h));
         // a popup list takes the wheel while a popup is open
         let region = if self.open.is_some() { frame.scrolls.iter().find(|s| s.key == "s/ov/list") } else { region };
         if let Some(r) = region {
-            let max = (r.content_h - r.view_h).max(0.0);
+            let max = (r.content - r.view).max(0.0);
             let cur = self.scroll_of(&r.key);
             self.scroll.insert(r.key.clone(), (cur - dy).clamp(0.0, max));
         }

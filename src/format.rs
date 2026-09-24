@@ -46,7 +46,7 @@ fn parse_attr(v: &toml::Value, path: &str) -> Result<Attr, String> {
 const COMMON_ATTRS: &[&str] = &[
     "id", "width", "height", "min_width", "min_height", "max_width", "max_height", "grow", "shrink", "basis", "direction", "wrap", "align",
     "justify", "align_self", "gap", "padding", "margin", "position", "inset", "left", "top", "right", "bottom", "aspect", "fill", "fill_alpha", "border",
-    "border_color", "radius", "opacity", "shadow", "clip", "on_click", "hover", "transition", "enter", "scroll", "overlay", "hit",
+    "border_color", "radius", "opacity", "shadow", "clip", "on_click", "on_drop", "hover", "transition", "enter", "scroll", "scroll_x", "overlay", "hit",
 ];
 /// `repeat` is structural, not an element kind.
 const REPEAT_ATTRS: &[&str] = &["for", "as", "index"];
@@ -652,6 +652,7 @@ impl TreeBuilder<'_> {
 
     fn interact(&mut self, e: &Elem, n: &mut Node, path: &str) -> Result<(), String> {
         n.action = self.text(e, "on_click", path)?.filter(|s| !s.is_empty());
+        n.on_drop = self.text(e, "on_drop", path)?.filter(|s| !s.is_empty());
         if let Some(Attr::Table(t)) = e.attrs.get("hover") {
             for (k, a) in t {
                 let ctx = format!("{path}.hover.{k}");
@@ -682,6 +683,9 @@ impl TreeBuilder<'_> {
         }
         if let Some(s) = self.num(e, "scroll", path)? {
             n.scroll_offset = Some(s.max(0.0));
+        }
+        if let Some(s) = self.num(e, "scroll_x", path)? {
+            n.scroll_offset_x = Some(s.max(0.0));
         }
         n.overlay = self.flag(e, "overlay", path)?.unwrap_or(false);
         n.hit_testable = self.flag(e, "hit", path)?.unwrap_or(false);
@@ -837,6 +841,8 @@ mod tests {
         assert_eq!(speed.choices, [Choice { value: "slow".into(), label: "slow".into() }, Choice { value: "fast".into(), label: "Fast (30 fps)".into() }]);
         let groups: Vec<(Option<&str>, Vec<&str>)> = ParamDef::grouped(&d.meta.params).into_iter().map(|(g, ps)| (g, ps.iter().map(|p| p.name.as_str()).collect())).collect();
         assert_eq!(groups, [(None, vec!["color"]), (Some("Motion"), vec!["speed", "decay"]), (Some("Shape"), vec!["bars"])]);
+        let pics = WidgetDef::parse("t", "[params.pics]\ntype = 'folder'\n[root]\ntype = 'box'").unwrap();
+        assert_eq!(pics.meta.params[0].ty, ParamType::Path, "a folder picker");
         let e = WidgetDef::parse("t", "[params.s]\ntype = 'enum'\nchoices = [{ label = 'x' }]\n[root]\ntype = 'box'").err().unwrap();
         assert!(e.contains("params.s.choices"), "{e}");
     }

@@ -133,6 +133,18 @@ pub(super) fn expand_target(expand: Option<ExpandInfo>, stored: (f32, f32), coll
     Rect::new(x, y, w, h)
 }
 
+/// The scroll region a wheel turn moves, and by how much. A plain wheel over a strip that
+/// only scrolls sideways moves it sideways.
+pub(super) fn wheel_target<'a>(frame: &'a crate::ui::Frame, (mx, my): (f32, f32), dx: f32, dy: f32) -> Option<(&'a crate::ui::ScrollInfo, f32)> {
+    let under = |horizontal: bool| frame.scrolls.iter().find(|s| s.horizontal == horizontal && frame.rect_of(&s.key).is_some_and(|[x, y, w, h]| mx >= x && mx < x + w && my >= y && my < y + h));
+    match (under(false), under(true)) {
+        (Some(v), _) if dy != 0.0 => Some((v, dy)),
+        (_, Some(h)) if dx != 0.0 => Some((h, dx)),
+        (None, Some(h)) => Some((h, dy)),
+        _ => None,
+    }
+}
+
 pub(super) fn scrolled_offset(cur: f32, dy: f32, view_h: f32, content_h: f32) -> Option<f32> {
     let next = (cur - dy).clamp(0.0, (content_h - view_h).max(0.0));
     ((next - cur).abs() > 0.01).then_some(next)
@@ -255,6 +267,22 @@ mod tests {
         assert_eq!(scrolled_offset(180.0, -48.0, 100.0, 300.0), Some(200.0), "stops at the end");
         assert_eq!(scrolled_offset(0.0, 48.0, 100.0, 300.0), None, "already at the top");
         assert_eq!(scrolled_offset(0.0, -48.0, 300.0, 100.0), None, "content fits: nothing to scroll");
+    }
+
+    #[test]
+    fn the_wheel_moves_the_region_under_the_cursor_along_its_axis() {
+        use crate::ui::{Frame, ScrollInfo};
+        let mut f = Frame::default();
+        f.rects.push(("list".into(), [0.0, 0.0, 100.0, 100.0]));
+        f.rects.push(("strip".into(), [0.0, 100.0, 100.0, 40.0]));
+        f.scrolls.push(ScrollInfo { key: "list".into(), view: 100.0, content: 300.0, horizontal: false });
+        f.scrolls.push(ScrollInfo { key: "strip".into(), view: 100.0, content: 500.0, horizontal: true });
+        let hit = |at: (f32, f32), dx: f32, dy: f32| wheel_target(&f, at, dx, dy).map(|(s, d)| (s.key.clone(), d));
+        assert_eq!(hit((10.0, 10.0), 0.0, -48.0), Some(("list".into(), -48.0)));
+        assert_eq!(hit((10.0, 110.0), 0.0, -48.0), Some(("strip".into(), -48.0)), "a plain wheel over a sideways strip moves it sideways");
+        assert_eq!(hit((10.0, 110.0), -30.0, 0.0), Some(("strip".into(), -30.0)));
+        assert_eq!(hit((10.0, 10.0), -30.0, 0.0), None, "a sideways wheel over a list that only scrolls down");
+        assert_eq!(hit((10.0, 200.0), 0.0, -48.0), None);
     }
 
     #[test]

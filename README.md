@@ -223,7 +223,7 @@ justify = "center"
 | Look | `fill` (or `[top, bottom]` gradient) `border` `border_color` `radius` `shadow` `opacity` `clip` |
 | Text | `text` `size` `color` `font` `weight` `text_align` `text_wrap` `line_height` |
 | Image | `src` (PNG, JPEG, WebP, GIF, BMP; `./` is next to the widget file) `tint` `fit` (`contain` · `cover`) `anim` (`false` stops a GIF, WebP or APNG) `frame` (show one frame) |
-| Behaviour | `on_click` (`launch <path>` · `toggle <state>`) `hover` `transition` `enter` `scroll` `when` |
+| Behaviour | `on_click` (`launch <path>` · `toggle <state>`) `on_drop` (a dropped file's path follows the action) `hover` `transition` `enter` `scroll` `scroll_x` (sideways; the wheel over it writes `state.scroll_x`, Shift+wheel too) `when` |
 
 **Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `param.*` · `state.*` · `self.w` / `self.h`.
 
@@ -233,7 +233,7 @@ justify = "center"
 
 Unknown attributes are rejected with a suggestion, for example ``unknown attribute `colour` on `text` (did you mean `color`?)``.
 
-**Params** become Settings controls: `type` (`color` · `font` · `number` · `enum` · `bool` · `string` · `path` · `duration` · `shortcuts`), `default`, `label`, `help`, `min` / `max` / `step`, and for an `enum` its `choices`, plain strings or `{ value = "fast", label = "Fast (30 fps)" }`. Params with the same `group = "Motion"` get their own heading.
+**Params** become Settings controls: `type` (`color` · `font` · `number` · `enum` · `bool` · `string` · `folder` (a folder picker; also `path`) · `duration` · `shortcuts`), `default`, `label`, `help`, `min` / `max` / `step`, and for an `enum` its `choices`, plain strings or `{ value = "fast", label = "Fast (30 fps)" }`. Params with the same `group = "Motion"` get their own heading.
 
 **Needs:** `needs = ["agents"]` at the top of a widget names the data sources it cannot work without. When one is missing, the widget and Settings say which, instead of showing a blank card.
 

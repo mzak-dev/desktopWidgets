@@ -47,6 +47,9 @@ pub trait Widget: Send + Sync {
 pub trait Host {
     fn data_dir(&self) -> &Path;
     fn pick_file(&mut self) -> Option<PathBuf>;
+    fn pick_folder(&mut self) -> Option<PathBuf> {
+        None
+    }
     fn create_shortcut(&mut self, dir: &Path, target: &Path) -> bool;
     fn log(&mut self, msg: String);
 }
