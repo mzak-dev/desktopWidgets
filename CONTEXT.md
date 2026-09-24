@@ -45,8 +45,20 @@ The Theme tokens `assets/style.toml` declares: accent, roundness, outlines, blur
 _Avoid_: tweaks, overrides (for the whole set)
 
 **Size Tier**:
-A range of card sizes over which a Widget shows the same content; crossing into the next one adds or drops detail (city clocks, graphs, labels), not just scale. Declared with `when` on `self.w` / `self.h`.
+A range of card sizes over which a Widget shows the same content; crossing into the next one adds or drops detail (city clocks, graphs, labels), not just scale. Declared with `when` on `self.w` / `self.h`. A Widget that has Modules names its tiers, so Settings can preview and arrange each one.
 _Avoid_: breakpoint, mode
+
+**Module**:
+A part of a Widget that the user arranges: a gauge, a graph, the footer. The Widget declares which Modules exist, in which Slots each may sit, and its default Arrangement per Tier; a Module may expand to one per item of a Data Source list (each GPU, each drive). Its own options appear when it is selected in Settings.
+_Avoid_: element (that is a building block of the tree), section, component
+
+**Slot**:
+A named box in a Widget's tree that the Modules of the current Tier fill, in order. A Module may only go in Slots it names.
+_Avoid_: region, container
+
+**Arrangement**:
+Which Modules an Instance shows in which Slots, per Tier: the Widget's default until the user drags something, then saved with the Instance (`layout`). A Module in no Slot is hidden, and a Tier the user never touched keeps following the Widget's default.
+_Avoid_: layout (taffy owns that word; only the saved key and the file's `layout` are called that)
 
 **Size Limit**:
 A Widget's maximum card size. An Instance may switch it off to grow larger; the minimum always applies.
@@ -97,6 +109,7 @@ Everything the engine can show once every content root is read, and which root e
 - A **TOML Widget** is a tree of **Elements**; a **Rust Widget** builds its tree in code or wraps a TOML Widget's.
 - An **Instance** shows one **Card**; its params may be **Seeded** when it is added.
 - A **Widget** binds to one or more **Data Sources**; its appearance resolves through the active **Theme**.
+- A **Widget** may declare **Tiers**, **Slots** and **Modules**; an **Instance** carries one **Arrangement**, edited on a live preview of the Widget in Settings.
 - An **Instance** takes the global **Style** and axes unless it overrides them; its own values win.
 - An **Instance** has exactly one **Z-mode** and is anchored to one monitor; if that monitor is absent it is **Parked**.
 - A **Plugin** is a **Content root** while it is on, and runs its **Code Source** while it is on. An **Instance** whose Widget only a switched-off Plugin provides is hidden like a Parked one, and shows again when the Plugin is back on.

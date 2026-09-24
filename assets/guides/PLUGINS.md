@@ -45,6 +45,10 @@ Unknown keys are refused, so a typo shows up at once.
 - A widget's `launch` can never open a file inside `plugins/`.
 - **Needs:** a widget that reads a data source another plugin or a Wayfinder build provides can say so with `needs = ["media"]` at its top. When it is missing, the widget, Settings and the Plugins page name it.
 
+## Modules
+
+A widget can let its user arrange its parts (gauges, graphs, a footer) in Settings. Declare `[tiers.<name>]` (a size range, with `when`, a preview `size` and the default `layout`), `[slots.<name>]` and `[modules.<name>]`, put a `type = "slot"` box where each slot goes, and give a module `slots = [...]` for where it may be dropped. A module with `for = "{source.list}"` and `key = "..."` becomes one module per item. Inside a module, `tier` and `slot` are strings you can test, so the same module can be a bar in one slot and a ring in another. Put `module = "id"` on a `[params.x]` so its control shows when that module is selected. Read the Modules part of the README for a full example, and `assets/widgets/system_monitor.toml` in the Wayfinder source. Widgets without these tables work exactly as before.
+
 ## Code
 
 For live data (weather, feeds, prices, a to-do list), a plugin can carry a WebAssembly module written in Rust with the `wayfinder-plugin` crate. It serves a data source that the plugin's widgets bind to like any other. For several sources, write `[[code]]` once per module instead of `[code]`; they share the plugin's saved data.

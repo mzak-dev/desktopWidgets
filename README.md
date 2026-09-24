@@ -114,7 +114,7 @@ Press **`Ctrl` + `Alt` + `E`** (or use the tray menu) to enter Edit Mode. Every 
 
 <img src="docs/img/settings_widgets_folder.png" alt="The Widgets page of the settings window" width="100%">
 
-Add and remove widgets, choose which layer each sits on (desktop, bottom, normal, always on top), make one click-through, and edit its options. The Plugins page installs, switches off and removes plugins.
+Add and remove widgets and edit them: the widget sits at the top with a tab per size, and its modules (a gauge, a graph, the footer) are dragged into place, hidden or given their own options. Layer (desktop, bottom, normal, always on top), click-through and the style overrides are under Advanced. The window resizes and maximizes like any other. The Plugins page installs, switches off and removes plugins.
 
 </td>
 </tr>
@@ -215,7 +215,7 @@ justify = "center"
 
 <br>
 
-**Elements:** `box` · `text` · `image` · `hand` · `ticks` · `arc` · `graph` (a line through `values`, `span` slots wide) · `repeat` (one child per list item).
+**Elements:** `box` · `text` · `image` · `hand` · `ticks` · `arc` · `graph` (a line through `values`, `span` slots wide) · `repeat` (one child per list item) · `slot` (the box arranged Modules fill).
 
 | Group | Attributes |
 |---|---|
@@ -225,9 +225,38 @@ justify = "center"
 | Image | `src` (PNG, JPEG, WebP, GIF, BMP; `./` is next to the widget file, or a full path like `{item.target}`) `tint` `fit` (`contain` · `cover`) `max` (`max = 256`: a small copy, made off the UI thread and kept in `.cache/thumbs`; use it for photo grids) `anim` (`false` stops a GIF, WebP or APNG) `frame` (show one frame) |
 | Behaviour | `on_click` (`launch <path>` · `toggle <state>` · `set <state> <value>`, where numbers and `true`/`false` keep their type and `'quotes'` keep text) `on_drop` (a dropped file's path follows the action; `on_drop = "param folder"` saves it as the widget's `folder` setting) · `param <name> <value>` in `on_click` saves a setting too `hover` `transition` `enter` `scroll` `scroll_x` (sideways; the wheel over it writes `state.scroll_x`, Shift+wheel too) `when` |
 
-**Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `gpus` (one per adapter: `label` `value` `history`), `gpu_count`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `media.*` (what any app plays through the system media controls: `title` `artist` `album` `source` `playing` `art` `position` `duration` `progress` `clock` `length` `active`; `on_click = "media.play_pause"`, `media.next`, `media.prev`) · `audio.*` (what the speakers play, for visualizers: `bands` `peaks` `level` `bass` `active`, shaped by the widget's `bands` `fmin` `fmax` `gain` `attack` `release` `peak_fall` params) · `param.*` · `state.*` · `self.w` / `self.h`.
+**Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `graphs`, `gpus` (one per adapter: `label` `value` `history`), `gpu_count`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `media.*` (what any app plays through the system media controls: `title` `artist` `album` `source` `playing` `art` `position` `duration` `progress` `clock` `length` `active`; `on_click = "media.play_pause"`, `media.next`, `media.prev`) · `audio.*` (what the speakers play, for visualizers: `bands` `peaks` `level` `bass` `active`, shaped by the widget's `bands` `fmin` `fmax` `gain` `attack` `release` `peak_fall` params) · `param.*` · `state.*` · `self.w` / `self.h`.
 
 **Size tiers** are plain `when` conditions on `self.w` and `self.h`: show more when there is room. The engine animates the change.
+
+**Modules** let the user arrange a widget in Settings: the widget on top, a tab per size, and the parts dragged between slots or into a Hidden tray. A file opts in by declaring what can move:
+
+```toml
+[tiers.compact]                       # first tier whose `when` holds; one without `when` is the fallback
+size = [240, 130]                     # what Settings previews the tab at
+when = "{self.w < 260}"
+layout = { bars = ["gauge:cpu", "gauge:gpu*"] }   # the default: slot -> modules (`*` matches a prefix)
+[tiers.normal]
+layout = { gauges = ["gauge:cpu", "gauge:gpu*"] }
+[slots.bars]
+[slots.gauges]
+[modules.gauge]                       # a Module is a box, or any element; `for` makes one per item
+for = "{sys.gauges_all}"
+as = "g"
+key = "{g.key}"                       # ids are `gauge:<key>`
+slots = ["bars", "gauges"]            # where it may be dropped
+when = "{sys.has_battery}"            # optional: whether it exists at all
+label = "{g.label}"
+direction = "{slot == 'bars' ? 'row' : 'column'}"   # `tier` and `slot` are available inside
+[root]
+[[root.children]]
+type = "slot"                         # the box the arranged modules fill
+slot = "gauges"
+when = "{tier != 'compact'}"
+max = "{floor((self.w - 28) / 50)}"   # optional: how many fit; the rest are left out, not overflowed
+```
+
+A `[params.x]` with `module = "gauge:cpu,graph:cpu"` shows in Settings only while one of those modules is selected; without it, it is an option of the whole widget. `legacy = { "gauge:cpu" = "show_cpu" }` on a module turns an old saved `show_cpu = false` into a layout without it. Files without `[modules]` work as before.
 
 **Expressions** are total: arithmetic, comparison, `&&` `||` `!`, `? :`, strings and the functions `min` `max` `abs` `round` `floor` `ceil` `clamp` `len` `upper` `lower` `pad` `at`. `at(list, i)` picks by a computed position (negative counts from the end, past the end is nothing) or key, and takes a field after it: `at(gallery.items, state.selected).url`. There are no loops and no side effects, so evaluating one can never hang a redraw. Interpolate with `{expr}` or format with `{expr|02}` / `{expr|.1}`.
 
