@@ -70,7 +70,8 @@ mod tests {
 
     #[test]
     fn the_plugins_guide_example_manifest_is_valid() {
-        let guide = GUIDES.iter().find(|(p, _)| p == &["PLUGINS.md"]).unwrap().1;
+        // a Windows checkout may give the guide CRLF line endings
+        let guide = GUIDES.iter().find(|(p, _)| p == &["PLUGINS.md"]).unwrap().1.replace("\r\n", "\n");
         let example = guide.split("```toml\n").nth(1).and_then(|b| b.split("```").next()).expect("a toml example");
         let m = crate::plugins::Manifest::parse(example).expect("the example parses");
         assert_eq!(m.id, "sunset");

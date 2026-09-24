@@ -449,7 +449,8 @@ mod tests {
 
     #[test]
     fn capture_runs_while_widgets_read_or_wait_through_silence() {
-        let now = Instant::now();
+        // counted forward from now: a clock that started under ten minutes ago cannot go back 600 s
+        let now = Instant::now() + Duration::from_secs(3600);
         let ago = |s: u64| now - Duration::from_secs(s);
         assert!(!wanted(now, [], None), "no widget reads audio");
         assert!(wanted(now, [ago(1)], None), "a widget reads it");
