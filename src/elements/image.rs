@@ -5,7 +5,8 @@ use crate::ui::{ImageSpec, Kind};
 pub const KIND: ElementKind = ElementKind { name: "image", own_attrs: &["src", "tint"], fills_parent_when_unsized: false, build };
 
 fn build(a: &mut Attrs) -> Result<Kind, String> {
-    let id = a.text("src")?.unwrap_or_default();
+    let src = a.text("src")?.unwrap_or_default();
+    let id = a.image_id(&src);
     let (w, h) = a.request_image(&id);
     Ok(Kind::Image(ImageSpec { id, w, h, tint: a.color("tint")? }))
 }

@@ -2,6 +2,7 @@
 //! Authored by hand, so unknown names are rejected with a "did you mean".
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Component, Path, PathBuf};
 
 use taffy::prelude::*;
 
@@ -132,6 +133,36 @@ pub struct WidgetDef {
     pub meta: WidgetMeta,
     pub expand: Option<Expand>,
     pub root: Elem,
+    /// Where the file lives; `None` for a built-in.
+    pub base: Option<Base>,
+}
+
+/// A definition file's folder, and the content root its `./` paths must stay inside.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Base {
+    pub dir: PathBuf,
+    pub root: PathBuf,
+}
+
+impl Base {
+    /// `rel` against the file's folder, resolved without touching the disk; `None` if it
+    /// leaves the root (or is absolute).
+    pub fn resolve(&self, rel: &str) -> Option<PathBuf> {
+        let mut out = self.dir.clone();
+        for c in Path::new(rel).components() {
+            match c {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if !out.pop() {
+                        return None;
+                    }
+                }
+                Component::Normal(part) => out.push(part),
+                Component::RootDir | Component::Prefix(_) => return None,
+            }
+        }
+        out.starts_with(&self.root).then_some(out)
+    }
 }
 
 const TOP: &[&str] = &["name", "description", "size", "min_size", "max_size", "params", "state", "expand", "root"];
@@ -223,13 +254,14 @@ impl WidgetDef {
             params,
             initial_state: state,
         };
-        Ok(WidgetDef { meta, expand, root: parse_elem(root_t, "root")? })
+        Ok(WidgetDef { meta, expand, root: parse_elem(root_t, "root")?, base: None })
     }
 }
 
 
 struct TreeBuilder<'a> {
     theme: &'a Theme,
+    base: Option<&'a Base>,
     scope: Scope<'a>,
     warns: Vec<String>,
     images: BTreeSet<String>,
@@ -245,7 +277,7 @@ pub fn build(def: &WidgetDef, inp: &Inputs, theme: &Theme, image_size: &dyn Fn(&
     st.extend(inp.state.clone());
     scope.set("state", obj(&st));
     scope.set("self", Value::obj([("w", (card.0 as f64).into()), ("h", (card.1 as f64).into())]));
-    let mut b = TreeBuilder { theme, scope, warns: vec![], images: BTreeSet::new(), image_size };
+    let mut b = TreeBuilder { theme, base: def.base.as_ref(), scope, warns: vec![], images: BTreeSet::new(), image_size };
     let mut nodes = b.build_elem(&def.root, inp.key_prefix)?;
     let mut root = nodes.pop().ok_or("root produced no node")?;
     root.style.size = Size { width: length(card.0), height: length(card.1) };
@@ -302,6 +334,24 @@ impl<'a> Attrs<'_, 'a> {
 
     pub fn color(&mut self, k: &str) -> Result<Option<Color>, String> {
         self.b.color(self.e, k, self.path)
+    }
+
+    /// An image `src`: `./x.png` is a file next to the definition, inside its content root.
+    pub fn image_id(&mut self, src: &str) -> String {
+        if !src.starts_with("./") {
+            return src.to_string();
+        }
+        match self.b.base.map(|b| b.resolve(src)) {
+            Some(Some(p)) => format!("file:{}", p.display()),
+            Some(None) => {
+                self.b.warn(format!("{}.src: `{src}` leaves the widget's folder", self.path));
+                String::new()
+            }
+            None => {
+                self.b.warn(format!("{}.src: `{src}` needs a widget file on disk", self.path));
+                String::new()
+            }
+        }
     }
 
     /// 32x32 until the image is uploaded.
@@ -700,6 +750,46 @@ mod tests {
             },
         };
         build(&def, &inp, &theme(), &|_| None)
+    }
+
+    fn image_ids(def: &WidgetDef) -> (BTreeSet<String>, Vec<String>) {
+        let (p, st) = (BTreeMap::new(), BTreeMap::new());
+        let inp = Inputs { params: &p, state: &st, card_size: (100.0, 60.0), key_prefix: "t", read_source: &|_| None };
+        let b = build(def, &inp, &theme(), &|_| None).unwrap();
+        (b.image_ids, b.warnings)
+    }
+
+    const LOGO: &str = "[root]\ntype = 'image'\nsrc = './logo.png'";
+
+    #[test]
+    fn a_dot_slash_src_resolves_next_to_the_widget_file() {
+        let root = std::env::temp_dir().join("plug");
+        let mut def = WidgetDef::parse("t", LOGO).unwrap();
+        def.base = Some(Base { dir: root.join("widgets"), root: root.clone() });
+        let (ids, warns) = image_ids(&def);
+        assert!(warns.is_empty(), "{warns:?}");
+        assert_eq!(ids.into_iter().collect::<Vec<_>>(), [format!("file:{}", root.join("widgets").join("logo.png").display())]);
+        let shared = Base { dir: root.join("widgets"), root: root.clone() }.resolve("./../images/a.png");
+        assert_eq!(shared, Some(root.join("images").join("a.png")), "a sibling folder of the root is fine");
+    }
+
+    #[test]
+    fn a_dot_slash_src_cannot_escape_its_root() {
+        let root = std::env::temp_dir().join("plug");
+        let base = Base { dir: root.join("widgets"), root: root.clone() };
+        assert_eq!(base.resolve("./../../secret.png"), None);
+        let mut def = WidgetDef::parse("t", "[root]\ntype = 'image'\nsrc = './../../x.png'").unwrap();
+        def.base = Some(base);
+        let (ids, warns) = image_ids(&def);
+        assert!(warns.iter().any(|w| w.contains("leaves")), "{warns:?}");
+        assert!(!ids.iter().any(|i| i.contains("x.png")));
+    }
+
+    #[test]
+    fn a_dot_slash_src_in_a_builtin_warns() {
+        let (ids, warns) = image_ids(&WidgetDef::parse("t", LOGO).unwrap());
+        assert!(warns.iter().any(|w| w.contains("needs a widget file")), "{warns:?}");
+        assert!(!ids.iter().any(|i| i.contains("logo")));
     }
 
     #[test]

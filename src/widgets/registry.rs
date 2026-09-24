@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{Drawer, TomlWidget, Widget};
-use crate::format::WidgetDef;
+use crate::format::{Base, WidgetDef};
 
 const BUILTIN: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/builtin_widgets.rs"));
 
@@ -50,14 +50,16 @@ impl Registry {
     }
 
     /// Every Widget file in `dir` replaces the one with its id, even when it is broken
-    /// (decision 14). Returns the ids it read.
+    /// (decision 14). Returns the ids it read. `./` paths in them stay inside `dir`'s parent,
+    /// the content root.
     pub fn load_dir(&mut self, dir: &Path) -> Vec<String> {
+        let base = Base { dir: dir.to_path_buf(), root: dir.parent().unwrap_or(dir).to_path_buf() };
         let mut ids = Vec::new();
         for (id, p) in widget_files(dir) {
             let def = std::fs::read_to_string(&p)
                 .map_err(|e| e.to_string())
                 .and_then(|s| WidgetDef::parse(&id, &s))
-                .map(|d| adapt(&id, d))
+                .map(|d| adapt(&id, WidgetDef { base: Some(base.clone()), ..d }))
                 .map_err(|e| format!("{}: {e}", p.display()));
             self.defs.insert(id.clone(), def);
             ids.push(id);
