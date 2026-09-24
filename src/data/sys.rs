@@ -48,7 +48,7 @@ impl Sys {
 }
 
 impl DataSource for Sys {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "sys"
     }
 

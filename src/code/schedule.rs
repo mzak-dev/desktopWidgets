@@ -46,17 +46,24 @@ struct Slot {
     due: Option<Instant>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Schedule {
     slots: BTreeMap<String, Slot>,
     acts: VecDeque<(String, String, String)>,
     /// Nothing runs before this, after a fault.
     hold_until: Option<Instant>,
     faults: u32,
+    backoff_base: Duration,
 }
 
-fn backoff(faults: u32) -> Duration {
-    BACKOFF_BASE.saturating_mul(1u32 << faults.saturating_sub(1).min(16)).min(BACKOFF_MAX)
+impl Default for Schedule {
+    fn default() -> Self {
+        Schedule::new(BACKOFF_BASE)
+    }
+}
+
+fn backoff(base: Duration, faults: u32) -> Duration {
+    base.saturating_mul(1u32 << faults.saturating_sub(1).min(16)).min(BACKOFF_MAX)
 }
 
 fn clamp_refresh(r: Duration, used_net: bool) -> Duration {
@@ -65,6 +72,11 @@ fn clamp_refresh(r: Duration, used_net: bool) -> Duration {
 }
 
 impl Schedule {
+    /// `backoff_base`: the first wait after a fault; it doubles up to `BACKOFF_MAX`.
+    pub fn new(backoff_base: Duration) -> Schedule {
+        Schedule { slots: BTreeMap::new(), acts: VecDeque::new(), hold_until: None, faults: 0, backoff_base }
+    }
+
     /// An Instance wants a value for `params` (JSON). Due at once when it is new or its
     /// params changed; returns whether that happened.
     pub fn need(&mut self, instance: &str, params: &str, now: Instant) -> bool {
@@ -120,7 +132,7 @@ impl Schedule {
         match outcome {
             Outcome::Faulted { cpu } => {
                 self.faults += 1;
-                let until = now + backoff(self.faults).max(stretch(cpu));
+                let until = now + backoff(self.backoff_base, self.faults).max(stretch(cpu));
                 self.hold_until = Some(until);
                 if let Some(s) = self.slots.get_mut(instance) {
                     s.due = Some(until);
@@ -152,6 +164,11 @@ impl Schedule {
         }
         self.faults = 0;
         self.hold_until = None;
+    }
+
+    /// How long until the next call may run after a fault.
+    pub fn held_for(&self, now: Instant) -> Option<Duration> {
+        self.hold_until.filter(|t| *t > now).map(|t| t - now)
     }
 
     /// When to call `next` again; `None` means only a new message can make anything due.
@@ -249,7 +266,7 @@ mod tests {
         for _ in 0..20 {
             s.faults += 1;
         }
-        assert_eq!(backoff(s.faults), BACKOFF_MAX);
+        assert_eq!(backoff(BACKOFF_BASE, s.faults), BACKOFF_MAX);
         let t2 = t1 + BACKOFF_MAX;
         let Some(Job::Sample(id)) = s.next(t2) else { panic!() };
         s.done(&id, ok(Some(5)), t2);

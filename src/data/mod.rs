@@ -9,6 +9,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use crate::code::{CodeSpec, News, Status, WasmSource};
 use crate::value::Value;
 use crate::workspace::InstanceCfg;
 
@@ -33,7 +34,7 @@ pub struct SourceCx<'a> {
 }
 
 pub trait DataSource: Send + Sync {
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     fn value(&self, cx: &SourceCx) -> Value;
     /// `field` "" is the whole object. `None`: changes only on events, never with time.
     fn cadence(&self, field: &str) -> Option<Cadence>;
@@ -45,6 +46,8 @@ pub trait DataSource: Send + Sync {
 
 pub struct DataSources {
     list: Vec<Box<dyn DataSource>>,
+    /// Plugins' Code Sources, each with the key it was started from.
+    code: Vec<(String, WasmSource)>,
 }
 
 impl Default for DataSources {
@@ -59,11 +62,52 @@ impl DataSources {
     }
 
     pub fn new(list: Vec<Box<dyn DataSource>>) -> Self {
-        Self { list }
+        Self { list, code: Vec::new() }
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn DataSource> {
-        self.list.iter().find(|s| s.name() == name).map(|s| s.as_ref())
+        self.list.iter().find(|s| s.name() == name).map(|s| s.as_ref()).or_else(|| self.code(name).map(|c| c as &dyn DataSource))
+    }
+
+    fn code(&self, name: &str) -> Option<&WasmSource> {
+        self.code.iter().find(|(_, c)| c.name() == name).map(|(_, c)| c)
+    }
+
+    /// Makes the running Code Sources exactly `wanted` (key, spec). One whose key is unchanged
+    /// keeps running, with its values; the built-ins are never touched.
+    pub fn sync_code(&mut self, wanted: Vec<(String, CodeSpec)>, mut start: impl FnMut(CodeSpec) -> WasmSource) {
+        let mut old = std::mem::take(&mut self.code);
+        for (key, spec) in wanted {
+            match old.iter().position(|(k, _)| *k == key) {
+                Some(i) => self.code.push(old.swap_remove(i)),
+                None => self.code.push((key, start(spec))),
+            }
+        }
+        // dropped: their channels close and their threads end after the current call
+    }
+
+    /// Sends `verb` to the Code Source `source`; false if there is none by that name.
+    pub fn act(&self, source: &str, verb: &str, arg: &str, cx: &SourceCx) -> bool {
+        self.code(source).map(|c| c.act(verb, arg, cx)).is_some()
+    }
+
+    /// Per Code Source name, what changed since last asked.
+    pub fn take_news(&self) -> Vec<(String, News)> {
+        self.code.iter().map(|(_, c)| (c.name().to_string(), c.take_news())).collect()
+    }
+
+    pub fn retain(&self, live: &BTreeSet<String>) {
+        self.code.iter().for_each(|(_, c)| c.retain(live));
+    }
+
+    /// Per Code Source name, how it is doing.
+    pub fn code_status(&self) -> Vec<(String, Status)> {
+        self.code.iter().map(|(_, c)| (c.name().to_string(), c.status())).collect()
+    }
+
+    /// Whether any of `deps` reads a Code Source.
+    pub fn uses_code(&self, deps: &BTreeSet<String>) -> bool {
+        deps.iter().any(|d| self.code(d.split('.').next().unwrap_or(d)).is_some())
     }
 
     pub fn value(&self, name: &str, cx: &SourceCx) -> Option<Value> {
@@ -95,6 +139,8 @@ impl DataSources {
         self.list.iter().flat_map(|s| s.watched_paths(cfg)).collect()
     }
 
+    /// Only the built-ins: a Code Source's values are keyed by params already, and re-running
+    /// it on every param edit or file save would re-fetch everything.
     pub fn invalidate(&self) {
         self.list.iter().for_each(|s| s.invalidate());
     }
@@ -138,10 +184,37 @@ mod tests {
     }
 
     #[test]
+    fn sync_keeps_an_unchanged_source_alive() {
+        use crate::code::runtime::{Limits, tests::returning};
+        use crate::code::tests::start;
+        let mut src = DataSources::builtin();
+        let spec = |n: &str| CodeSpec { plugin: n.into(), source: n.into(), module: "nope.wasm".into(), hosts: vec![], initial: Value::Nil };
+        let started = std::cell::RefCell::new(Vec::new());
+        let launch = |s: CodeSpec| {
+            started.borrow_mut().push(s.source.clone());
+            start(&format!("sync-{}", s.source), &returning(r#"{"value":{}}"#), Limits::default(), None).0
+        };
+        src.sync_code(vec![("a#1".into(), spec("a")), ("b#1".into(), spec("b"))], launch);
+        src.sync_code(vec![("a#1".into(), spec("a")), ("b#2".into(), spec("b"))], launch);
+        assert_eq!(*started.borrow(), ["a", "b", "b"], "a kept running; b's changed key restarted it");
+        src.sync_code(vec![], launch);
+        assert!(src.code.is_empty());
+    }
+
+    #[test]
+    fn builtin_state_survives_sync() {
+        let mut src = DataSources::builtin();
+        let before = src.get("sys").unwrap() as *const dyn DataSource as *const u8;
+        src.sync_code(vec![], |_| unreachable!());
+        assert!(std::ptr::eq(before, src.get("sys").unwrap() as *const dyn DataSource as *const u8), "Sys keeps its history");
+        assert!(!src.uses_code(&deps(&["sys.gauges", "clock.minute"])));
+    }
+
+    #[test]
     fn a_new_source_is_one_impl_and_one_registration() {
         struct Weather;
         impl DataSource for Weather {
-            fn name(&self) -> &'static str {
+            fn name(&self) -> &str {
                 "weather"
             }
             fn value(&self, _: &SourceCx) -> Value {

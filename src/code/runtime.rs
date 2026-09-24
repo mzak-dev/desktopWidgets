@@ -22,11 +22,13 @@ pub struct Limits {
     pub output: usize,
     pub log_line: usize,
     pub logs_per_minute: usize,
+    /// The first wait after a fault; it doubles each time.
+    pub backoff: Duration,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Limits { fuel_call: 250_000_000, fuel_init: 50_000_000, memory: 32 << 20, input: 64 << 10, output: 1 << 20, log_line: 512, logs_per_minute: 20 }
+        Limits { fuel_call: 250_000_000, fuel_init: 50_000_000, memory: 32 << 20, input: 64 << 10, output: 1 << 20, log_line: 512, logs_per_minute: 20, backoff: super::schedule::BACKOFF_BASE }
     }
 }
 

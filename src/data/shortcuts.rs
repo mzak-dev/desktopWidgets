@@ -98,7 +98,7 @@ impl Shortcuts {
 }
 
 impl DataSource for Shortcuts {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "shortcuts"
     }
 

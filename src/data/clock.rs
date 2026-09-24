@@ -206,7 +206,7 @@ pub fn zone_times(cities: &str, utc: &windows::Win32::Foundation::SYSTEMTIME, he
 pub struct Clock;
 
 impl DataSource for Clock {
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "clock"
     }
 
