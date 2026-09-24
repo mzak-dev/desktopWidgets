@@ -492,7 +492,7 @@ impl UiState {
             return std::iter::once(global).chain(names.into_iter().map(|n| (n.clone(), n))).collect();
         }
         if let Some((_, tok)) = key.strip_prefix("sy:").and_then(Self::style_target) {
-            return style_schema().iter().find(|p| p.name == tok).map(|p| p.choices.iter().map(|c| (c.clone(), capitalized(c))).collect()).unwrap_or_default();
+            return style_schema().iter().find(|p| p.name == tok).map(|p| p.choices.iter().map(|c| (c.value.clone(), capitalized(&c.label))).collect()).unwrap_or_default();
         }
         if let Some(rest) = key.strip_prefix("p:") {
             if let Some((id, name)) = rest.split_once(':') {
@@ -500,7 +500,7 @@ impl UiState {
                 if let Some(p) = def.and_then(|d| d.params.iter().find(|p| p.name == name)) {
                     return match p.ty {
                         ParamType::Font => std::iter::once((String::new(), "Theme font".to_string())).chain(ctx.fonts.iter().map(|f| (f.clone(), f.clone()))).collect(),
-                        _ => p.choices.iter().map(|c| (c.clone(), c.clone())).collect(),
+                        _ => p.choices.iter().map(|c| (c.value.clone(), c.label.clone())).collect(),
                     };
                 }
             }
@@ -840,11 +840,11 @@ impl UiState {
         p = p.child(k.row(&format!("ip/{id}/pos"), "Position", &format!("{:.0}, {:.0}  ·  {:.0} x {:.0}", cfg.x, cfg.y, cfg.w, cfg.h), placement));
 
         if let Some(d) = def {
-            if !d.params.is_empty() {
-                p = p.child(k.section(&format!("ip/{id}/s2"), "Options"));
-            }
-            for pd in &d.params {
-                p = p.child(self.param_row(k, ctx, cfg, pd, images));
+            for (i, (group, params)) in ParamDef::grouped(&d.params).into_iter().enumerate() {
+                p = p.child(k.section(&format!("ip/{id}/s2/{i}"), group.unwrap_or("Options")));
+                for pd in params {
+                    p = p.child(self.param_row(k, ctx, cfg, pd, images));
+                }
             }
         } else {
             p = p.child(k.txt(format!("ip/{id}/err"), "This widget's definition failed to load; see the Log page.", 12.5, k.c("danger")).wrap_text());

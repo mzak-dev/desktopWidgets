@@ -13,7 +13,7 @@ use crate::expr::{Scope, Template};
 use crate::theme::Theme;
 use crate::ui::*;
 use crate::value::Value;
-use crate::widgets::{Built, ExpandInfo, Inputs, ParamDef, ParamType, Seed, WidgetMeta};
+use crate::widgets::{Built, Choice, ExpandInfo, Inputs, ParamDef, ParamType, Seed, WidgetMeta};
 
 
 #[derive(Clone, Debug)]
@@ -175,6 +175,20 @@ fn pair(v: Option<&toml::Value>, default: (f32, f32), what: &str) -> Result<(f32
 }
 
 /// A `[params]` table, in file order. Also parses the style schema (`assets/style.toml`).
+/// `"fast"`, or `{ value = "fast", label = "Fast (30 fps)" }`.
+fn choice(param: &str, c: &toml::Value) -> Result<Choice, String> {
+    let bad = || format!("params.{param}.choices: each is a string or {{ value = \"...\", label = \"...\" }}");
+    match c {
+        toml::Value::String(s) => Ok(Choice { value: s.clone(), label: s.clone() }),
+        toml::Value::Table(t) => {
+            let value = t.get("value").and_then(|v| v.as_str()).ok_or_else(bad)?.to_string();
+            let label = t.get("label").and_then(|v| v.as_str()).map_or_else(|| value.clone(), String::from);
+            Ok(Choice { value, label })
+        }
+        _ => Err(bad()),
+    }
+}
+
 pub fn parse_params(pt: &toml::Table) -> Result<Vec<ParamDef>, String> {
     let mut params = Vec::new();
     for (name, v) in pt {
@@ -208,8 +222,12 @@ pub fn parse_params(pt: &toml::Table) -> Result<Vec<ParamDef>, String> {
             min: f("min"),
             max: f("max"),
             step: f("step"),
-            choices: p.get("choices").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|c| c.as_str().map(String::from)).collect()).unwrap_or_default(),
+            choices: match p.get("choices") {
+                None => vec![],
+                Some(v) => v.as_array().ok_or_else(|| format!("params.{name}.choices: expected a list"))?.iter().map(|c| choice(name, c)).collect::<Result<_, _>>()?,
+            },
             seed,
+            group: p.get("group").and_then(|v| v.as_str()).map(str::trim).filter(|g| !g.is_empty()).map(String::from),
         });
     }
     Ok(params)
@@ -809,6 +827,18 @@ mod tests {
         let (ids, warns) = image_ids(&WidgetDef::parse("t", LOGO).unwrap());
         assert!(warns.iter().any(|w| w.contains("needs a widget file")), "{warns:?}");
         assert!(!ids.iter().any(|i| i.contains("logo")));
+    }
+
+    #[test]
+    fn params_take_labelled_choices_and_groups() {
+        let src = "[params.speed]\ntype = 'enum'\ngroup = 'Motion'\nchoices = ['slow', { value = 'fast', label = 'Fast (30 fps)' }]\n[params.color]\ntype = 'color'\n[params.decay]\ntype = 'number'\ngroup = 'Motion'\n[params.bars]\ntype = 'number'\ngroup = 'Shape'\n[root]\ntype = 'box'";
+        let d = WidgetDef::parse("t", src).unwrap();
+        let speed = &d.meta.params[0];
+        assert_eq!(speed.choices, [Choice { value: "slow".into(), label: "slow".into() }, Choice { value: "fast".into(), label: "Fast (30 fps)".into() }]);
+        let groups: Vec<(Option<&str>, Vec<&str>)> = ParamDef::grouped(&d.meta.params).into_iter().map(|(g, ps)| (g, ps.iter().map(|p| p.name.as_str()).collect())).collect();
+        assert_eq!(groups, [(None, vec!["color"]), (Some("Motion"), vec!["speed", "decay"]), (Some("Shape"), vec!["bars"])]);
+        let e = WidgetDef::parse("t", "[params.s]\ntype = 'enum'\nchoices = [{ label = 'x' }]\n[root]\ntype = 'box'").err().unwrap();
+        assert!(e.contains("params.s.choices"), "{e}");
     }
 
     #[test]

@@ -92,8 +92,34 @@ pub struct ParamDef {
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub step: Option<f64>,
-    pub choices: Vec<String>,
+    pub choices: Vec<Choice>,
     pub seed: Option<Seed>,
+    /// Settings shows params with one group under its own heading (`group = "Motion"`).
+    pub group: Option<String>,
+}
+
+/// One option of an `enum` param: the saved value, and what Settings shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    pub value: String,
+    pub label: String,
+}
+
+impl ParamDef {
+    /// The params in the order Settings shows them: ungrouped first, then each group in
+    /// the order it first appears.
+    pub fn grouped(params: &[ParamDef]) -> Vec<(Option<&str>, Vec<&ParamDef>)> {
+        let mut out: Vec<(Option<&str>, Vec<&ParamDef>)> = vec![(None, vec![])];
+        for p in params {
+            let g = p.group.as_deref();
+            match out.iter_mut().find(|(k, _)| *k == g) {
+                Some((_, v)) => v.push(p),
+                None => out.push((g, vec![p])),
+            }
+        }
+        out.retain(|(_, v)| !v.is_empty());
+        out
+    }
 }
 
 /// Unlike a default, a seed is written once and then saved like any edit.

@@ -25,7 +25,7 @@ use crate::value::Value;
 use crate::workspace::InstanceCfg;
 
 pub use drawer::Drawer;
-pub use meta::{ParamDef, ParamType, Seed, WidgetMeta, needs_message};
+pub use meta::{Choice, ParamDef, ParamType, Seed, WidgetMeta, needs_message};
 pub use registry::{Def, Registry, widget_files};
 pub use toml_widget::TomlWidget;
 
