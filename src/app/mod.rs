@@ -119,8 +119,7 @@ impl App {
         let guide_errors = write_missing_guides(&dir);
         let (ws, ws_err) = Workspace::load(&dir);
         let theme = Theme::default(); // composed by `rebuild_theme` below
-        let mut text = TextEngine::new();
-        let fonts = text.load_font_dir(&dir.join("fonts"));
+        let text = TextEngine::new();
         let mut app = App {
             proxy,
             icons: IconService::default(),
@@ -162,13 +161,9 @@ impl App {
         };
         app.load_content();
         app.rebuild_theme();
-        app.families = app.text.family_names();
         app.selftest = app.opts.selftest.then(|| SelfTest { step: 0, at: Instant::now() + Duration::from_millis(2200), checks: Vec::new(), rect: None, collapsed: None, configures0: 0, fake: None });
         if let Some(e) = ws_err {
             app.log(e);
-        }
-        if fonts > 0 {
-            app.log(format!("loaded {fonts} user font faces"));
         }
         for e in guide_errors {
             app.log(e);
@@ -202,11 +197,6 @@ impl App {
 
     fn rebuild_theme(&mut self) {
         self.theme = self.ws.global_theme(&self.lib);
-        let sets = std::iter::once(self.ws.theme.fonts.clone()).chain(self.ws.instances.iter().filter_map(|c| c.theme.fonts.clone()));
-        let files: Vec<PathBuf> = sets.flat_map(|n| self.lib.fonts(&n).files.clone()).collect();
-        for f in files {
-            self.text.load_font_file(&f);
-        }
         self.redraw_all();
     }
 
@@ -390,7 +380,12 @@ impl App {
         self.reg = cat.registry;
         self.lib = cat.library;
         self.icons.set_packs(cat.icon_packs);
-        for e in self.lib.errors.clone().into_iter().chain(self.reg.errors()) {
+        if let Some(g) = self.gpu.as_mut() {
+            self.icons.flush_files(g);
+        }
+        let font_problems = self.text.sync_fonts(&cat.font_files);
+        self.families = self.text.family_names();
+        for e in self.lib.errors.clone().into_iter().chain(self.reg.errors()).chain(font_problems) {
             self.log(e);
         }
     }

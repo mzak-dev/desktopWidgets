@@ -151,6 +151,11 @@ pub fn resolve(target: &str, explicit: &str, pack_dir: Option<&Path>) -> Rgba {
     resolve_path(target).and_then(|p| shell_icon(&p)).unwrap_or_else(generic)
 }
 
+/// A `file:` image, or an app icon that may come from an Icon Pack.
+fn from_files(id: &str) -> bool {
+    id.starts_with("file:") || id.strip_prefix("icon:").and_then(|rest| rest.split_once(ID_SEP)).is_some_and(|(pack, _)| !matches!(pack, "Default" | ""))
+}
+
 /// Uploads images on demand and remembers which ids the GPU already has.
 #[derive(Default)]
 pub struct IconService {
@@ -191,6 +196,16 @@ impl IconService {
         true
     }
 
+    /// Content was reloaded: images read from files (and Icon Packs) may have changed.
+    /// The system's own icons are kept; extracting them again is slow.
+    pub fn flush_files(&mut self, gpu: &mut Gpu) {
+        let stale: Vec<String> = self.seen.iter().filter(|id| from_files(id)).cloned().collect();
+        for id in stale {
+            gpu.drop_image(&id);
+            self.seen.remove(&id);
+        }
+    }
+
     /// The GPU was rebuilt: nothing is uploaded any more.
     pub fn forget(&mut self) {
         self.seen.clear();
@@ -208,6 +223,15 @@ impl IconService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_file_and_pack_images_are_flushed_on_reload() {
+        let icon = |pack: &str| format!("icon:{pack}{ID_SEP}C:\\app.exe{ID_SEP}");
+        assert!(from_files("file:C:\\x.png"));
+        assert!(from_files(&icon("Neon")));
+        assert!(!from_files(&icon("Default")), "a shell icon is expensive to extract again");
+        assert!(!from_files(GENERIC));
+    }
 
     #[test]
     fn generic_icon_is_a_centred_shape_not_a_blank_square() {
