@@ -7,10 +7,11 @@ use std::time::{Duration, Instant};
 
 use wasmi::{Caller, CompilationMode, Config, EnforcedLimits, Engine, Extern, Instance, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, TrapCode, TypedFunc};
 
+use super::fs::Fs;
 use super::store::KvStore;
 
 pub const ABI: i32 = 1;
-const HOST_FUNCS: &[&str] = &["log", "now_ms", "http", "store_get", "store_set", "take"];
+const HOST_FUNCS: &[&str] = &["log", "now_ms", "http", "fs", "store_get", "store_set", "take"];
 const EXPORTS: &[&str] = &["memory", "wf_abi", "wf_alloc", "wf_sample"];
 
 #[derive(Clone, Debug)]
@@ -39,6 +40,8 @@ pub type HttpFn = Arc<dyn Fn(&[u8]) -> Vec<u8> + Send + Sync>;
 pub struct Env {
     http: Option<HttpFn>,
     store: Option<Arc<KvStore>>,
+    /// The files the Instance being served may read; set before each call.
+    pub fs: Option<Fs>,
     pub logs: Vec<String>,
     used_net: bool,
     parked: Vec<u8>,
@@ -51,7 +54,7 @@ pub struct Env {
 impl Env {
     pub fn new(http: Option<HttpFn>, store: Option<Arc<KvStore>>, l: &Limits) -> Env {
         let limits = StoreLimitsBuilder::new().memory_size(l.memory).instances(1).tables(1).memories(1).trap_on_grow_failure(false).build();
-        Env { http, store, logs: Vec::new(), used_net: false, parked: Vec::new(), limits, input_cap: l.input, log_line: l.log_line, log_window: (Instant::now(), 0, l.logs_per_minute) }
+        Env { http, store, fs: None, logs: Vec::new(), used_net: false, parked: Vec::new(), limits, input_cap: l.input, log_line: l.log_line, log_window: (Instant::now(), 0, l.logs_per_minute) }
     }
 
     fn log(&mut self, line: String) {
@@ -174,6 +177,15 @@ fn linker(engine: &Engine) -> Linker<Env> {
         Ok(park(&mut caller, resp))
     })
     .expect("http");
+    l.func_wrap("wf", "fs", |mut caller: Caller<'_, Env>, ptr: i32, len: i32| -> Result<i32, wasmi::Error> {
+        let req = read_guest(&caller, ptr, len, caller.data().input_cap)?;
+        let resp = match caller.data_mut().fs.as_mut() {
+            Some(fs) => fs.handle(&req),
+            None => br#"{"error":"this plugin may not read files"}"#.to_vec(),
+        };
+        Ok(park(&mut caller, resp))
+    })
+    .expect("fs");
     l.func_wrap("wf", "store_get", |mut caller: Caller<'_, Env>, ptr: i32, len: i32| -> Result<i32, wasmi::Error> {
         let key = String::from_utf8_lossy(&read_guest(&caller, ptr, len, caller.data().input_cap)?).into_owned();
         match caller.data().store.as_ref().and_then(|s| s.get(&key)) {

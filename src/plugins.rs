@@ -8,6 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::code::CodeSpec;
 use crate::content::{self, Catalog, Contents, Item, Origin, Root};
+use crate::code::fs::FsRoot;
 use crate::net::HostPattern;
 use crate::value::Value;
 use crate::widgets::Registry;
@@ -37,11 +38,26 @@ pub struct Code {
     /// What its Widgets bind to: `{weather.temp}`.
     pub source: String,
     pub net: Vec<HostPattern>,
+    /// Folders under home it may read: `~/.claude`.
+    pub fs_read: Vec<FsRoot>,
+    /// Params (by name) whose folder, as the user picked it, it may read.
+    pub fs_read_params: Vec<String>,
     /// Values shown until the first sample.
     pub initial: Value,
 }
 
-const CODE_KEYS: &[&str] = &["module", "source", "net", "initial"];
+impl Code {
+    /// What it may read, in words: `~/.claude`, `folders you pick for its widgets`.
+    pub fn reads(&self) -> Vec<String> {
+        let mut r: Vec<String> = self.fs_read.iter().map(|f| f.to_string()).collect();
+        if !self.fs_read_params.is_empty() {
+            r.push("folders you pick for its widgets".into());
+        }
+        r
+    }
+}
+
+const CODE_KEYS: &[&str] = &["module", "source", "net", "fs_read", "fs_read_params", "initial"];
 /// Data Source names and repeat variables a Code Source must not shadow.
 const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "param", "state", "self", "item", "index"];
 
@@ -69,12 +85,23 @@ fn parse_code(t: &toml::Table) -> Result<Code, String> {
         None => vec![],
         Some(v) => v.as_array().ok_or("code.net must be a list of hosts")?.iter().map(|h| h.as_str().ok_or("code.net must be a list of hosts".to_string()).and_then(HostPattern::parse)).collect::<Result<_, _>>()?,
     };
+    let list = |k: &str| -> Result<Vec<String>, String> {
+        match t.get(k) {
+            None => Ok(vec![]),
+            Some(v) => v.as_array().and_then(|a| a.iter().map(|x| x.as_str().map(String::from)).collect()).ok_or(format!("code.{k} must be a list of text")),
+        }
+    };
+    let fs_read = list("fs_read")?.iter().map(|s| FsRoot::parse(s)).collect::<Result<Vec<_>, _>>()?;
+    let fs_read_params = list("fs_read_params")?;
+    if let Some(p) = fs_read_params.iter().find(|p| p.is_empty() || !p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')) {
+        return Err(format!("code.fs_read_params: `{p}` is not a param name"));
+    }
     let initial = match t.get("initial") {
         None => Value::Obj(BTreeMap::new()),
         Some(v @ toml::Value::Table(_)) => Value::from(v),
         Some(_) => return Err("code.initial must be a table".into()),
     };
-    Ok(Code { module, source, net, initial })
+    Ok(Code { module, source, net, fs_read, fs_read_params, initial })
 }
 
 fn version_parts(v: &str) -> Vec<u64> {
@@ -567,7 +594,9 @@ pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog) -> Vec<
             }
             let code_line = code.map_or(String::new(), |c| {
                 let reach = if c.net.is_empty() { "no network".to_string() } else { format!("can reach {}", c.net.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(", ")) };
-                format!("Runs code as `{}` · {reach}", c.source)
+                let reads = c.reads();
+                let reads = if reads.is_empty() { String::new() } else { format!(" · reads {}", reads.join(", ")) };
+                format!("Runs code as `{}` · {reach}{reads}", c.source)
             });
             let runs = code.is_some() && !disabled.contains(&p.id) && !code_lost.contains_key(&p.id);
             PluginRow {
@@ -651,7 +680,7 @@ pub fn code_specs(list: &[Plugin], disabled: &BTreeSet<String>) -> (Vec<(String,
         let module = p.dir.join(&code.module);
         let stamp = std::fs::metadata(&module).map(|m| (m.len(), m.modified().ok())).ok();
         let key = format!("{}|{:?}|{:?}", p.id, code, stamp);
-        let spec = CodeSpec { plugin: p.id.clone(), source: code.source.clone(), module, hosts: code.net.clone(), initial: code.initial.clone() };
+        let spec = CodeSpec { plugin: p.id.clone(), source: code.source.clone(), module, hosts: code.net.clone(), fs_read: code.fs_read.clone(), fs_read_params: code.fs_read_params.clone(), initial: code.initial.clone() };
         if let Some((_, old)) = by_source.insert(code.source.clone(), (key, spec)) {
             lost.insert(old.plugin, p.id.clone());
         }
@@ -671,15 +700,20 @@ pub fn install_question(m: &Manifest, contents: &Contents, installed: Option<&Ma
     match &m.code {
         None => q += "Plugins add widgets, themes, fonts and icons, and never run programs.",
         Some(code) => {
-            q += "This plugin runs sandboxed code. It cannot read your files or start programs.";
-            if !code.net.is_empty() {
-                let hosts: Vec<String> = code.net.iter().map(|h| h.to_string()).collect();
+            let reads = code.reads();
+            q += if reads.is_empty() { "This plugin runs sandboxed code. It cannot read your files or start programs." } else { "This plugin runs sandboxed code. It cannot change your files or start programs." };
+            if !reads.is_empty() {
+                q += &format!(" It can read files in: {}.", reads.join(", "));
+            }
+            let hosts: Vec<String> = code.net.iter().map(|h| h.to_string()).collect();
+            if !hosts.is_empty() {
                 q += &format!(" It can connect to: {}.", hosts.join(", "));
-                let before: Vec<String> = installed.and_then(|o| o.code.as_ref()).map(|c| c.net.iter().map(|h| h.to_string()).collect()).unwrap_or_default();
-                let new: Vec<&String> = hosts.iter().filter(|h| !before.contains(h)).collect();
-                if installed.is_some() && !new.is_empty() {
-                    q += &format!(" New in this version: {}.", new.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "));
-                }
+            }
+            let reach = |c: &Code| c.net.iter().map(|h| h.to_string()).chain(c.reads()).collect::<Vec<_>>();
+            let before = installed.and_then(|o| o.code.as_ref()).map(reach).unwrap_or_default();
+            let new: Vec<String> = reach(code).into_iter().filter(|h| !before.contains(h)).collect();
+            if installed.is_some() && !new.is_empty() {
+                q += &format!(" New in this version: {}.", new.join(", "));
             }
         }
     }
@@ -730,6 +764,37 @@ mod tests {
         assert_eq!(c.net.iter().map(|h| h.to_string()).collect::<Vec<_>>(), ["api.open-meteo.com", "*.example.org"]);
         assert_eq!(c.initial.get("sky").map(|v| v.to_string()), Some("...".into()));
         assert_eq!(Manifest::parse(OK).unwrap().code, None);
+    }
+
+    #[test]
+    fn code_may_read_declared_folders_and_picked_ones() {
+        let src = format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'agents'\nfs_read = ['~/.claude', '~\\.copilot']\nfs_read_params = ['folder']");
+        let c = Manifest::parse(&src).unwrap().code.unwrap();
+        assert_eq!(c.reads(), ["~/.claude", "~/.copilot", "folders you pick for its widgets"]);
+        let with = |code: &str| Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'a'\n{code}")).unwrap_err();
+        assert!(with("fs_read = ['~']").contains("~/"));
+        assert!(with("fs_read = ['C:\\Windows']").contains("~/"));
+        assert!(with("fs_read = ['~/../x']").contains("plain folder"));
+        assert!(with("fs_read = '~/.claude'").contains("list"));
+        assert!(with("fs_read_params = ['a b']").contains("param name"));
+        let data = tmp("coderead");
+        put(&data, "plugins/agents/plugin.toml", &src.replace("sunset", "agents"));
+        let list = PluginStore::new(&data).list();
+        let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
+        assert_eq!(rows(&list, &BTreeSet::new(), &cat)[0].code, "Runs code as `agents` · no network · reads ~/.claude, ~/.copilot, folders you pick for its widgets");
+        let spec = &code_specs(&list, &BTreeSet::new()).0[0].1;
+        assert_eq!((spec.fs_read.len(), spec.fs_read_params.as_slice()), (2, &["folder".to_string()][..]));
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn install_question_names_what_code_may_read() {
+        let c = Contents::default();
+        let v1 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'w.wasm'\nsource = 'w'\nfs_read = ['~/.claude']")).unwrap();
+        let q = install_question(&v1, &c, None);
+        assert!(q.contains("cannot change your files") && q.contains("can read files in: ~/.claude.") && !q.contains("connect"), "{q}");
+        let v2 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'w.wasm'\nsource = 'w'\nfs_read = ['~/.claude', '~/.gemini']")).unwrap();
+        assert!(install_question(&v2, &c, Some(&v1)).contains("New in this version: ~/.gemini."));
     }
 
     #[test]

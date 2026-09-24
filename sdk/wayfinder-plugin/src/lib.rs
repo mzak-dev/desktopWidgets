@@ -235,6 +235,83 @@ pub mod store {
     }
 }
 
+/// Read-only files: the folders `plugin.toml` lists under `[code] fs_read` (`~/.claude`) and,
+/// for each widget, the folder the user picked in a param named in `fs_read_params`. Paths
+/// are `~/…` or full paths; anything outside those folders is refused, and nothing can be
+/// written.
+pub mod fs {
+    use super::*;
+
+    /// The most one read returns.
+    pub const READ_CAP: u64 = 1 << 20;
+
+    #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+    #[serde(default)]
+    pub struct Entry {
+        pub name: String,
+        pub dir: bool,
+        pub size: u64,
+        pub modified_ms: i64,
+    }
+
+    #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+    #[serde(default)]
+    pub struct Meta {
+        pub dir: bool,
+        pub size: u64,
+        pub modified_ms: i64,
+    }
+
+    /// Part of a file, as text.
+    #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+    #[serde(default)]
+    pub struct Chunk {
+        pub text: String,
+        /// Where `text` starts in the file.
+        pub offset: u64,
+        /// The whole file's size.
+        pub size: u64,
+        /// More of the file follows `text`.
+        pub truncated: bool,
+    }
+
+    fn ask<T: serde::de::DeserializeOwned>(req: Value) -> Result<T, String> {
+        let v: Value = serde_json::from_slice(&host::fs(req.to_string().as_bytes())).map_err(|e| format!("bad answer from the host: {e}"))?;
+        if let Some(e) = v.get("error").and_then(Value::as_str) {
+            return Err(e.to_string());
+        }
+        serde_json::from_value(v).map_err(|e| format!("bad answer from the host: {e}"))
+    }
+
+    /// A folder's entries, sorted by name; at most 2000.
+    pub fn list(path: &str) -> Result<Vec<Entry>, String> {
+        #[derive(Deserialize)]
+        struct Listing {
+            entries: Vec<Entry>,
+        }
+        ask::<Listing>(json!({ "op": "list", "path": path })).map(|l| l.entries)
+    }
+
+    pub fn stat(path: &str) -> Result<Meta, String> {
+        ask(json!({ "op": "stat", "path": path }))
+    }
+
+    /// A whole text file of up to 1 MB.
+    pub fn read_text(path: &str) -> Result<String, String> {
+        let c = read_range(path, 0, READ_CAP)?;
+        if c.truncated {
+            return Err(format!("`{path}` is over 1 MB; read it in parts with read_range"));
+        }
+        Ok(c.text)
+    }
+
+    /// Up to `max` bytes (at most 1 MB) from `offset`. A negative offset counts from the
+    /// end: `read_range(p, -4096, 4096)` is the last 4 KB, handy for logs.
+    pub fn read_range(path: &str, offset: i64, max: u64) -> Result<Chunk, String> {
+        ask(json!({ "op": "read", "path": path, "offset": offset, "max": max }))
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 mod host {
     #[link(wasm_import_module = "wf")]
@@ -243,6 +320,8 @@ mod host {
         fn wf_log(ptr: *const u8, len: i32);
         #[link_name = "http"]
         fn wf_http(ptr: *const u8, len: i32) -> i32;
+        #[link_name = "fs"]
+        fn wf_fs(ptr: *const u8, len: i32) -> i32;
         #[link_name = "store_get"]
         fn wf_store_get(ptr: *const u8, len: i32) -> i32;
         #[link_name = "store_set"]
@@ -264,6 +343,11 @@ mod host {
 
     pub fn http(req: &[u8]) -> Vec<u8> {
         let n = unsafe { wf_http(req.as_ptr(), req.len() as i32) };
+        take(n)
+    }
+
+    pub fn fs(req: &[u8]) -> Vec<u8> {
+        let n = unsafe { wf_fs(req.as_ptr(), req.len() as i32) };
         take(n)
     }
 
@@ -291,6 +375,12 @@ mod host {
             Some(answer) => answer(&serde_json::from_slice(req).unwrap_or_default()),
             None => br#"{"error":"no network in tests: call testing::answer_http"}"#.to_vec(),
         })
+    }
+
+    pub fn fs(req: &[u8]) -> Vec<u8> {
+        let req: serde_json::Value = serde_json::from_slice(req).unwrap_or_default();
+        let home = FAKE.with(|f| f.borrow().home.clone());
+        super::testing::fake_fs(home.as_deref(), &req).to_string().into_bytes()
     }
 
     pub fn store_get(key: &[u8]) -> Option<Vec<u8>> {
@@ -323,6 +413,7 @@ pub mod testing {
         pub(crate) logs: Vec<String>,
         pub(crate) http: Option<Answer>,
         pub(crate) store: BTreeMap<Vec<u8>, Vec<u8>>,
+        pub(crate) home: Option<std::path::PathBuf>,
     }
 
     thread_local! {
@@ -337,6 +428,48 @@ pub mod testing {
                 json!({ "status": r.status, "content_type": r.content_type, "location": r.location, "body": r.body }).to_string().into_bytes()
             }))
         });
+    }
+
+    /// Serves [`fs`] from your disk, with `~/` meaning `home` (a folder your test made).
+    /// Unlike Wayfinder, it does not check which folders the plugin may read.
+    pub fn files_at(home: impl Into<std::path::PathBuf>) {
+        let home = home.into();
+        FAKE.with(|f| f.borrow_mut().home = Some(home));
+    }
+
+    pub(crate) fn fake_fs(home: Option<&std::path::Path>, req: &Value) -> Value {
+        use std::io::{Read, Seek, SeekFrom};
+        let Some(home) = home else { return json!({ "error": "no files in tests: call testing::files_at" }) };
+        let p = req["path"].as_str().unwrap_or("");
+        let path = p.strip_prefix("~/").map_or_else(|| std::path::PathBuf::from(p), |r| home.join(r));
+        let meta = |m: std::fs::Metadata| json!({ "dir": m.is_dir(), "size": m.len(), "modified_ms": 0 });
+        let out = || -> std::io::Result<Value> {
+            Ok(match req["op"].as_str() {
+                Some("list") => {
+                    let mut entries: Vec<Value> = std::fs::read_dir(&path)?.flatten().map(|e| {
+                        let mut v = e.metadata().map(meta).unwrap_or_default();
+                        v["name"] = json!(e.file_name().to_string_lossy());
+                        v
+                    }).collect();
+                    entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+                    json!({ "entries": entries, "truncated": false })
+                }
+                Some("stat") => meta(std::fs::metadata(&path)?),
+                Some("read") => {
+                    let mut f = std::fs::File::open(&path)?;
+                    let size = f.metadata()?.len();
+                    let offset = req["offset"].as_i64().unwrap_or(0);
+                    let start = if offset < 0 { size.saturating_sub(offset.unsigned_abs()) } else { (offset as u64).min(size) };
+                    let n = req["max"].as_u64().unwrap_or(fs::READ_CAP).min(fs::READ_CAP).min(size - start);
+                    let mut buf = vec![];
+                    f.seek(SeekFrom::Start(start))?;
+                    f.take(n).read_to_end(&mut buf)?;
+                    json!({ "text": String::from_utf8_lossy(&buf), "offset": start, "size": size, "truncated": start + n < size })
+                }
+                _ => json!({ "error": "unknown file operation" }),
+            })
+        };
+        out().unwrap_or_else(|e| json!({ "error": e.to_string() }))
     }
 
     pub fn logs() -> Vec<String> {
@@ -509,6 +642,23 @@ mod tests {
         assert_eq!(r.json().unwrap()["url"], "https://api.open-meteo.com/v1");
         testing::answer_http(|_| http::Response { status: 503, ..Default::default() });
         assert_eq!(http::get("https://x.com/").unwrap().json().unwrap_err(), "the server answered 503");
+    }
+
+    #[test]
+    fn files_go_through_the_fake_host() {
+        assert!(fs::list("~/.claude").unwrap_err().contains("files_at"));
+        let home = std::env::temp_dir().join(format!("wf-sdk-fs-{}", std::process::id()));
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude").join("log.jsonl"), "one\ntwo\n").unwrap();
+        testing::files_at(&home);
+        let e = fs::list("~/.claude").unwrap();
+        assert_eq!((e[0].name.as_str(), e[0].size, e[0].dir), ("log.jsonl", 8, false));
+        assert_eq!(fs::read_text("~/.claude/log.jsonl").unwrap(), "one\ntwo\n");
+        let tail = fs::read_range("~/.claude/log.jsonl", -4, 100).unwrap();
+        assert_eq!((tail.text.as_str(), tail.offset, tail.truncated), ("two\n", 4, false));
+        assert!(fs::stat("~/.claude").unwrap().dir);
+        assert!(fs::read_text("~/.claude/missing").is_err());
+        std::fs::remove_dir_all(&home).ok();
     }
 
     #[test]

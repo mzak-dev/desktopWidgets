@@ -58,7 +58,14 @@ net = ["api.open-meteo.com"]          # the only hosts it may reach, over HTTPS
 temp = 0
 ```
 
-The module runs sandboxed: no files, no programs, only the hosts listed, up to 1 MB of saved data, and a time limit on every call. `{weather.error}` holds its last error. The install prompt and the Plugins page show what it can reach. How to write and build one: the SDK's README, https://github.com/mzak-dev/desktopWidgets/tree/main/sdk.
+To read files, list the folders under your home folder it may read, and any params that hold a folder the user picks:
+
+```toml
+fs_read = ["~/.claude"]               # read-only, shown when installing
+fs_read_params = ["folder"]           # the folder the user chose in this param
+```
+
+The module runs sandboxed: it cannot write files or start programs, reads only the folders listed, reaches only the hosts listed, keeps up to 1 MB of saved data, and has a time limit on every call. `{weather.error}` holds its last error. The install prompt and the Plugins page show what it can reach. How to write and build one: the SDK's README, https://github.com/mzak-dev/desktopWidgets/tree/main/sdk.
 
 ## Try it, then share it
 

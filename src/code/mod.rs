@@ -1,6 +1,7 @@
 //! Code Sources (ADR-0008): a Plugin's WebAssembly module serving a Data Source. Each one
 //! owns a worker thread; the UI thread only reads the last values and never waits.
 
+pub mod fs;
 pub mod runtime;
 pub mod schedule;
 pub mod store;
@@ -28,6 +29,10 @@ pub struct CodeSpec {
     pub source: String,
     pub module: PathBuf,
     pub hosts: Vec<HostPattern>,
+    /// Folders under home it may read.
+    pub fs_read: Vec<fs::FsRoot>,
+    /// Params whose value, a folder the user picked, it may read for that Instance.
+    pub fs_read_params: Vec<String>,
     /// Shown until the first sample, with `loading` set.
     pub initial: Value,
 }
@@ -40,6 +45,7 @@ pub struct Deps {
     /// Wakes the app to call `take_news`.
     pub notify: Arc<dyn Fn() + Send + Sync>,
     pub limits: Limits,
+    pub places: fs::Places,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -64,8 +70,8 @@ impl Status {
 }
 
 enum Msg {
-    Need { instance: String, params: String },
-    Act { instance: String, params: String, verb: String, arg: String },
+    Need { instance: String, params: String, picked: Vec<PathBuf> },
+    Act { instance: String, params: String, picked: Vec<PathBuf>, verb: String, arg: String },
     Retain(BTreeSet<String>),
 }
 
@@ -85,6 +91,7 @@ pub struct WasmSource {
     tx: Sender<Msg>,
     shared: Arc<Shared>,
     initial: Value,
+    fs_read_params: Vec<String>,
     worker: JoinHandle<()>,
 }
 
@@ -107,12 +114,18 @@ impl WasmSource {
     pub fn start(spec: CodeSpec, deps: Deps) -> WasmSource {
         let (tx, rx) = mpsc::channel();
         let shared = Arc::new(Shared { slots: Mutex::new(HashMap::new()), news: Mutex::new(News::default()), status: Mutex::new(Status::Starting) });
-        let (name, initial) = (spec.source.clone(), with_state(&spec.initial, true, ""));
+        let (name, initial, fs_read_params) = (spec.source.clone(), with_state(&spec.initial, true, ""), spec.fs_read_params.clone());
         let worker = {
             let shared = shared.clone();
             std::thread::Builder::new().name(format!("plugin {}", spec.plugin)).spawn(move || Worker::new(spec, deps, shared).run(rx)).expect("spawn a plugin worker")
         };
-        WasmSource { name, tx, shared, initial, worker }
+        WasmSource { name, tx, shared, initial, fs_read_params, worker }
+    }
+
+    /// The folders the user picked for this Instance in the params the plugin may read.
+    /// Only the Instance's own settings count, never a widget's defaults.
+    fn picked(&self, cx: &SourceCx) -> Vec<PathBuf> {
+        self.fs_read_params.iter().filter_map(|p| cx.cfg.params.get(p)?.as_str()).map(PathBuf::from).filter(|p| p.is_absolute()).collect()
     }
 
     pub fn take_news(&self) -> News {
@@ -147,7 +160,7 @@ impl DataSource for WasmSource {
         }
         let shown = slots.get(&cx.cfg.id).map_or_else(|| self.initial.clone(), |s| with_state(&s.value, true, ""));
         slots.insert(cx.cfg.id.clone(), Slot { params: params.clone(), value: shown.clone() });
-        let _ = self.tx.send(Msg::Need { instance: cx.cfg.id.clone(), params });
+        let _ = self.tx.send(Msg::Need { instance: cx.cfg.id.clone(), params, picked: self.picked(cx) });
         shown
     }
 
@@ -157,7 +170,7 @@ impl DataSource for WasmSource {
     }
 
     fn act(&self, verb: &str, arg: &str, cx: &SourceCx) -> bool {
-        let _ = self.tx.send(Msg::Act { instance: cx.cfg.id.clone(), params: params_json(cx.params), verb: verb.into(), arg: arg.into() });
+        let _ = self.tx.send(Msg::Act { instance: cx.cfg.id.clone(), params: params_json(cx.params), picked: self.picked(cx), verb: verb.into(), arg: arg.into() });
         true
     }
 
@@ -176,6 +189,7 @@ struct Worker {
     compiled: Option<Compiled>,
     runtime: Option<Runtime>,
     schedule: Schedule,
+    picked: HashMap<String, Vec<PathBuf>>,
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -199,7 +213,7 @@ impl Worker {
             Arc::new(move |req: &[u8]| net.handle(req)) as HttpFn
         });
         let schedule = Schedule::new(deps.limits.backoff);
-        Worker { spec, deps, shared, http, compiled: None, runtime: None, schedule }
+        Worker { spec, deps, shared, http, compiled: None, runtime: None, schedule, picked: HashMap::new() }
     }
 
     fn run(mut self, rx: Receiver<Msg>) {
@@ -236,14 +250,19 @@ impl Worker {
     fn handle(&mut self, msg: Msg) {
         let now = Instant::now();
         match msg {
-            Msg::Need { instance, params } => {
+            Msg::Need { instance, params, picked } => {
                 self.schedule.need(&instance, &params, now);
+                self.picked.insert(instance, picked);
             }
-            Msg::Act { instance, params, verb, arg } => {
+            Msg::Act { instance, params, picked, verb, arg } => {
                 self.schedule.need(&instance, &params, now);
                 self.schedule.act(&instance, &verb, &arg);
+                self.picked.insert(instance, picked);
             }
-            Msg::Retain(live) => self.schedule.retain(&live),
+            Msg::Retain(live) => {
+                self.schedule.retain(&live);
+                self.picked.retain(|id, _| live.contains(id));
+            }
         }
     }
 
@@ -277,8 +296,8 @@ impl Worker {
         v.to_string().into_bytes()
     }
 
-    /// Calls the module, building a fresh instance if the last one faulted.
-    fn call(&mut self, entry: Entry, input: &[u8]) -> Result<Called, Fault> {
+    /// Calls the module for `instance`, building a fresh module instance if the last one faulted.
+    fn call(&mut self, instance: &str, entry: Entry, input: &[u8]) -> Result<Called, Fault> {
         if self.runtime.is_none() {
             let env = Env::new(self.http.clone(), self.deps.store.clone(), &self.deps.limits);
             let compiled = self.compiled.as_ref().expect("compiled before any job");
@@ -292,6 +311,8 @@ impl Worker {
             }
         }
         let rt = self.runtime.as_mut().expect("just built");
+        let reads = !self.spec.fs_read.is_empty() || !self.spec.fs_read_params.is_empty();
+        rt.env_mut().fs = reads.then(|| fs::Fs::new(&self.deps.places, &self.spec.fs_read, self.picked.get(instance).map_or(&[][..], Vec::as_slice)));
         let out = std::panic::catch_unwind(AssertUnwindSafe(|| rt.call(entry, input))).unwrap_or_else(|_| Err(Fault::Trap("the host panicked".into())));
         let logs = std::mem::take(&mut rt.env_mut().logs);
         if !logs.is_empty() {
@@ -335,7 +356,7 @@ impl Worker {
         match job {
             Job::Sample(instance) => {
                 let input = self.input(&instance, serde_json::json!({}));
-                let called = match self.call(Entry::Sample, &input) {
+                let called = match self.call(&instance, Entry::Sample, &input) {
                     Ok(c) => c,
                     Err(f) => return self.faulted(&instance, f, Duration::ZERO),
                 };
@@ -367,7 +388,7 @@ impl Worker {
                     return;
                 }
                 let input = self.input(&instance, serde_json::json!({ "verb": verb, "arg": arg }));
-                match self.call(Entry::Act, &input) {
+                match self.call(&instance, Entry::Act, &input) {
                     Ok(called) => {
                         let out: ActOut = serde_json::from_slice(&called.output).unwrap_or_default();
                         let resample = match out.resample.as_deref() {
@@ -402,14 +423,20 @@ pub(crate) mod tests {
 
     /// A source over `wat`, and a channel that hears its notifications.
     pub(crate) fn start(name: &str, wat: &str, limits: Limits, store: Option<Arc<KvStore>>) -> (WasmSource, Receiver<()>) {
+        start_with(name, wat, limits, store, |_| {})
+    }
+
+    fn start_with(name: &str, wat: &str, limits: Limits, store: Option<Arc<KvStore>>, edit: impl FnOnce(&mut CodeSpec)) -> (WasmSource, Receiver<()>) {
         let dir = tmp(name);
         let path = dir.join("m.wasm");
         std::fs::write(&path, wat).unwrap();
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
-        let deps = Deps { fetch: None, store, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits };
+        let deps = Deps { fetch: None, store, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits, places: Default::default() };
         let initial = Value::obj([("temp", 0.into())]);
-        (WasmSource::start(CodeSpec { plugin: "p".into(), source: "weather".into(), module: path, hosts: vec![], initial }, deps), rx)
+        let mut spec = CodeSpec { plugin: "p".into(), source: "weather".into(), module: path, hosts: vec![], fs_read: vec![], fs_read_params: vec![], initial };
+        edit(&mut spec);
+        (WasmSource::start(spec, deps), rx)
     }
 
     pub(crate) fn cfg(id: &str) -> InstanceCfg {
@@ -447,6 +474,44 @@ pub(crate) mod tests {
         let v = read(&src, &c, &p);
         assert_eq!((num(&v, "temp"), v.get("loading").map(Value::truthy)), (21.0, Some(false)));
         assert_eq!(src.status(), Status::Ready { fuel: src.status_fuel() });
+    }
+
+    #[test]
+    fn code_reads_only_the_folder_its_instance_was_given() {
+        let dir = tmp("picked-files");
+        std::fs::write(dir.join("photo.txt"), "x").unwrap();
+        // the answer to a `list` of `dir`, wrapped as the sample's value
+        let req = serde_json::json!({ "op": "list", "path": dir.to_string_lossy() }).to_string();
+        let imports = r#"(import "wf" "fs" (func $fs (param i32 i32) (result i32)))
+                         (import "wf" "take" (func $take (param i32)))"#;
+        let body = format!(
+            r#"(local $n i32)
+            (local.set $n (call $fs (i32.const 25) (i32.const {len})))
+            (memory.copy (i32.const 512) (i32.const 16) (i32.const 9))
+            (call $take (i32.const 521))
+            (i32.store8 (i32.add (i32.const 521) (local.get $n)) (i32.const 125))
+            i64.const 512 i64.const 32 i64.shl (i64.extend_i32_u (i32.add (local.get $n) (i32.const 10))) i64.or"#,
+            len = req.len()
+        );
+        let wat = module(imports, &format!("{{\"value\":{req}"), &body, ABI);
+        let (src, rx) = start_with("picked", &wat, Limits::default(), None, |s| s.fs_read_params = vec!["folder".into()]);
+        let folder = BTreeMap::from([("folder".to_string(), Value::Str(dir.to_string_lossy().into_owned()))]);
+        let listed = |id: &str, own: bool| {
+            let mut c = cfg(id);
+            if own {
+                c.params.insert("folder".into(), serde_json::Value::String(dir.to_string_lossy().into_owned()));
+            }
+            read(&src, &c, &folder);
+            wait_for(&src, &rx, id);
+            let v = read(&src, &c, &folder);
+            match v.get("entries") {
+                Some(Value::List(l)) => Ok(l.iter().filter_map(|e| e.get("name")).map(|n| n.to_string()).collect::<Vec<_>>()),
+                _ => Err(format!("{v:?}")),
+            }
+        };
+        assert_eq!(listed("w-1", true), Ok(vec!["photo.txt".to_string()]));
+        assert!(listed("w-2", false).is_err(), "a widget's default is not the user's pick");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -543,11 +608,11 @@ pub(crate) mod tests {
         }));
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
-        let deps = Deps { fetch: Some(Arc::new(fake)), store: None, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits: Limits::default() };
+        let deps = Deps { fetch: Some(Arc::new(fake)), store: None, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits: Limits::default(), places: Default::default() };
         let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/examples/weather/plugin");
         let manifest = crate::plugins::Manifest::parse(&std::fs::read_to_string(plugin.join("plugin.toml")).unwrap()).unwrap();
         let code = manifest.code.expect("the example has code");
-        let src = WasmSource::start(CodeSpec { plugin: "weather".into(), source: code.source, module: wasm, hosts: code.net, initial: code.initial }, deps);
+        let src = WasmSource::start(CodeSpec { plugin: "weather".into(), source: code.source, module: wasm, hosts: code.net, fs_read: code.fs_read, fs_read_params: code.fs_read_params, initial: code.initial }, deps);
         let c = cfg("weather-1");
         let params = BTreeMap::from([("latitude".to_string(), Value::Num(59.91)), ("longitude".to_string(), Value::Num(10.75))]);
         assert!(read(&src, &c, &params).get("loading").is_some_and(Value::truthy));

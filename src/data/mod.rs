@@ -340,7 +340,7 @@ mod tests {
         use crate::code::runtime::{Limits, tests::returning};
         use crate::code::tests::start;
         let mut src = DataSources::builtin();
-        let spec = |n: &str| CodeSpec { plugin: n.into(), source: n.into(), module: "nope.wasm".into(), hosts: vec![], initial: Value::Nil };
+        let spec = |n: &str| CodeSpec { plugin: n.into(), source: n.into(), module: "nope.wasm".into(), hosts: vec![], fs_read: vec![], fs_read_params: vec![], initial: Value::Nil };
         let started = std::cell::RefCell::new(Vec::new());
         let launch = |s: CodeSpec| {
             started.borrow_mut().push(s.source.clone());

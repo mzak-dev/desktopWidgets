@@ -79,6 +79,9 @@ _Avoid_: add-on, extension, skin, package (for the installed folder)
 A Data Source whose values come from a Plugin's WebAssembly module (written in Rust with the `wayfinder-plugin` crate), run sandboxed on its own thread. The Plugin's Widgets stay TOML Widgets that bind to it (`{weather.temp}`) and send it actions (`weather.refresh`).
 _Avoid_: Rust Widget (that is engine code, like the Drawer), script, native plugin
 
+**File access**:
+What a Code Source may read: folders under the home folder its `plugin.toml` declares (`fs_read`), and the folder the user picked in a param it names (`fs_read_params`). Read-only, shown when installing.
+
 **Plugin data**:
 What a Plugin's code saves between runs, up to 1 MB, in `plugin-data/<id>.json`. It survives upgrades and goes when the Plugin is removed.
 

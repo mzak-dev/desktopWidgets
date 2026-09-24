@@ -56,6 +56,7 @@ export_source!(Weather);
 - **`act`** handles `on_click = "<source>.<verb> <arg>"` and says what to sample again.
 - **State**: your `Source` value lives while the module runs, but starts fresh (`Default`) after a crash. Keep per-widget state keyed by `cx.instance`, and anything that must last in `store`.
 - **`http::get` / `http::request`**: HTTPS only, to hosts in `[code] net`. Redirects are handed back (`location`), never followed. No cookies, no Windows credentials. A burst of 20 requests, then one every 6 s, and 2 MB per answer.
+- **`fs::{list, stat, read_text, read_range}`**: read-only, under the folders in `[code] fs_read` (`~/.claude`) and, per widget, the folder the user picked in a param named in `fs_read_params`. Paths are `~/…` or full paths. A read returns at most 1 MB of text (`read_range(p, -4096, 4096)` is a file's last 4 KB), a call can read 16 MB in all, and a folder lists at most 2000 entries. Links cannot lead out of a folder, and Wayfinder's own data folder is never readable.
 - **`store::{get, set, remove}`**: up to 1 MB of text per plugin in `plugin-data/<id>.json`. It survives restarts and upgrades, and goes when the plugin is removed.
 - **`log!`**: a line in `wayfinder.log` and Settings > Log (20 lines a minute).
 - **Limits**: each call has a fuel budget (a few hundred million instructions) and 32 MB of memory. A module that crashes or runs out is restarted after a pause that doubles up to 30 minutes, and the Plugins page shows the error.
@@ -83,6 +84,8 @@ author = "You"
 module = "code/weather.wasm"
 source = "weather"                 # lower-case letters, digits, _; not clock, sys, shortcuts, param, state, self, item or index
 net = ["api.open-meteo.com"]       # exact hosts, or *.example.com for its subdomains
+# fs_read = ["~/.claude"]          # folders under home it may read
+# fs_read_params = ["folder"]      # params holding a folder the user picks
 
 [code.initial]                     # shown until the first sample
 temp = 0
@@ -92,7 +95,7 @@ Put the folder in `%APPDATA%\Wayfinder\plugins\` to try it (rebuilding the `.was
 
 ## 4. Test
 
-On your own machine the crate talks to a stand-in host, so `cargo test` works with no Wayfinder:
+On your own machine the crate talks to a stand-in host, so `cargo test` works with no Wayfinder. `testing::files_at(dir)` serves `fs` from a folder your test made, with `~/` meaning `dir`:
 
 ```rust
 #[test]
@@ -117,6 +120,7 @@ Any language that compiles to core WebAssembly can do the same. Everything is JS
   - `log(ptr, len)`
   - `now_ms() -> i64`
   - `http(ptr, len) -> i32`
+  - `fs(ptr, len) -> i32`
   - `store_get(ptr, len) -> i32` (-1 if missing)
   - `store_set(kptr, klen, vptr, vlen) -> i32` (0 ok, -1 over 1 MB; `vlen` 0 deletes)
   - `take(ptr)`: http and store_get park their result and return its length; `take` copies it to `ptr`.
@@ -124,5 +128,6 @@ Any language that compiles to core WebAssembly can do the same. Everything is JS
 - **Sample out:** `{"value":{…}, "refresh_s":900}` or `{"error":"…"}`.
 - **Act in:** the same, plus `verb` and `arg`.
 - **Act out:** `{"resample":"this" | "all" | "none"}`.
+- **File request:** `{"op":"list" | "stat" | "read", "path":"~/…", "offset":0, "max":1048576}`; the answer is `{"entries":[{"name","dir","size","modified_ms"}], "truncated"}`, `{"dir","size","modified_ms"}`, `{"text","offset","size","truncated"}` or `{"error":"…"}`.
 - **HTTP request:** `{"method":"GET", "url":"https://…", "headers":{…}, "body":"…"}`.
 - **HTTP response:** `{"status":200, "content_type":"…", "location":"…", "body":"…"}` or `{"error":"…"}`.

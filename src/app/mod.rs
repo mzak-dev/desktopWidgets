@@ -559,8 +559,9 @@ impl App {
             let _ = proxy.lock().unwrap().send_event(UserEvent::SourceNews);
         });
         let (fetch, stores) = (self.fetch.clone(), &self.stores);
+        let places = crate::code::fs::Places { home: std::env::var_os("USERPROFILE").map(PathBuf::from), private: vec![self.opts.dir.clone()] };
         self.sources.sync_code(specs, |spec| {
-            let deps = Deps { fetch: fetch.clone(), store: stores.get(&spec.plugin).cloned(), notify: notify.clone(), limits: Limits::default() };
+            let deps = Deps { fetch: fetch.clone(), store: stores.get(&spec.plugin).cloned(), notify: notify.clone(), limits: Limits::default(), places: places.clone() };
             WasmSource::start(spec, deps)
         });
         self.refresh_code_status();
