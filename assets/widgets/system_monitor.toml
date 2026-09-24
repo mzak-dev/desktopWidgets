@@ -1,5 +1,5 @@
 name = "System Monitor"
-description = "Live CPU, memory, disk and battery. Small: bars. Medium: gauges. Large: every drive, memory commit and a minute of history."
+description = "Live CPU, GPU (discrete and integrated), memory, disk and battery. Small: bars. Medium: gauges. Large: every drive, memory commit and a minute of history."
 size = [340, 190]
 min_size = [150, 64]
 max_size = [760, 520]
@@ -8,6 +8,12 @@ max_size = [760, 520]
 type = "bool"
 default = true
 label = "CPU"
+
+[params.show_gpu]
+type = "bool"
+default = true
+label = "GPU"
+help = "Every graphics adapter the machine has, discrete and integrated, with a graph on a large monitor."
 
 [params.show_ram]
 type = "bool"
@@ -37,7 +43,7 @@ help = "GB used, process count or charging state under each gauge, when there is
 type = "bool"
 default = true
 label = "History graphs"
-help = "The last minute of CPU, memory and download, on a large monitor."
+help = "The last minute of CPU, GPU, memory and download, on a large monitor."
 
 [params.show_footer]
 type = "bool"
@@ -84,6 +90,11 @@ type = "color"
 default = "$accent"
 label = "CPU colour"
 
+[params.gpu_color]
+type = "color"
+default = "#b07cff"
+label = "GPU colour"
+
 [params.ram_color]
 type = "color"
 default = "#4da3ff"
@@ -124,7 +135,7 @@ shadow = { blur = 14, dy = 5 }
   for = "{sys.gauges}"
   as = "g"
     [[root.children.children]]
-    when = "{(g.id == 'cpu' ? param.show_cpu : g.id == 'ram' || g.id == 'commit' ? param.show_ram : g.id == 'disk' || g.id == 'drive' ? param.show_disk : param.show_battery) && index < floor((self.h - 14) / 22)}"
+    when = "{(g.id == 'cpu' ? param.show_cpu : g.id == 'gpu' || g.id == 'igpu' ? param.show_gpu : g.id == 'ram' || g.id == 'commit' ? param.show_ram : g.id == 'disk' || g.id == 'drive' ? param.show_disk : param.show_battery) && index < floor((self.h - 14) / 22)}"
     direction = "row"
     align = "center"
     gap = 8
@@ -146,7 +157,7 @@ shadow = { blur = 14, dy = 5 }
         width = "{g.value}%"
         height = 6
         radius = 3
-        fill = "{((g.id == 'battery' ? 100 - g.value : g.value) > param.warn ? param.warn_color : (g.id == 'cpu' ? param.cpu_color : g.id == 'ram' || g.id == 'commit' ? param.ram_color : g.id == 'disk' || g.id == 'drive' ? param.disk_color : param.battery_color))}"
+        fill = "{((g.id == 'battery' ? 100 - g.value : g.value) > param.warn ? param.warn_color : (g.id == 'cpu' ? param.cpu_color : g.id == 'gpu' || g.id == 'igpu' ? param.gpu_color : g.id == 'ram' || g.id == 'commit' ? param.ram_color : g.id == 'disk' || g.id == 'drive' ? param.disk_color : param.battery_color))}"
         transition = 400
       [[root.children.children.children]]
       type = "text"
@@ -169,22 +180,22 @@ shadow = { blur = 14, dy = 5 }
     for = "{(!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? sys.gauges_all : sys.gauges}"
     as = "g"
       [[root.children.children.children]]
-      when = "{(g.id == 'cpu' ? param.show_cpu : g.id == 'ram' || g.id == 'commit' ? param.show_ram : g.id == 'disk' || g.id == 'drive' ? param.show_disk : param.show_battery) && index < floor((self.w - 16) / (((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) + 12))}"
+      when = "{(g.id == 'cpu' ? param.show_cpu : g.id == 'gpu' || g.id == 'igpu' ? param.show_gpu : g.id == 'ram' || g.id == 'commit' ? param.show_ram : g.id == 'disk' || g.id == 'drive' ? param.show_disk : param.show_battery) && index < floor((self.w - 16) / (((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) + 12))}"
       direction = "column"
       align = "center"
       gap = 3
-      width = "{((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0))))}"
+      width = "{((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0))))}"
       enter = { ms = 240, dy = 6, stagger = 30 }
         [[root.children.children.children.children]]
-        width = "{((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0))))}"
-        height = "{((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0))))}"
+        width = "{((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0))))}"
+        height = "{((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0))))}"
           [[root.children.children.children.children.children]]
           type = "arc"
           start = "{180 + (360 - param.sweep) / 2}"
           sweep = "{param.sweep}"
-          stroke = "{min(param.stroke, ((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) * 0.12)}"
+          stroke = "{min(param.stroke, ((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) * 0.12)}"
           value = "{g.value}"
-          color = "{((g.id == 'battery' ? 100 - g.value : g.value) > param.warn ? param.warn_color : (g.id == 'cpu' ? param.cpu_color : g.id == 'ram' || g.id == 'commit' ? param.ram_color : g.id == 'disk' || g.id == 'drive' ? param.disk_color : param.battery_color))}"
+          color = "{((g.id == 'battery' ? 100 - g.value : g.value) > param.warn ? param.warn_color : (g.id == 'cpu' ? param.cpu_color : g.id == 'gpu' || g.id == 'igpu' ? param.gpu_color : g.id == 'ram' || g.id == 'commit' ? param.ram_color : g.id == 'disk' || g.id == 'drive' ? param.disk_color : param.battery_color))}"
 
           [[root.children.children.children.children.children]]
           inset = 0
@@ -193,22 +204,22 @@ shadow = { blur = 14, dy = 5 }
             [[root.children.children.children.children.children.children]]
             type = "text"
             text = "{g.value}%"
-            size = "{max(10, ((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) * 0.25)}"
+            size = "{max(10, ((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) * 0.25)}"
             weight = 600
             color = "$text"
 
         [[root.children.children.children.children]]
         type = "text"
         text = "{g.label}"
-        size = "{max(10, min(((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) * 0.14, 14))}"
+        size = "{max(10, min(((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) * 0.14, 14))}"
         weight = 600
         color = "$text"
 
         [[root.children.children.children.children]]
         type = "text"
-        when = "{param.show_detail && ((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) >= 72}"
+        when = "{param.show_detail && ((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) >= 72}"
         text = "{g.detail}"
-        size = "{max(9, min(((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) * 0.115, 12))}"
+        size = "{max(9, min(((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0) + (param.show_gpu ? sys.gpu_count : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) * 0.115, 12))}"
         color = "$text-dim"
 
   # ---- large: a minute of history ----
@@ -324,6 +335,46 @@ shadow = { blur = 14, dy = 5 }
     stroke = 1.5
     color = "{param.disk_color}"
     area = "{param.disk_color}"
+
+
+  [[root.children.children]]
+  type = "repeat"
+  when = "{param.show_gpu}"
+  for = "{sys.gpus}"
+  as = "gp"
+    [[root.children.children.children]]
+    direction = "column"
+    grow = 1
+    basis = 0
+    min_width = 0
+    padding = [8, 10]
+    gap = 4
+    radius = "$radius-sm"
+    fill = "$face"
+      [[root.children.children.children.children]]
+      direction = "row"
+      align = "center"
+        [[root.children.children.children.children.children]]
+        type = "text"
+        text = "{gp.label}"
+        size = 11
+        weight = 600
+        color = "$text-dim"
+        grow = 1
+        [[root.children.children.children.children.children]]
+        type = "text"
+        text = "{gp.value}%"
+        size = 11
+        weight = 600
+        color = "$text"
+      [[root.children.children.children.children]]
+      type = "graph"
+      grow = 1
+      values = "{gp.history}"
+      span = 60
+      stroke = 1.5
+      color = "{param.gpu_color}"
+      area = "{param.gpu_color}"
 
 
   [[root.children]]

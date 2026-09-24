@@ -110,7 +110,7 @@ mod tests {
             let st = BTreeMap::new();
             let sys = Sys::default();
             let read = |n: &str| (n == "sys").then(|| sys.sample());
-            let inp = Inputs { params: &params, state: &st, card_size: (300.0, 150.0), key_prefix: "t", read_source: &read };
+            let inp = Inputs { params: &params, state: &st, card_size: (700.0, 200.0), key_prefix: "t", read_source: &read };
             let b = w.build(&inp, &theme, &|_| None).unwrap();
             assert!(b.warnings.is_empty(), "{:?}", b.warnings);
             assert!(b.deps.contains("sys.gauges"));

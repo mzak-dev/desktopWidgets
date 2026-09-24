@@ -21,6 +21,8 @@ struct State {
     cpu_history: VecDeque<f64>,
     ram_history: VecDeque<f64>,
     down_history: VecDeque<f64>,
+    /// Per adapter, in `Gpus::adapters` order.
+    gpu_history: Vec<VecDeque<f64>>,
 }
 
 struct Sampled {
@@ -32,6 +34,7 @@ struct Sampled {
 #[derive(Default)]
 pub struct Sys {
     last: Mutex<Option<Sampled>>,
+    gpus: Mutex<Gpus>,
 }
 
 impl Sys {
@@ -41,7 +44,8 @@ impl Sys {
             return s.value.clone();
         }
         let prev = g.as_ref().map(|s| s.state.clone()).unwrap_or_default();
-        let (state, value) = sample_sys(prev);
+        let gpus = self.gpus.lock().unwrap_or_else(|e| e.into_inner()).sample();
+        let (state, value) = sample_sys(prev, gpus);
         *g = Some(Sampled { at: Instant::now(), state, value: value.clone() });
         value
     }
@@ -132,7 +136,123 @@ pub fn push_history(h: &mut VecDeque<f64>, v: f64) {
     }
 }
 
-fn sample_sys(mut st: State) -> (State, Value) {
+/// A graphics adapter and its load right now.
+struct Gpu {
+    label: String,
+    id: &'static str,
+    name: String,
+    load: f64,
+}
+
+/// PDH handles are process-wide and only touched under the `Sys` lock.
+struct Query(windows::Win32::System::Performance::PDH_HQUERY, windows::Win32::System::Performance::PDH_HCOUNTER);
+unsafe impl Send for Query {}
+
+/// (luid as counter instances spell it, VRAM detail line, integrated)
+type Adapter = (String, String, bool);
+
+/// The adapters DXGI lists, and the "GPU Engine" performance counters that say how busy
+/// each one is. Counters are rates, so the first sample after opening reads 0.
+#[derive(Default)]
+struct Gpus {
+    /// Software adapters and virtual duplicates of a real one left out.
+    adapters: Option<Vec<Adapter>>,
+    query: Option<Query>,
+}
+
+fn list_adapters() -> Vec<Adapter> {
+    use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, DXGI_ADAPTER_FLAG_SOFTWARE, IDXGIFactory1};
+    let Ok(f) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else { return vec![] };
+    let mut seen = vec![];
+    (0..)
+        .map_while(|i| unsafe { f.EnumAdapters1(i) }.ok())
+        .filter_map(|a| {
+            let d = unsafe { a.GetDesc1() }.ok()?;
+            // ponytail: a virtual display driver (Parsec) shows up as a second copy of the real GPU
+            // with the same hardware ids; the first listed is the real one. Two identical cards lose one.
+            let hw = (d.VendorId, d.DeviceId, d.SubSysId, d.Revision);
+            if d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32 != 0 || seen.contains(&hw) {
+                return None;
+            }
+            seen.push(hw);
+            let vram = d.DedicatedVideoMemory as u64;
+            let name = if vram >= 1 << 30 { format!("{:.0} GB VRAM", gb(vram)) } else { format!("{} MB VRAM", vram >> 20) };
+            let luid = format!("luid_0x{:08x}_0x{:08x}", d.AdapterLuid.HighPart as u32, d.AdapterLuid.LowPart);
+            // ponytail: integrated = under 1 GiB of dedicated memory; a big UMA carve-out reads as discrete
+            Some((luid, name, d.DedicatedVideoMemory < 1 << 30))
+        })
+        .collect()
+}
+
+/// Busy percent per LUID: engines of one type add up across processes, and an adapter is
+/// as busy as its busiest engine type (what Task Manager shows).
+fn gpu_loads(q: &Query) -> Vec<(String, f64)> {
+    use windows::Win32::System::Performance::*;
+    let mut size = 0u32;
+    let mut count = 0u32;
+    unsafe {
+        PdhCollectQueryData(q.0);
+        // the size probe answers PDH_MORE_DATA, the real call fills the buffer
+        PdhGetFormattedCounterArrayW(q.1, PDH_FMT_DOUBLE, &mut size, &mut count, None);
+        if size == 0 {
+            return vec![];
+        }
+        let mut buf = vec![0u64; (size as usize).div_ceil(8)]; // 8-aligned for the items
+        let items = buf.as_mut_ptr() as *mut PDH_FMT_COUNTERVALUE_ITEM_W;
+        if PdhGetFormattedCounterArrayW(q.1, PDH_FMT_DOUBLE, &mut size, &mut count, Some(items)) != 0 {
+            return vec![];
+        }
+        let mut by: std::collections::HashMap<(String, String), f64> = Default::default();
+        for it in std::slice::from_raw_parts(items, count as usize) {
+            let name = it.szName.to_string().unwrap_or_default();
+            let (Some(l), Some(t)) = (name.find("luid_"), name.find("engtype_")) else { continue };
+            let luid = name[l..].split("_phys").next().unwrap_or("").to_lowercase(); // instances spell the hex in capitals
+            *by.entry((luid, name[t..].into())).or_default() += it.FmtValue.Anonymous.doubleValue;
+        }
+        let mut out: std::collections::HashMap<String, f64> = Default::default();
+        for ((luid, _), v) in by {
+            let e = out.entry(luid).or_default();
+            *e = e.max(v);
+        }
+        out.into_iter().collect()
+    }
+}
+
+impl Gpus {
+    fn sample(&mut self) -> Vec<Gpu> {
+        use windows::Win32::System::Performance::*;
+        use windows::core::w;
+        let adapters = self.adapters.get_or_insert_with(list_adapters).clone();
+        if adapters.is_empty() {
+            return vec![];
+        }
+        if self.query.is_none() {
+            let mut q = PDH_HQUERY::default();
+            let mut c = PDH_HCOUNTER::default();
+            let ok = unsafe { PdhOpenQueryW(None, 0, &mut q) } == 0
+                && unsafe { PdhAddEnglishCounterW(q, w!("\\GPU Engine(*)\\Utilization Percentage"), 0, &mut c) } == 0;
+            if !ok {
+                self.adapters = Some(vec![]); // no GPU counters on this machine: don't retry every second
+                return vec![];
+            }
+            self.query = Some(Query(q, c));
+        }
+        let loads = gpu_loads(self.query.as_ref().unwrap());
+        let discrete = adapters.iter().filter(|a| !a.2).count();
+        let mut n = 0;
+        adapters
+            .iter()
+            .map(|(luid, name, integrated)| {
+                n += (!integrated) as usize;
+                let load = loads.iter().find(|(l, _)| l == luid).map_or(0.0, |(_, v)| v.clamp(0.0, 100.0).round());
+                let label = if *integrated { "iGPU".into() } else if discrete > 1 { format!("GPU {n}") } else { "GPU".into() };
+                Gpu { label, id: if *integrated { "igpu" } else { "gpu" }, name: name.clone(), load }
+            })
+            .collect()
+    }
+}
+
+fn sample_sys(mut st: State, gpus: Vec<Gpu>) -> (State, Value) {
     use windows::Win32::System::Power::GetSystemPowerStatus;
     use windows::Win32::System::ProcessStatus::EnumProcesses;
     use windows::Win32::System::SystemInformation::{GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX};
@@ -171,6 +291,10 @@ fn sample_sys(mut st: State) -> (State, Value) {
     push_history(&mut st.cpu_history, cpu);
     push_history(&mut st.ram_history, mem.dwMemoryLoad as f64);
     push_history(&mut st.down_history, down);
+    st.gpu_history.resize_with(gpus.len(), Default::default);
+    for (h, g) in st.gpu_history.iter_mut().zip(&gpus) {
+        push_history(h, g.load);
+    }
 
     let pct = |used: u64, total: u64| if total == 0 { 0.0 } else { (100.0 * used as f64 / total as f64).round() };
     let gauge = |id: &str, label: &str, value: f64, detail: String| {
@@ -181,10 +305,15 @@ fn sample_sys(mut st: State) -> (State, Value) {
     let disk_g = gauge("disk", &sys_label, pct(disk_used, total), used_of_total(disk_used, total));
     let battery_g = has_battery.then(|| gauge("battery", "Battery", bat.BatteryLifePercent as f64, (if bat.ACLineStatus == 1 { "Charging" } else { "On battery" }).into()));
 
-    let mut gauges = vec![cpu_g.clone(), ram_g.clone(), disk_g.clone()];
+    let gpu_gs: Vec<Value> = gpus.iter().map(|g| gauge(g.id, &g.label, g.load, g.name.clone())).collect();
+    let mut gauges = vec![cpu_g.clone(), ram_g.clone()];
+    gauges.extend(gpu_gs.clone());
+    gauges.push(disk_g.clone());
     gauges.extend(battery_g.clone());
     // the large tier: memory commit and every fixed drive too
-    let mut all = vec![cpu_g, ram_g, gauge("commit", "Commit", pct(commit_used, mem.ullTotalPageFile), used_of_total(commit_used, mem.ullTotalPageFile)), disk_g];
+    let mut all = vec![cpu_g, ram_g];
+    all.extend(gpu_gs);
+    all.extend([gauge("commit", "Commit", pct(commit_used, mem.ullTotalPageFile), used_of_total(commit_used, mem.ullTotalPageFile)), disk_g]);
     all.extend(drives.iter().skip(1).map(|(l, u, t)| gauge("drive", l, pct(*u, *t), used_of_total(*u, *t))));
     all.extend(battery_g);
 
@@ -192,8 +321,17 @@ fn sample_sys(mut st: State) -> (State, Value) {
     // the network graph is scaled to its own busiest second, never below 1 MB/s
     let down_peak = st.down_history.iter().copied().fold(1_048_576.0, f64::max);
     let down_pct = Value::List(st.down_history.iter().map(|v| Value::Num((100.0 * v / down_peak).round())).collect());
+    // one card per adapter for the large monitor's graphs
+    let gpu_cards = Value::List(
+        gpus.iter()
+            .zip(&st.gpu_history)
+            .map(|(g, h)| Value::obj([("label", g.label.as_str().into()), ("value", g.load.into()), ("history", list(h))]))
+            .collect(),
+    );
     let v = Value::obj([
         ("cpu", cpu.into()),
+        ("gpu_count", (gpus.len() as i32).into()),
+        ("gpus", gpu_cards),
         ("ram", (mem.dwMemoryLoad as i32).into()),
         ("ram_text", used_of_total(ram_used, mem.ullTotalPhys).into()),
         ("disk", pct(disk_used, total).into()),
@@ -240,12 +378,28 @@ mod tests {
         let v = Sys::default().sample();
         let Some(Value::List(all)) = v.get("gauges_all") else { panic!("no gauges_all") };
         let ids: Vec<String> = all.iter().map(|g| g.get("id").unwrap().to_string()).collect();
-        assert!(ids.starts_with(&["cpu".into(), "ram".into(), "commit".into(), "disk".into()]), "{ids:?}");
+        let rest: Vec<_> = ids.iter().filter(|i| !i.contains("gpu")).cloned().collect(); // GPUs sit after RAM, however many
+        assert!(rest.starts_with(&["cpu".into(), "ram".into(), "commit".into(), "disk".into()]), "{ids:?}");
         assert!(all.iter().all(|g| (0.0..=100.0).contains(&g.get("value").and_then(|v| v.as_f64()).unwrap())));
         for k in ["cpu_history", "ram_history"] {
             assert!(matches!(v.get(k), Some(Value::List(h)) if !h.is_empty() && h.len() <= HISTORY), "{k}");
         }
         assert!(v.get("net_down").is_some() && v.get("net_up").is_some());
+    }
+
+    #[test]
+    fn gpu_adapters_are_percentages_with_history() {
+        let sys = Sys::default();
+        sys.sample();
+        std::thread::sleep(Duration::from_millis(900)); // past the sample cache
+        let v = sys.sample(); // the counters need two samples
+        let n = v.get("gpu_count").and_then(|v| v.as_f64()).unwrap() as usize;
+        let Some(Value::List(cards)) = v.get("gpus") else { panic!("no gpus") };
+        assert_eq!(cards.len(), n);
+        for c in cards {
+            assert!((0.0..=100.0).contains(&c.get("value").and_then(|v| v.as_f64()).unwrap()));
+            assert!(matches!(c.get("history"), Some(Value::List(h)) if !h.is_empty()));
+        }
     }
 
     #[test]
