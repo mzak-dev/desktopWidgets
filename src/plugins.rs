@@ -346,7 +346,7 @@ impl Budget {
 }
 
 /// Content only: definitions, images, fonts and notes. Nothing a `launch` could run.
-const ALLOWED: &[&str] = &["toml", "png", "ttf", "otf", "ttc", "otc", "md", "txt", "wasm"];
+const ALLOWED: &[&str] = &["toml", "png", "jpg", "jpeg", "gif", "webp", "bmp", "ttf", "otf", "ttc", "otc", "md", "txt", "wasm"];
 const ALLOWED_BARE: &[&str] = &["license", "licence", "readme", "notice", "copying", "authors"];
 
 fn allowed_file(name: &str) -> bool {
@@ -589,7 +589,7 @@ pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog) -> Vec<
         .collect()
 }
 
-const CONTENT_EXTENSIONS: &[&str] = &["toml", "png", "ttf", "otf", "ttc", "otc", "wasm"];
+const CONTENT_EXTENSIONS: &[&str] = &["toml", "png", "jpg", "jpeg", "gif", "webp", "bmp", "ttf", "otf", "ttc", "otc", "wasm"];
 
 /// Whether a change under the data folder can change content. Our own writes
 /// (`workspace.json`, the log) and dot-folders (the store's staging) do not.
@@ -821,6 +821,7 @@ mod tests {
     fn wasm_changes_reload() {
         let data = Path::new("C:\\Users\\a\\AppData\\Roaming\\Wayfinder");
         assert!(is_content_change(data, &data.join("plugins\\sunset\\code\\weather.wasm")));
+        assert!(is_content_change(data, &data.join("plugins\\sunset\\images\\dusk.GIF")), "any image a widget can show");
         assert!(!is_content_change(data, &data.join("plugin-data\\sunset.json")), "saved data is not content");
     }
 
@@ -1047,7 +1048,10 @@ mod tests {
     #[test]
     fn rejects_disallowed_file_types() {
         let (data, store) = install_area("types");
-        for bad in ["tools/run.exe", "widgets/app.lnk", "x.bat", "script"] {
+        for good in ["images/a.jpg", "images/b.JPEG", "images/c.gif", "images/d.webp", "images/e.bmp"] {
+            assert!(allowed_file(good), "{good}");
+        }
+        for bad in ["tools/run.exe", "widgets/app.lnk", "x.bat", "script", "images/x.svg"] {
             let file = data.with_file_name("bad.zip");
             zip_of(&file, &[("plugin.toml", OK), (bad, "x")]);
             let e = store.install(&file).unwrap_err();

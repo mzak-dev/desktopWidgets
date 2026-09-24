@@ -16,6 +16,7 @@ sunset/
 ├─ glyphs/         *.toml   glyph sets          │
 ├─ iconpacks/<name>/ *.png  app icons          ─┘
 └─ images/         *.png    anything your widgets show
+                   (also .jpg .gif .webp .bmp; GIFs play)
 ```
 
 Every folder is optional. A plugin with only `palettes/` is a theme pack.
@@ -40,7 +41,7 @@ Unknown keys are refused, so a typo shows up at once.
 - **Order:** built-ins, then plugins by id, then the user's own files. The user's `widgets/clock.toml` beats yours.
 - **Images next to a widget:** `src = "./logo.png"` is a file in the widget's own folder, and `src = "./../images/logo.png"` reaches the plugin's `images/`. A path may not leave the plugin.
 - **Fonts:** put `.ttf` / `.otf` files in `fonts/` and name the family (as it is inside the font) in a font set.
-- **Allowed files:** `toml png ttf otf ttc otc md txt wasm`, plus `LICENSE`, `README` and `NOTICE`. Anything else stops the install.
+- **Allowed files:** `toml png jpg jpeg gif webp bmp ttf otf ttc otc md txt wasm`, plus `LICENSE`, `README` and `NOTICE`. Anything else stops the install.
 - A widget's `launch` can never open a file inside `plugins/`.
 
 ## Code
