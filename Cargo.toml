@@ -44,6 +44,8 @@ global-hotkey = "0.8.0"
 tray-icon = "0.24.1"
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# plugin code (ADR-0008): an interpreter, no JIT, no WASI
+wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "validate", "auto-dispatch"] }
 
 [profile.release]
 debug = 1
@@ -51,3 +53,5 @@ debug = 1
 [dev-dependencies]
 # validates shader.wgsl without a GPU
 naga = { version = "30", features = ["wgsl-in"] }
+# tests write their modules as WebAssembly text
+wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "validate", "auto-dispatch", "wat"] }
