@@ -6,6 +6,7 @@ The `DataSource` trait gives a native source what Code Sources already had:
 
 - **`act(verb, arg, cx)`**: `on_click = "media.play_pause"` reaches it.
 - **`attach(Notifier)`**: a thread says "I changed", for every Instance or one, and only the Instances that read the source redraw. There is no polling, and an idle desktop still costs nothing (ADR-0004).
+- **`cadence(field, cx)`**: asked after every redraw, per Instance, so it follows the source's state: a progress bar ticks each second while playing and sleeps while paused.
 - **`retain(live)`**: per-Instance state goes when an Instance is removed.
 - **`watched_paths(cx)` and `path_changed`**: a source watches any path param. A change to one redraws; it does not reload content.
 

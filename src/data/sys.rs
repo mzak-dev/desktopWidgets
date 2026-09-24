@@ -56,7 +56,7 @@ impl DataSource for Sys {
         self.sample()
     }
 
-    fn cadence(&self, _field: &str) -> Option<Cadence> {
+    fn cadence(&self, _field: &str, _cx: &SourceCx) -> Option<Cadence> {
         Some(Cadence::Second)
     }
 }
@@ -230,7 +230,9 @@ mod tests {
         }
         assert_eq!(uptime_text(3 * 86_400_000 + 4 * 3_600_000), "3d 4h");
         assert_eq!(uptime_text(5 * 60_000), "0h 5m");
-        assert_eq!(Sys::default().cadence("gauges"), Some(Cadence::Second));
+        let (cfg, params) = (crate::workspace::InstanceCfg::default(), std::collections::BTreeMap::new());
+        let cx = SourceCx { cfg: &cfg, params: &params, tm: crate::data::now_local(), icon_pack: "Default" };
+        assert_eq!(Sys::default().cadence("gauges", &cx), Some(Cadence::Second));
     }
 
     #[test]

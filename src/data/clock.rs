@@ -234,7 +234,7 @@ impl DataSource for Clock {
         v
     }
 
-    fn cadence(&self, field: &str) -> Option<Cadence> {
+    fn cadence(&self, field: &str, _cx: &SourceCx) -> Option<Cadence> {
         Some(match field {
             // the whole object changes as often as its fastest field
             "" | "ms" | "second_smooth" => Cadence::Frame,

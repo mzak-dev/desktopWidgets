@@ -173,7 +173,7 @@ impl DataSource for WasmSource {
     }
 
     /// Code values change when the worker says so, never with the clock.
-    fn cadence(&self, _field: &str) -> Option<Cadence> {
+    fn cadence(&self, _field: &str, _cx: &SourceCx) -> Option<Cadence> {
         None
     }
 

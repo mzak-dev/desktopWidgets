@@ -106,7 +106,7 @@ impl DataSource for Shortcuts {
         shortcuts_value(&self.items_of(cx.cfg), cx.icon_pack)
     }
 
-    fn cadence(&self, _field: &str) -> Option<Cadence> {
+    fn cadence(&self, _field: &str, _cx: &SourceCx) -> Option<Cadence> {
         None
     }
 

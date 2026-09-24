@@ -357,7 +357,7 @@ Each kind of extension is one file plus one line of registration:
 | widgets and themes to share | a folder with `plugin.toml` in `<data>/plugins/` (see `assets/guides/PLUGINS.md`) | nothing: it loads as you save |
 | live data from a plugin | a Rust crate on [`wayfinder-plugin`](sdk/README.md), built for `wasm32-unknown-unknown` | a `[code]` table in its `plugin.toml` |
 
-**Your own build.** The engine is a library: an app can add native data sources (media keys, audio levels) and ship its own exe. A source says it changed through the `Notifier` it is given in `attach`, handles `on_click = "media.play_pause"` in `act`, and frees per-widget state in `retain`:
+**Your own build.** The engine is a library: an app can add native data sources (media keys, audio levels) and ship its own exe. A source says it changed through the `Notifier` it is given in `attach`, handles `on_click = "media.play_pause"` in `act`, frees per-widget state in `retain`, and gives a `cadence(field, cx)` that may follow its state (`Second` while playing, `None` while paused):
 
 ```rust
 fn main() {

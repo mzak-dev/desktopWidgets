@@ -54,8 +54,12 @@ pub struct SourceCx<'a> {
 pub trait DataSource: Send + Sync {
     fn name(&self) -> &str;
     fn value(&self, cx: &SourceCx) -> Value;
-    /// `field` "" is the whole object. `None`: changes only on events, never with time.
-    fn cadence(&self, field: &str) -> Option<Cadence>;
+    /// How often `field` ("" is the whole object) can change for this Instance. `None`: only
+    /// on events, never with time. It is asked again after every redraw, so it may follow
+    /// the source's state: a media source says `Second` for the position while playing and
+    /// `None` while paused, and calls its `Notifier` when playback resumes, so the Widget
+    /// redraws and asks again.
+    fn cadence(&self, field: &str, cx: &SourceCx) -> Option<Cadence>;
     /// Folders to watch for this Instance; a change calls `path_changed`.
     fn watched_paths(&self, _cx: &SourceCx) -> Vec<PathBuf> {
         vec![]
@@ -240,13 +244,15 @@ impl DataSources {
         self.get(name).map(|s| s.value(cx))
     }
 
-    pub fn cadence_of(&self, path: &str) -> Option<Cadence> {
+    pub fn cadence_of(&self, path: &str, cx: &SourceCx) -> Option<Cadence> {
         let (root, field) = path.split_once('.').unwrap_or((path, ""));
-        self.get(root)?.cadence(field)
+        self.get(root)?.cadence(field, cx)
     }
 
-    pub fn next_wake(&self, deps: &BTreeSet<String>, tm: &Tm) -> Option<Duration> {
-        let fastest = deps.iter().filter_map(|d| self.cadence_of(d)).min_by_key(|c| c.period())?;
+    /// How soon an Instance reading `deps` must redraw, asked after each of its redraws.
+    pub fn next_wake(&self, deps: &BTreeSet<String>, cx: &SourceCx) -> Option<Duration> {
+        let fastest = deps.iter().filter_map(|d| self.cadence_of(d, cx)).min_by_key(|c| c.period())?;
+        let tm = &cx.tm;
         let into_sec = tm.ms as u64;
         let ms = match fastest {
             Cadence::Frame => 8,
@@ -258,8 +264,8 @@ impl DataSources {
         Some(Duration::from_millis(ms + 2)) // just after the boundary, never just before
     }
 
-    pub fn needs_every_frame(&self, deps: &BTreeSet<String>) -> bool {
-        deps.iter().any(|d| self.cadence_of(d) == Some(Cadence::Frame))
+    pub fn needs_every_frame(&self, deps: &BTreeSet<String>, cx: &SourceCx) -> bool {
+        deps.iter().any(|d| self.cadence_of(d, cx) == Some(Cadence::Frame))
     }
 
     pub fn watched_paths(&self, cx: &SourceCx) -> Vec<PathBuf> {
@@ -295,20 +301,29 @@ mod tests {
         p.iter().map(|s| s.to_string()).collect()
     }
 
+    fn wake(src: &DataSources, d: &BTreeSet<String>, t: Tm) -> Option<Duration> {
+        let (cfg, params) = (InstanceCfg::default(), BTreeMap::new());
+        src.next_wake(d, &SourceCx { cfg: &cfg, params: &params, tm: t, icon_pack: "Default" })
+    }
+
+    fn every_frame(src: &DataSources, d: &BTreeSet<String>) -> bool {
+        with_cx(|cx| src.needs_every_frame(d, cx))
+    }
+
     #[test]
     fn wakes_exactly_when_a_bound_value_can_change() {
         let src = DataSources::builtin();
         // no clock dependency: never wakes on time
-        assert_eq!(src.next_wake(&deps(&["param.x", "shortcuts.items"]), &tm(1, 2, 3, 0)), None);
+        assert_eq!(wake(&src, &deps(&["param.x", "shortcuts.items"]), tm(1, 2, 3, 0)), None);
         // minute-level: next minute boundary (+2ms guard), not next second
-        assert_eq!(src.next_wake(&deps(&["clock.minute"]), &tm(12, 0, 30, 500)), Some(Duration::from_millis(29_500 + 2)));
+        assert_eq!(wake(&src, &deps(&["clock.minute"]), tm(12, 0, 30, 500)), Some(Duration::from_millis(29_500 + 2)));
         // second-level beats minute-level when both are present
-        assert_eq!(src.next_wake(&deps(&["clock.minute", "clock.second"]), &tm(12, 0, 30, 250)), Some(Duration::from_millis(750 + 2)));
+        assert_eq!(wake(&src, &deps(&["clock.minute", "clock.second"]), tm(12, 0, 30, 250)), Some(Duration::from_millis(750 + 2)));
         // ten-second minute-hand step
-        assert_eq!(src.next_wake(&deps(&["clock.minute_angle"]), &tm(12, 0, 23, 0)), Some(Duration::from_millis(7_000 + 2)));
+        assert_eq!(wake(&src, &deps(&["clock.minute_angle"]), tm(12, 0, 23, 0)), Some(Duration::from_millis(7_000 + 2)));
         // smooth second hand needs frames
-        assert!(src.needs_every_frame(&deps(&["clock.second_smooth"])));
-        assert!(!src.needs_every_frame(&deps(&["clock.second"])));
+        assert!(every_frame(&src, &deps(&["clock.second_smooth"])));
+        assert!(!every_frame(&src, &deps(&["clock.second"])));
     }
 
     #[test]
@@ -321,25 +336,67 @@ mod tests {
             fn value(&self, _: &SourceCx) -> Value {
                 Value::Nil
             }
-            fn cadence(&self, _: &str) -> Option<Cadence> {
+            fn cadence(&self, _: &str, _: &SourceCx) -> Option<Cadence> {
                 Some(Cadence::Millis(83))
             }
         }
         let mut src = DataSources::builtin();
         src.register(Box::new(Gif)).unwrap();
-        assert_eq!(src.next_wake(&deps(&["gif.frame", "clock.minute"]), &tm(1, 2, 3, 0)), Some(Duration::from_millis(83)), "12 fps, not every display frame");
-        assert!(!src.needs_every_frame(&deps(&["gif.frame"])));
-        assert_eq!(src.next_wake(&deps(&["gif.frame", "clock.second_smooth"]), &tm(1, 2, 3, 0)), Some(Duration::from_millis(10)), "a frame cadence still wins");
+        assert_eq!(wake(&src, &deps(&["gif.frame", "clock.minute"]), tm(1, 2, 3, 0)), Some(Duration::from_millis(83)), "12 fps, not every display frame");
+        assert!(!every_frame(&src, &deps(&["gif.frame"])));
+        assert_eq!(wake(&src, &deps(&["gif.frame", "clock.second_smooth"]), tm(1, 2, 3, 0)), Some(Duration::from_millis(10)), "a frame cadence still wins");
         assert_eq!(Cadence::Millis(1).period(), Duration::from_millis(16));
+    }
+
+    #[test]
+    fn cadence_follows_the_sources_state_and_the_instance() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        #[derive(Default)]
+        struct Player {
+            playing: AtomicBool,
+        }
+        impl DataSource for Player {
+            fn name(&self) -> &str {
+                "media"
+            }
+            fn value(&self, _: &SourceCx) -> Value {
+                Value::Nil
+            }
+            fn cadence(&self, field: &str, cx: &SourceCx) -> Option<Cadence> {
+                let ticking = field == "position" && self.playing.load(Ordering::Relaxed) && cx.params.get("progress").is_none_or(Value::truthy);
+                ticking.then_some(Cadence::Second)
+            }
+        }
+        let player = Arc::new(Player::default());
+        struct Shared(Arc<Player>);
+        impl DataSource for Shared {
+            fn name(&self) -> &str {
+                self.0.name()
+            }
+            fn value(&self, cx: &SourceCx) -> Value {
+                self.0.value(cx)
+            }
+            fn cadence(&self, f: &str, cx: &SourceCx) -> Option<Cadence> {
+                self.0.cadence(f, cx)
+            }
+        }
+        let mut src = DataSources::builtin();
+        src.register(Box::new(Shared(player.clone()))).unwrap();
+        let bar = deps(&["media.position"]);
+        assert_eq!(wake(&src, &bar, tm(1, 2, 3, 0)), None, "paused: the bar sleeps");
+        player.playing.store(true, Ordering::Relaxed);
+        assert_eq!(wake(&src, &bar, tm(1, 2, 3, 0)), Some(Duration::from_millis(1002)), "playing: once a second");
+        let (cfg, off) = (InstanceCfg::default(), BTreeMap::from([("progress".to_string(), Value::Bool(false))]));
+        assert_eq!(src.next_wake(&bar, &SourceCx { cfg: &cfg, params: &off, tm: tm(1, 2, 3, 0), icon_pack: "Default" }), None, "an Instance that hides the bar never ticks");
     }
 
     #[test]
     fn cadence_is_asked_of_the_source_named_by_the_path() {
         let src = DataSources::builtin();
-        assert_eq!(src.cadence_of("sys.gauges"), Some(Cadence::Second));
-        assert_eq!(src.cadence_of("clock"), Some(Cadence::Frame), "a whole source changes as often as its fastest field");
-        assert_eq!(src.cadence_of("shortcuts.items"), None);
-        assert_eq!(src.cadence_of("item.name"), None, "not a source: a repeat variable");
+        assert_eq!(with_cx(|cx| src.cadence_of("sys.gauges", cx)), Some(Cadence::Second));
+        assert_eq!(with_cx(|cx| src.cadence_of("clock", cx)), Some(Cadence::Frame), "a whole source changes as often as its fastest field");
+        assert_eq!(with_cx(|cx| src.cadence_of("shortcuts.items", cx)), None);
+        assert_eq!(with_cx(|cx| src.cadence_of("item.name", cx)), None, "not a source: a repeat variable");
     }
 
     #[test]
@@ -384,7 +441,7 @@ mod tests {
         fn value(&self, _: &SourceCx) -> Value {
             Value::obj([("title", "Song".into())])
         }
-        fn cadence(&self, _: &str) -> Option<Cadence> {
+        fn cadence(&self, _: &str, _: &SourceCx) -> Option<Cadence> {
             None
         }
         fn act(&self, verb: &str, arg: &str, cx: &SourceCx) -> bool {
@@ -424,7 +481,7 @@ mod tests {
             fn value(&self, _: &SourceCx) -> Value {
                 Value::Nil
             }
-            fn cadence(&self, _: &str) -> Option<Cadence> {
+            fn cadence(&self, _: &str, _: &SourceCx) -> Option<Cadence> {
                 None
             }
         }
@@ -449,7 +506,7 @@ mod tests {
             fn value(&self, cx: &SourceCx) -> Value {
                 self.0.value(cx)
             }
-            fn cadence(&self, _: &str) -> Option<Cadence> {
+            fn cadence(&self, _: &str, _: &SourceCx) -> Option<Cadence> {
                 None
             }
             fn attach(&self, n: Notifier) {
@@ -483,7 +540,7 @@ mod tests {
             fn value(&self, _: &SourceCx) -> Value {
                 Value::obj([("temp", 21.into())])
             }
-            fn cadence(&self, _: &str) -> Option<Cadence> {
+            fn cadence(&self, _: &str, _: &SourceCx) -> Option<Cadence> {
                 Some(Cadence::Minute)
             }
         }
@@ -492,6 +549,6 @@ mod tests {
         let params = cfg.params_map();
         let cx = SourceCx { cfg: &cfg, params: &params, tm: tm(1, 2, 3, 0), icon_pack: "Default" };
         assert_eq!(src.value("weather", &cx).and_then(|v| v.get("temp").cloned()), Some(Value::Num(21.0)));
-        assert_eq!(src.next_wake(&deps(&["weather.temp"]), &tm(12, 0, 0, 0)), Some(Duration::from_millis(60_002)));
+        assert_eq!(wake(&src, &deps(&["weather.temp"]), tm(12, 0, 0, 0)), Some(Duration::from_millis(60_002)));
     }
 }
