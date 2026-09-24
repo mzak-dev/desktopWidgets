@@ -16,9 +16,24 @@ pub struct WidgetMeta {
     pub max_card_size: Option<(f32, f32)>,
     pub params: Vec<ParamDef>,
     pub initial_state: BTreeMap<String, Value>,
+    /// Data sources it cannot work without (`needs = ["agents"]`), so a missing one is
+    /// named instead of the widget showing blank.
+    pub needs: Vec<String>,
+}
+
+/// "needs the `agents` data source, which is missing…"
+pub fn needs_message(missing: &[&str]) -> String {
+    let names = missing.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(" and ");
+    let (what, is) = if missing.len() == 1 { ("data source", "is") } else { ("data sources", "are") };
+    format!("needs the {names} {what}, which {is} missing. Is the plugin that provides it installed and switched on?")
 }
 
 impl WidgetMeta {
+    /// Its needed data sources that `has` does not know.
+    pub fn unmet(&self, has: impl Fn(&str) -> bool) -> Vec<&str> {
+        self.needs.iter().map(String::as_str).filter(|n| !has(n)).collect()
+    }
+
     pub fn effective_params(&self, saved: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
         self.params.iter().map(|p| (p.name.clone(), saved.get(&p.name).cloned().unwrap_or_else(|| p.default.clone()))).collect()
     }

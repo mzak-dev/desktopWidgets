@@ -222,15 +222,18 @@ justify = "center"
 | Layout (flexbox) | `direction` `wrap` `align` `justify` `gap` `padding` `margin` `width` `height` `min_*` `max_*` `grow` `shrink` `basis` `aspect` `position` `inset` |
 | Look | `fill` (or `[top, bottom]` gradient) `border` `border_color` `radius` `shadow` `opacity` `clip` |
 | Text | `text` `size` `color` `font` `weight` `text_align` `text_wrap` `line_height` |
+| Image | `src` (PNG, JPEG, WebP, GIF, BMP; `./` is next to the widget file) `tint` `fit` (`contain` · `cover`) `anim` (`false` stops a GIF, WebP or APNG) `frame` (show one frame) |
 | Behaviour | `on_click` (`launch <path>` · `toggle <state>`) `hover` `transition` `enter` `scroll` `when` |
 
 **Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `param.*` · `state.*` · `self.w` / `self.h`.
 
 **Size tiers** are plain `when` conditions on `self.w` and `self.h`: show more when there is room. The engine animates the change.
 
-**Expressions** are total: arithmetic, comparison, `&&` `||` `!`, `? :`, strings and the functions `min` `max` `abs` `round` `floor` `ceil` `clamp` `len` `upper` `lower` `pad`. There are no loops and no side effects, so evaluating one can never hang a redraw. Interpolate with `{expr}` or format with `{expr|02}` / `{expr|.1}`.
+**Expressions** are total: arithmetic, comparison, `&&` `||` `!`, `? :`, strings and the functions `min` `max` `abs` `round` `floor` `ceil` `clamp` `len` `upper` `lower` `pad` `at`. `at(list, i)` picks by a computed position (negative counts from the end, past the end is nothing) or key, and takes a field after it: `at(gallery.items, state.selected).url`. There are no loops and no side effects, so evaluating one can never hang a redraw. Interpolate with `{expr}` or format with `{expr|02}` / `{expr|.1}`.
 
 Unknown attributes are rejected with a suggestion, for example ``unknown attribute `colour` on `text` (did you mean `color`?)``.
+
+**Needs:** `needs = ["agents"]` at the top of a widget names the data sources it cannot work without. When one is missing, the widget and Settings say which, instead of showing a blank card.
 
 **Seeds:** `seed = "starter-apps"` on a `shortcuts` param gives each new Instance a few apps to start from. Unlike `default`, a seed is written once and then edited like any other value.
 

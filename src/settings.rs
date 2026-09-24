@@ -42,6 +42,8 @@ pub struct Ctx<'a> {
     pub plugins: &'a [PluginRow],
     /// The outcome of the last install, for the Plugins page.
     pub plugin_note: &'a str,
+    /// Every data source the app has now, for widgets' `needs`.
+    pub sources: &'a [String],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -422,6 +424,12 @@ impl UiState {
         ctx.reg.get(widget).and_then(|d| d.as_ref().ok()).map(|w| w.meta())
     }
 
+    /// "  ·  needs agents" when a data source the widget needs is missing.
+    fn needs_note(&self, ctx: &Ctx, widget: &str) -> Option<String> {
+        let unmet = self.def_of(ctx, widget)?.unmet(|n| ctx.sources.iter().any(|s| s == n));
+        (!unmet.is_empty()).then(|| format!("  ·  needs {}", unmet.join(", ")))
+    }
+
     fn param_value(cfg: &crate::workspace::InstanceCfg, p: &ParamDef) -> Value {
         cfg.params.get(&p.name).map(Value::from).unwrap_or_else(|| p.default.clone())
     }
@@ -754,6 +762,7 @@ impl UiState {
                 Hidden::Parked => "  ·  parked (monitor missing)".to_string(),
                 Hidden::PluginOff(p) => format!("  ·  hidden (plugin {p} is off)"),
             });
+            let hidden = hidden.or_else(|| self.needs_note(ctx, &c.widget));
             list = list.child(
                 Node::new(format!("w/i/{}", c.id))
                     .col()
@@ -773,7 +782,7 @@ impl UiState {
         let mut add = Node::new("w/add").col().gap(6.0).child(k.section("w/add/h", "Add a widget"));
         let mut chips = Node::new("w/add/chips").row().wrap().gap(6.0);
         for id in ctx.reg.ids() {
-            let label = self.def_of(ctx, &id).map_or(id.clone(), |d| d.name.clone());
+            let label = self.def_of(ctx, &id).map_or(id.clone(), |d| d.name.clone()) + self.needs_note(ctx, &id).as_deref().unwrap_or("");
             chips = chips.child(
                 Node::new(format!("w/add/{id}"))
                     .row()
@@ -1874,6 +1883,7 @@ mod tests {
         theme: Theme,
         hidden: Vec<(String, Hidden)>,
         plugins: Vec<PluginRow>,
+        sources: Vec<String>,
     }
 
     fn world() -> World {
@@ -1888,11 +1898,25 @@ mod tests {
             PluginRow { id: "sunset".into(), name: "Sunset".into(), version: "1.2.0".into(), author: "Ada".into(), description: "Warm colours".into(), summary: "1 widget · 1 palette".into(), enabled: true, notes: vec!["Restyles Analog Clock".into()], problems: vec![], sole_widgets: vec!["weather".into()], code: "Runs code as `weather` · can reach api.open-meteo.com".into(), code_source: Some("weather".into()), status: "Running".into() },
             PluginRow { id: "broken".into(), name: "broken".into(), summary: "nothing yet".into(), enabled: false, problems: vec!["no plugin.toml".into()], ..Default::default() },
         ];
-        World { ws, reg: Registry::load(Path::new("no-such-dir")), lib, theme, hidden: vec![], plugins }
+        World { ws, reg: Registry::load(Path::new("no-such-dir")), lib, theme, hidden: vec![], plugins, sources: crate::data::DataSources::builtin().names() }
     }
 
     fn ctx(w: &World) -> Ctx<'_> {
-        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "" }
+        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources }
+    }
+
+    #[test]
+    fn a_widget_missing_a_data_source_says_so() {
+        let dir = std::env::temp_dir().join(format!("wf-settings-needs-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("agents.toml"), "name = 'Agents'\nneeds = ['agents', 'clock']\n[root]\ntype = 'box'").unwrap();
+        let mut w = world();
+        w.reg.load_dir(&dir);
+        let s = UiState::default();
+        assert_eq!(s.needs_note(&ctx(&w), "agents").as_deref(), Some("  ·  needs agents"));
+        w.sources.push("agents".into());
+        assert_eq!(s.needs_note(&ctx(&w), "agents"), None);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

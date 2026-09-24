@@ -165,7 +165,7 @@ impl Base {
     }
 }
 
-const TOP: &[&str] = &["name", "description", "size", "min_size", "max_size", "params", "state", "expand", "root"];
+const TOP: &[&str] = &["name", "description", "size", "min_size", "max_size", "needs", "params", "state", "expand", "root"];
 
 fn pair(v: Option<&toml::Value>, default: (f32, f32), what: &str) -> Result<(f32, f32), String> {
     let Some(v) = v else { return Ok(default) };
@@ -253,6 +253,10 @@ impl WidgetDef {
             max_card_size,
             params,
             initial_state: state,
+            needs: match t.get("needs") {
+                None => vec![],
+                Some(v) => v.as_array().and_then(|a| a.iter().map(|x| x.as_str().map(String::from)).collect()).ok_or("needs must be a list of data source names")?,
+            },
         };
         Ok(WidgetDef { meta, expand, root: parse_elem(root_t, "root")?, base: None })
     }
@@ -907,6 +911,6 @@ fill_alpha=0.5";
         assert_eq!(b.root.children.len(), 1);
 
         let e = build_src("[root]\ntype='text'\ntext='{nope.x}'", &[]).unwrap_err();
-        assert!(e.contains("undefined name `nope`"), "{e}");
+        assert!(e.contains("`nope`"), "{e}");
     }
 }

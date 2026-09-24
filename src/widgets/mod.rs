@@ -25,7 +25,7 @@ use crate::value::Value;
 use crate::workspace::InstanceCfg;
 
 pub use drawer::Drawer;
-pub use meta::{ParamDef, ParamType, Seed, WidgetMeta};
+pub use meta::{ParamDef, ParamType, Seed, WidgetMeta, needs_message};
 pub use registry::{Def, Registry, widget_files};
 pub use toml_widget::TomlWidget;
 
@@ -137,9 +137,14 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
         let outcome = match def {
             Err(e) => Err(format!("{}: {e}", v.cfg.widget)),
             Ok(w) => {
-                let inp = Inputs { params: &params, state: v.state, card_size, key_prefix: &v.cfg.id, read_source: &read };
-                let gpu = &*sv.gpu;
-                w.build(&inp, v.theme, &|id| gpu.image_size(id).map(|(w, h)| (w as f32, h as f32)))
+                let unmet = w.meta().unmet(|n| sources.get(n).is_some());
+                if unmet.is_empty() {
+                    let inp = Inputs { params: &params, state: v.state, card_size, key_prefix: &v.cfg.id, read_source: &read };
+                    let gpu = &*sv.gpu;
+                    w.build(&inp, v.theme, &|id| gpu.image_size(id).map(|(w, h)| (w as f32, h as f32)))
+                } else {
+                    Err(format!("{}: {}", w.meta().name, needs_message(&unmet)))
+                }
             }
         };
         match outcome {
@@ -201,7 +206,7 @@ mod tests {
 
     #[test]
     fn a_rust_widget_builds_through_the_same_seam_and_gets_a_window() {
-        let meta = WidgetMeta { id: "badge".into(), name: "Badge".into(), description: String::new(), default_card_size: (100.0, 40.0), min_card_size: (48.0, 48.0), max_card_size: None, params: vec![], initial_state: BTreeMap::new() };
+        let meta = WidgetMeta { id: "badge".into(), name: "Badge".into(), description: String::new(), default_card_size: (100.0, 40.0), min_card_size: (48.0, 48.0), max_card_size: None, params: vec![], initial_state: BTreeMap::new(), needs: vec![] };
         let def: Def = Ok(Arc::new(Badge(meta)));
         let t = theme();
         let src = |n: &str| (n == "clock").then(|| Value::obj([("minute", 7.into())]));

@@ -181,6 +181,11 @@ impl DataSources {
         self.list.iter().map(|s| s.name().to_string()).chain(self.code.iter().map(|(_, c)| c.name().to_string())).collect()
     }
 
+    /// Every source but plugin code: the built-ins and any registered by the app.
+    pub fn native_names(&self) -> BTreeSet<String> {
+        self.list.iter().map(|s| s.name().to_string()).collect()
+    }
+
     pub fn get(&self, name: &str) -> Option<&dyn DataSource> {
         self.list.iter().find(|s| s.name() == name).map(|s| s.as_ref()).or_else(|| self.code(name).map(|c| c as &dyn DataSource))
     }

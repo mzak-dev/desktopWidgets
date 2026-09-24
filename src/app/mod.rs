@@ -526,7 +526,7 @@ impl App {
             self.log(e);
         }
         let cat = Catalog::load(&self.content_roots());
-        self.plugin_rows = plugins::rows(&self.plugins, &self.ws.disabled_plugins, &cat);
+        self.plugin_rows = plugins::rows(&self.plugins, &self.ws.disabled_plugins, &cat, &self.sources.native_names());
         self.reg = cat.registry;
         self.lib = cat.library;
         self.icons.set_packs(cat.icon_packs);
@@ -769,10 +769,11 @@ impl ApplicationHandler<UserEvent> for App {
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
         if self.settings.as_ref().is_some_and(|s| s.window.id() == id) {
             let gpu_info = self.gpu.as_ref().map(|g| g.info.clone()).unwrap_or_else(|| "no GPU yet".into());
-            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, .. } = self;
+            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, .. } = self;
             let off = plugins::hidden_instances(ws, reg, installed);
             let hidden: Vec<(String, settings::Hidden)> = ws.instances.iter().zip(wins.iter()).filter(|(_, w)| w.window.is_none()).map(|(c, _)| (c.id.clone(), off.get(&c.id).map_or(settings::Hidden::Parked, |p| settings::Hidden::PluginOff(p.clone())))).collect();
-            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note };
+            let source_names = sources.names();
+            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names };
             let s = settings.as_mut().unwrap();
             let cmds = s.event(&ev, &ctx, text);
             if matches!(ev, WindowEvent::RedrawRequested) {

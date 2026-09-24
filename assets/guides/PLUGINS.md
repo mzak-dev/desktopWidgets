@@ -43,6 +43,7 @@ Unknown keys are refused, so a typo shows up at once.
 - **Fonts:** put `.ttf` / `.otf` files in `fonts/` and name the family (as it is inside the font) in a font set.
 - **Allowed files:** `toml png jpg jpeg gif webp bmp ttf otf ttc otc md txt wasm`, plus `LICENSE`, `README` and `NOTICE`. Anything else stops the install.
 - A widget's `launch` can never open a file inside `plugins/`.
+- **Needs:** a widget that reads a data source another plugin or a Wayfinder build provides can say so with `needs = ["media"]` at its top. When it is missing, the widget, Settings and the Plugins page name it.
 
 ## Code
 

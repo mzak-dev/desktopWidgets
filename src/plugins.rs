@@ -557,8 +557,11 @@ fn item_word(item: Item) -> &'static str {
 }
 
 /// The Plugins page's rows, from what the Catalog made of the enabled ones.
-pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog) -> Vec<PluginRow> {
-    let (_, code_lost) = code_specs(list, disabled);
+/// `native` names the data sources the app has besides plugin code (built-ins and any an
+/// app built on Wayfinder registered), for widgets' `needs`.
+pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog, native: &BTreeSet<String>) -> Vec<PluginRow> {
+    let (specs, code_lost) = code_specs(list, disabled);
+    let running: BTreeSet<&str> = specs.iter().map(|(_, s)| s.source.as_str()).collect();
     let errors: Vec<String> = cat.registry.errors().into_iter().chain(cat.library.errors.iter().cloned()).collect();
     let builtin = Registry::builtin(); // the names of what a Plugin restyles
     let widget_name = |reg: &Registry, id: &str| reg.get(id).and_then(|d| d.as_ref().ok()).map_or(id.to_string(), |w| w.meta().name.clone());
@@ -584,6 +587,16 @@ pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog) -> Vec<
                     notes.push(format!("Your own files replace its {what}"));
                 } else if sh.loser == me {
                     problems.push(format!("Its {what} is hidden: {} has one too, and wins", named(&sh.winner)));
+                }
+            }
+            let own_source = p.manifest.as_ref().ok().and_then(|m| m.code.as_ref()).map(|c| c.source.as_str());
+            let has = |n: &str| native.contains(n) || running.contains(n) || own_source == Some(n);
+            for w in p.contents.widgets.iter().filter(|w| cat.origins.get(&(Item::Widget, w.to_string())) == Some(&me)) {
+                if let Some(Ok(def)) = cat.registry.get(w) {
+                    let unmet = def.meta().unmet(has);
+                    if !unmet.is_empty() {
+                        problems.push(format!("{} {}", def.meta().name, crate::widgets::needs_message(&unmet)));
+                    }
                 }
             }
             if !restyles.is_empty() {
@@ -783,9 +796,26 @@ mod tests {
         put(&data, "plugins/agents/plugin.toml", &src.replace("sunset", "agents"));
         let list = PluginStore::new(&data).list();
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
-        assert_eq!(rows(&list, &BTreeSet::new(), &cat)[0].code, "Runs code as `agents` · no network · reads ~/.claude, ~/.copilot, folders you pick for its widgets");
+        assert_eq!(rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new())[0].code, "Runs code as `agents` · no network · reads ~/.claude, ~/.copilot, folders you pick for its widgets");
         let spec = &code_specs(&list, &BTreeSet::new()).0[0].1;
         assert_eq!((spec.fs_read.len(), spec.fs_read_params.as_slice()), (2, &["folder".to_string()][..]));
+        std::fs::remove_dir_all(&data).ok();
+    }
+
+    #[test]
+    fn a_widget_needing_a_missing_source_is_a_problem() {
+        let data = tmp("needs");
+        put(&data, "plugins/agents/plugin.toml", &OK.replace("sunset", "agents"));
+        put(&data, "plugins/agents/widgets/agents.toml", "name = 'Agents'\nneeds = ['agents', 'clock']\n[root]\ntype = 'box'");
+        let list = PluginStore::new(&data).list();
+        let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
+        let native = BTreeSet::from(["clock".to_string()]);
+        let r = &rows(&list, &BTreeSet::new(), &cat, &native)[0];
+        assert_eq!(r.problems, ["Agents needs the `agents` data source, which is missing. Is the plugin that provides it installed and switched on?"]);
+        code_plugin(&data, "zeta", "agents");
+        let list = PluginStore::new(&data).list();
+        let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
+        assert!(rows(&list, &BTreeSet::new(), &cat, &native)[0].problems.is_empty(), "another plugin provides it");
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -867,7 +897,7 @@ mod tests {
         code_plugin(&data, "beta", "weather");
         let list = PluginStore::new(&data).list();
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
-        let r = rows(&list, &BTreeSet::new(), &cat);
+        let r = rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new());
         assert_eq!(r[1].code, "Runs code as `weather` · can reach api.open-meteo.com");
         assert_eq!((r[0].code_source.as_deref(), r[1].code_source.as_deref()), (None, Some("weather")));
         assert!(r[0].problems.iter().any(|p| p.contains("data source `weather` is hidden") && p.contains("wins")), "{:?}", r[0].problems);
@@ -1016,7 +1046,7 @@ mod tests {
         let mut roots = roots(&list, &BTreeSet::new());
         roots.push(Root::user(&data));
         let cat = Catalog::load(&roots);
-        let r = &rows(&list, &BTreeSet::new(), &cat)[0];
+        let r = &rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new())[0];
         assert_eq!((r.name.as_str(), r.version.as_str(), r.summary.as_str(), r.enabled), ("Sunset", "1.2.0", "4 widgets", true));
         assert_eq!(r.notes, ["Restyles Analog Clock", "Your own files replace its widget weather"]);
         assert!(r.problems.iter().any(|p| p.starts_with("widgets") && p.contains("colour")), "{:?}", r.problems);
