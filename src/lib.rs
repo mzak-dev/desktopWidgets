@@ -23,6 +23,7 @@ pub mod plugins;
 pub mod settings;
 pub mod text;
 pub mod theme;
+pub mod thumbs;
 pub mod ui;
 pub mod value;
 pub mod widgets;

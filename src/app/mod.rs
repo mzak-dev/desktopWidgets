@@ -73,6 +73,8 @@ pub enum UserEvent {
     DisplaysChanged,
     /// A Data Source has new values, logs or status.
     SourceNews,
+    /// Small copies of pictures (`image` with `max`) are ready to upload.
+    ImagesReady,
 }
 
 /// How to run Wayfinder. `Options::from_args()` reads the command line; an app built on
@@ -236,9 +238,15 @@ impl App {
         let (ws, ws_err) = Workspace::load(&dir);
         let theme = Theme::default(); // composed by `rebuild_theme` below
         let text = TextEngine::new();
+        let mut icons = IconService::default();
+        icons.set_cache(dir.join(".cache").join("thumbs"));
+        let waker = Mutex::new(proxy.clone());
+        icons.set_waker(Arc::new(move || {
+            let _ = waker.lock().unwrap().send_event(UserEvent::ImagesReady);
+        }));
         let mut app = App {
             proxy,
-            icons: IconService::default(),
+            icons,
             opts,
             ws,
             lib: Library::default(), // filled by `load_content` below
@@ -640,6 +648,26 @@ impl App {
         }
     }
 
+    /// Uploads the pictures made off-thread and redraws what shows them.
+    fn images_ready(&mut self) {
+        let Some(gpu) = self.gpu.as_mut() else { return };
+        let ids = self.icons.take_ready(gpu);
+        if ids.is_empty() {
+            return;
+        }
+        let shows = |f: &crate::ui::Frame| f.list.image_ids().any(|i| ids.iter().any(|r| r == i));
+        for iw in &mut self.wins {
+            if iw.frame.as_ref().is_some_and(|f| shows(f)) {
+                iw.redraw = true;
+            }
+        }
+        if let Some(s) = &mut self.settings {
+            if s.drawn_images().any(|i| ids.iter().any(|r| r == i)) {
+                s.invalidate();
+            }
+        }
+    }
+
     /// Code Sources keep values only for Instances on screen.
     fn retain_code(&self) {
         let live: BTreeSet<String> = self.ws.instances.iter().zip(&self.wins).filter(|(_, w)| w.window.is_some()).map(|(c, _)| c.id.clone()).collect();
@@ -791,6 +819,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::DisplaysChanged => self.display_at = Some(Instant::now() + Duration::from_millis(500)),
             UserEvent::SourceNews => self.take_source_news(),
+            UserEvent::ImagesReady => self.images_ready(),
         }
     }
 

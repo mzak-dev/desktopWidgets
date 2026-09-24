@@ -219,6 +219,7 @@ fn render(r: &Render) -> Result<bool, String> {
         println!("warning: {e}");
     }
     let mut icons = IconService::new(cat.icon_packs.clone());
+    icons.set_cache(r.data.join(".cache").join("thumbs"));
     let sel = Selection { palette: r.palette.clone().unwrap_or_default(), ..Default::default() };
     let theme = Theme::compose(&cat.library, &sel, &[]);
     let card = Card::new(&theme);
@@ -279,6 +280,13 @@ fn render(r: &Render) -> Result<bool, String> {
             }
         }
     }
+    // small copies of pictures are made off-thread
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while icons.pending() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+        icons.take_ready(&mut gpu);
+    }
+    icons.take_ready(&mut gpu);
     let p = frame(base + Duration::from_secs(2), &mut gpu, &mut text, &mut icons, &mut anim);
     for w in &p.warnings {
         println!("warning: {w}");

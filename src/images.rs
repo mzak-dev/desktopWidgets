@@ -45,10 +45,32 @@ pub fn decode_file(p: &Path) -> Option<Decoded> {
     decode_bytes(&std::fs::read(p).ok()?)
 }
 
+/// A single picture, turned upright as its EXIF says (phone photos are often stored sideways).
 fn still(bytes: &[u8]) -> Option<Decoded> {
-    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    use image::ImageDecoder;
+    let mut decoder = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format().ok()?.into_decoder().ok()?;
+    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
+    img.apply_orientation(orientation);
+    let img = img.to_rgba8();
     let (w, h) = img.dimensions();
     Some(Decoded { px: img.into_raw(), w, h, frames: None })
+}
+
+impl Decoded {
+    /// Shrunk so neither side passes `max` (never enlarged). An animation keeps its frames.
+    pub fn fit(self, max: u32) -> Decoded {
+        let (fw, fh) = self.size();
+        let k = (max.max(1) as f64 / fw.max(fh) as f64).min(1.0);
+        if k >= 1.0 {
+            return self;
+        }
+        let Some(img) = RgbaImage::from_raw(self.w, self.h, self.px) else { return Decoded { px: vec![0; 4], w: 1, h: 1, frames: None } };
+        let (w, h) = (((self.w as f64 * k).round() as u32).max(1), ((self.h as f64 * k).round() as u32).max(1));
+        let small = image::imageops::thumbnail(&img, w, h);
+        let frames = self.frames.map(|f| Frames { frame_w: ((fw as f64 * k).round() as u32).max(1), frame_h: ((fh as f64 * k).round() as u32).max(1), ..f });
+        Decoded { px: small.into_raw(), w, h, frames }
+    }
 }
 
 fn collect<'a>(d: impl AnimationDecoder<'a>) -> Option<Vec<(RgbaImage, u32)>> {
@@ -186,6 +208,37 @@ mod tests {
         let d = pack(frames);
         assert!(d.w <= MAX_ATLAS && d.h <= MAX_ATLAS, "{}x{}", d.w, d.h);
         assert_eq!(d.size(), (2100, 40), "laid out at its own size");
+    }
+
+    #[test]
+    fn fit_shrinks_to_the_longest_side_and_never_enlarges() {
+        let big = Decoded { px: vec![200; 400 * 100 * 4], w: 400, h: 100, frames: None };
+        let s = big.fit(100);
+        assert_eq!((s.w, s.h, s.px.len()), (100, 25, 100 * 25 * 4));
+        let small = Decoded { px: vec![0; 16], w: 2, h: 2, frames: None };
+        assert_eq!(small.fit(256).size(), (2, 2));
+        let anim = decode_bytes(&gif(&[([255, 0, 0, 255], 100), ([0, 255, 0, 255], 100)])).unwrap().fit(4);
+        assert_eq!((anim.size(), anim.frames.as_ref().map(|f| f.count)), ((4, 3), Some(2)), "each frame shrinks, all stay");
+    }
+
+    #[test]
+    fn a_sideways_photo_is_turned_upright() {
+        let mut jpeg = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(image::RgbImage::new(6, 4)).write_to(&mut jpeg, ImageFormat::Jpeg).unwrap();
+        // an EXIF block saying "rotate 90 degrees clockwise" (orientation 6), right after SOI
+        let mut exif = b"Exif\0\0II*\0".to_vec();
+        exif.extend(8u32.to_le_bytes());
+        exif.extend(1u16.to_le_bytes());
+        exif.extend(0x0112u16.to_le_bytes());
+        exif.extend(3u16.to_le_bytes());
+        exif.extend(1u32.to_le_bytes());
+        exif.extend([6, 0, 0, 0]);
+        exif.extend(0u32.to_le_bytes());
+        let mut bytes = jpeg.into_inner();
+        let seg: Vec<u8> = [0xFF, 0xE1].into_iter().chain(((exif.len() + 2) as u16).to_be_bytes()).chain(exif).collect();
+        bytes.splice(2..2, seg);
+        let d = decode_bytes(&bytes).unwrap();
+        assert_eq!((d.w, d.h), (4, 6));
     }
 
     #[test]

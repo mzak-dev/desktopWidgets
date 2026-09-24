@@ -153,7 +153,7 @@ pub fn resolve(target: &str, explicit: &str, pack_dir: Option<&Path>) -> Rgba {
 
 /// A `file:` image, or an app icon that may come from an Icon Pack.
 fn from_files(id: &str) -> bool {
-    id.starts_with("file:") || id.strip_prefix("icon:").and_then(|rest| rest.split_once(ID_SEP)).is_some_and(|(pack, _)| !matches!(pack, "Default" | ""))
+    id.starts_with("file:") || id.starts_with(crate::thumbs::PREFIX) || id.strip_prefix("icon:").and_then(|rest| rest.split_once(ID_SEP)).is_some_and(|(pack, _)| !matches!(pack, "Default" | ""))
 }
 
 /// Images no window draws that stay on the GPU, so a gallery flipping between a few
@@ -199,6 +199,8 @@ pub struct IconService {
     packs: BTreeMap<String, PathBuf>,
     seen: HashSet<String>,
     residency: Residency,
+    /// `thumb:` images, made off the UI thread.
+    thumbs: crate::thumbs::Thumbs,
 }
 
 impl IconService {
@@ -210,9 +212,47 @@ impl IconService {
         self.packs = packs;
     }
 
-    /// Make sure `id` is on the GPU. Returns true when something was uploaded.
+    /// Where small copies of big pictures are kept (`<data>/.cache/thumbs`).
+    pub fn set_cache(&mut self, dir: PathBuf) {
+        self.thumbs.set_cache(dir);
+    }
+
+    /// Called from another thread when a `thumb:` image is ready: then call `take_ready`.
+    pub fn set_waker(&self, wake: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        self.thumbs.set_waker(wake);
+    }
+
+    /// Uploads the `thumb:` images made since last asked and returns their ids.
+    pub fn take_ready(&mut self, gpu: &mut Gpu) -> Vec<String> {
+        let ready = self.thumbs.take();
+        let mut ids = Vec::with_capacity(ready.len());
+        for (id, d) in ready {
+            match d {
+                Some(d) => gpu.upload_decoded(&id, &d),
+                None => {
+                    let g = generic();
+                    gpu.upload_image(&id, &g.px, g.w, g.h);
+                }
+            }
+            self.seen.insert(id.clone());
+            ids.push(id);
+        }
+        ids
+    }
+
+    /// Whether `thumb:` images are still being made.
+    pub fn pending(&self) -> bool {
+        self.thumbs.has_pending()
+    }
+
+    /// Make sure `id` is on the GPU. Returns true when something was uploaded. A `thumb:`
+    /// image is only queued here; `take_ready` uploads it.
     pub fn ensure(&mut self, gpu: &mut Gpu, id: &str) -> bool {
         if id.is_empty() || gpu.has_image(id) {
+            return false;
+        }
+        if id.starts_with(crate::thumbs::PREFIX) {
+            self.thumbs.request(id);
             return false;
         }
         if !self.seen.insert(id.to_string()) && gpu.has_image(GENERIC) {
@@ -284,7 +324,7 @@ mod tests {
     #[test]
     fn only_file_and_pack_images_are_flushed_on_reload() {
         let icon = |pack: &str| format!("icon:{pack}{ID_SEP}C:\\app.exe{ID_SEP}");
-        assert!(from_files("file:C:\\x.png"));
+        assert!(from_files("file:C:\\x.png") && from_files("thumb:256:C:\\x.png"));
         assert!(from_files(&icon("Neon")));
         assert!(!from_files(&icon("Default")), "a shell icon is expensive to extract again");
         assert!(!from_files(GENERIC));

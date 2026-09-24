@@ -360,6 +360,10 @@ impl<'a> Attrs<'_, 'a> {
 
     /// An image `src`: `./x.png` is a file next to the definition, inside its content root.
     pub fn image_id(&mut self, src: &str) -> String {
+        // a full path, as a folder listing gives it (`src = "{item.path}"`)
+        if Path::new(src).is_absolute() {
+            return format!("file:{src}");
+        }
         if !src.starts_with("./") {
             return src.to_string();
         }
@@ -824,6 +828,16 @@ mod tests {
         };
         assert_eq!((fit(""), fit("fit = 'cover'"), fit("fit = 'contain'")), (Ok(crate::ui::Fit::Contain), Ok(crate::ui::Fit::Cover), Ok(crate::ui::Fit::Contain)));
         assert!(fit("fit = 'fill'").unwrap_err().contains("contain or cover"));
+    }
+
+    #[test]
+    fn a_full_path_with_max_asks_for_a_small_copy() {
+        let full = |extra: &str| image_ids(&WidgetDef::parse("t", &format!("[root]\ntype = 'image'\nsrc = 'C:\\Photos\\a.jpg'\n{extra}")).unwrap()).0.into_iter().collect::<Vec<_>>();
+        assert_eq!(full(""), ["file:C:\\Photos\\a.jpg"]);
+        assert_eq!(full("max = 256"), ["thumb:256:C:\\Photos\\a.jpg"]);
+        assert_eq!(full("max = 1"), ["thumb:8:C:\\Photos\\a.jpg"], "at least 8 px");
+        let icon = image_ids(&WidgetDef::parse("t", "[root]\ntype = 'image'\nsrc = 'icon:x'\nmax = 64").unwrap()).0;
+        assert_eq!(icon.into_iter().collect::<Vec<_>>(), ["icon:x"], "app icons are small already");
     }
 
     #[test]
