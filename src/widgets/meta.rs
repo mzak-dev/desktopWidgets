@@ -38,7 +38,7 @@ pub struct ModuleMeta {
     pub name: String,
     pub label: String,
     pub slots: Vec<String>,
-    pub legacy: Option<String>,
+    pub legacy: BTreeMap<String, String>,
 }
 
 /// "needs the `agents` data source, which is missing…"
@@ -61,19 +61,19 @@ impl WidgetMeta {
     /// A saved `show_x = false` of a param a Module replaced (`legacy`) becomes a layout
     /// without that Module, then the old param goes.
     pub fn migrate(&self, cfg: &mut InstanceCfg) {
-        let off: Vec<(&ModuleMeta, &String)> = self.modules.iter().filter_map(|m| m.legacy.as_ref().map(|l| (m, l))).collect();
+        let off: Vec<(&String, &String)> = self.modules.iter().flat_map(|m| &m.legacy).collect();
         if off.is_empty() {
             return;
         }
-        let hidden: Vec<&str> = off.iter().filter(|(_, l)| cfg.params.get(*l) == Some(&serde_json::Value::Bool(false))).map(|(m, _)| m.name.as_str()).collect();
+        let hidden: Vec<&str> = off.iter().filter(|(_, p)| cfg.params.get(*p) == Some(&serde_json::Value::Bool(false))).map(|(e, _)| e.as_str()).collect();
         if !hidden.is_empty() && cfg.layout.is_empty() {
             for t in &self.tiers {
                 let l = t.layout.iter().map(|(s, v)| (s.clone(), v.iter().filter(|e| !hidden.contains(&e.as_str())).cloned().collect())).collect();
                 cfg.layout.insert(t.name.clone(), l);
             }
         }
-        for (_, l) in off {
-            cfg.params.remove(l);
+        for (_, p) in off {
+            cfg.params.remove(p);
         }
     }
 

@@ -52,7 +52,8 @@ const COMMON_ATTRS: &[&str] = &[
 /// `repeat` is structural, not an element kind.
 const REPEAT_ATTRS: &[&str] = &["for", "as", "index"];
 /// `slot` is structural too: a box the user's arranged Modules fill.
-const SLOT_ATTRS: &[&str] = &["slot"];
+/// `max`: how many Modules fit, so the rest are left out rather than overflowing the card.
+const SLOT_ATTRS: &[&str] = &["slot", "max"];
 
 fn type_names() -> Vec<&'static str> {
     elements::KINDS.iter().map(|k| k.name).chain(["repeat", "slot"]).collect()
@@ -325,7 +326,10 @@ fn parse_modules(t: &toml::Table) -> Result<Option<ModuleSet>, String> {
                 name: name.clone(),
                 label,
                 slots: names(&head, "slots", &what)?,
-                legacy: head.get("legacy").and_then(|v| v.as_str()).map(String::from),
+                legacy: match head.get("legacy") {
+                    None => BTreeMap::new(),
+                    Some(l) => table_of(l, &format!("{what}.legacy"))?.iter().map(|(e, p)| Ok((e.clone(), p.as_str().ok_or_else(|| format!("{what}.legacy.{e}: expected a param name"))?.to_string()))).collect::<Result<_, String>>()?,
+                },
                 when: tpl(&head, "when", &what)?,
                 each: each.transpose()?,
                 body: parse_elem(&body, &format!("modules.{name}"))?,
@@ -347,7 +351,7 @@ fn parse_modules(t: &toml::Table) -> Result<Option<ModuleSet>, String> {
             if !slot_names.contains(&slot.as_str()) {
                 return Err(format!("tiers.{}.layout: unknown slot `{slot}`{}", tier.name, suggest(slot, &[&slot_names])));
             }
-            if let Some(bad) = entries.iter().find(|e| !module_names.contains(&e.as_str())) {
+            if let Some(bad) = entries.iter().find(|e| !module_names.contains(&e.split(':').next().unwrap_or(""))) {
                 return Err(format!("tiers.{}.layout.{slot}: unknown module `{bad}`{}", tier.name, suggest(bad, &[&module_names])));
             }
         }
@@ -379,7 +383,7 @@ impl WidgetDef {
             }
         };
         let modules = parse_modules(&t)?;
-        if let Some(bad) = params.iter().filter_map(|p| p.module.as_deref()).find(|m| !modules.as_ref().is_some_and(|ms| ms.modules.iter().any(|d| d.name == *m))) {
+        if let Some(bad) = params.iter().filter_map(|p| p.module.as_deref()).flat_map(|m| m.split(',')).map(str::trim).find(|m| !modules.as_ref().is_some_and(|ms| ms.modules.iter().any(|d| d.name == m.split(':').next().unwrap_or("")))) {
             return Err(format!("params: `module = \"{bad}\"` names a module this widget does not declare"));
         }
         let root_t = t.get("root").and_then(|v| v.as_table()).ok_or("missing [root] table")?;
@@ -620,7 +624,7 @@ impl<'a> TreeBuilder<'a> {
 
     fn arrangement(&self) -> Option<Arrangement> {
         let ms = self.modules?;
-        let placed: BTreeSet<&str> = self.built.iter().flat_map(|s| s.modules.iter().map(|m| m.id.as_str())).collect();
+        let placed: BTreeSet<&str> = self.built.iter().flat_map(|s| s.modules.iter().chain(&s.cut).map(|m| m.id.as_str())).collect();
         let hidden = self
             .insts
             .iter()
@@ -646,11 +650,16 @@ impl<'a> TreeBuilder<'a> {
         self.layout(e, &mut n, &path)?;
         self.look(e, &mut n, &path)?;
         self.interact(e, &mut n, &path)?;
-        let mut modules = Vec::new();
+        let room = self.num(e, "max", &path)?.map_or(usize::MAX, |m| m.max(0.0) as usize);
+        let (mut modules, mut cut) = (Vec::new(), Vec::new());
         for (pos, i) in self.placed.get(&name).cloned().unwrap_or_default().into_iter().enumerate() {
             let inst = self.insts[i].clone();
             let m = &ms.modules[inst.module];
             let mkey = format!("{key}/m:{}", inst.id);
+            if pos >= room {
+                cut.push(Placed { id: inst.id.clone(), module: m.name.clone(), label: inst.label.clone(), key: String::new() });
+                continue;
+            }
             let mut pushed = 1;
             if let Some(each) = &m.each {
                 self.scope.set(&each.var, inst.item.clone().unwrap_or(Value::Nil));
@@ -672,7 +681,7 @@ impl<'a> TreeBuilder<'a> {
             n.children.extend(nodes);
             modules.push(Placed { id: inst.id.clone(), module: m.name.clone(), label: inst.label.clone(), key: mkey });
         }
-        self.built.push(PlacedSlot { name, label: def.label.clone(), key: key.to_string(), modules });
+        self.built.push(PlacedSlot { name, label: def.label.clone(), key: key.to_string(), modules, cut });
         Ok(vec![n])
     }
 

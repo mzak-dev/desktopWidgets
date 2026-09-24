@@ -140,6 +140,8 @@ pub fn push_history(h: &mut VecDeque<f64>, v: f64) {
 struct Gpu {
     label: String,
     id: &'static str,
+    /// Unique among adapters: `gpu`, `gpu2`, `igpu`.
+    key: String,
     name: String,
     load: f64,
 }
@@ -246,7 +248,8 @@ impl Gpus {
                 n += (!integrated) as usize;
                 let load = loads.iter().find(|(l, _)| l == luid).map_or(0.0, |(_, v)| v.clamp(0.0, 100.0).round());
                 let label = if *integrated { "iGPU".into() } else if discrete > 1 { format!("GPU {n}") } else { "GPU".into() };
-                Gpu { label, id: if *integrated { "igpu" } else { "gpu" }, name: name.clone(), load }
+                let key = if *integrated { "igpu".into() } else if n == 1 { "gpu".into() } else { format!("gpu{n}") };
+                Gpu { label, id: if *integrated { "igpu" } else { "gpu" }, key, name: name.clone(), load }
             })
             .collect()
     }
@@ -297,15 +300,15 @@ fn sample_sys(mut st: State, gpus: Vec<Gpu>) -> (State, Value) {
     }
 
     let pct = |used: u64, total: u64| if total == 0 { 0.0 } else { (100.0 * used as f64 / total as f64).round() };
-    let gauge = |id: &str, label: &str, value: f64, detail: String| {
-        Value::obj([("id", id.into()), ("label", label.into()), ("value", value.into()), ("detail", detail.into())])
+    let gauge = |id: &str, key: &str, label: &str, value: f64, detail: String| {
+        Value::obj([("id", id.into()), ("key", key.into()), ("label", label.into()), ("value", value.into()), ("detail", detail.into())])
     };
-    let cpu_g = gauge("cpu", "CPU", cpu, format!("{} processes", needed / 4));
-    let ram_g = gauge("ram", "RAM", mem.dwMemoryLoad as f64, used_of_total(ram_used, mem.ullTotalPhys));
-    let disk_g = gauge("disk", &sys_label, pct(disk_used, total), used_of_total(disk_used, total));
-    let battery_g = has_battery.then(|| gauge("battery", "Battery", bat.BatteryLifePercent as f64, (if bat.ACLineStatus == 1 { "Charging" } else { "On battery" }).into()));
+    let cpu_g = gauge("cpu", "cpu", "CPU", cpu, format!("{} processes", needed / 4));
+    let ram_g = gauge("ram", "ram", "RAM", mem.dwMemoryLoad as f64, used_of_total(ram_used, mem.ullTotalPhys));
+    let disk_g = gauge("disk", "disk", &sys_label, pct(disk_used, total), used_of_total(disk_used, total));
+    let battery_g = has_battery.then(|| gauge("battery", "battery", "Battery", bat.BatteryLifePercent as f64, (if bat.ACLineStatus == 1 { "Charging" } else { "On battery" }).into()));
 
-    let gpu_gs: Vec<Value> = gpus.iter().map(|g| gauge(g.id, &g.label, g.load, g.name.clone())).collect();
+    let gpu_gs: Vec<Value> = gpus.iter().map(|g| gauge(g.id, &g.key, &g.label, g.load, g.name.clone())).collect();
     let mut gauges = vec![cpu_g.clone(), ram_g.clone()];
     gauges.extend(gpu_gs.clone());
     gauges.push(disk_g.clone());
@@ -313,8 +316,8 @@ fn sample_sys(mut st: State, gpus: Vec<Gpu>) -> (State, Value) {
     // the large tier: memory commit and every fixed drive too
     let mut all = vec![cpu_g, ram_g];
     all.extend(gpu_gs);
-    all.extend([gauge("commit", "Commit", pct(commit_used, mem.ullTotalPageFile), used_of_total(commit_used, mem.ullTotalPageFile)), disk_g]);
-    all.extend(drives.iter().skip(1).map(|(l, u, t)| gauge("drive", l, pct(*u, *t), used_of_total(*u, *t))));
+    all.extend([gauge("commit", "commit", "Commit", pct(commit_used, mem.ullTotalPageFile), used_of_total(commit_used, mem.ullTotalPageFile)), disk_g]);
+    all.extend(drives.iter().skip(1).map(|(l, u, t)| gauge("drive", &format!("drive:{l}"), l, pct(*u, *t), used_of_total(*u, *t))));
     all.extend(battery_g);
 
     let list = |h: &VecDeque<f64>| Value::List(h.iter().map(|v| Value::Num(*v)).collect());
@@ -328,7 +331,16 @@ fn sample_sys(mut st: State, gpus: Vec<Gpu>) -> (State, Value) {
             .map(|(g, h)| Value::obj([("label", g.label.as_str().into()), ("value", g.load.into()), ("history", list(h))]))
             .collect(),
     );
+    // one card per graph of the large monitor, keyed like the gauges they sit beside
+    let graph = |key: &str, label: &str, text: String, values: Value| Value::obj([("key", key.into()), ("label", label.into()), ("text", text.into()), ("values", values)]);
+    let mut graphs = vec![
+        graph("cpu", "CPU", format!("{cpu}%"), list(&st.cpu_history)),
+        graph("ram", "Memory", format!("{}%", mem.dwMemoryLoad), list(&st.ram_history)),
+        graph("net", "Download", rate_text(down), down_pct.clone()),
+    ];
+    graphs.extend(gpus.iter().zip(&st.gpu_history).map(|(g, h)| graph(&g.key, &g.label, format!("{}%", g.load), list(h))));
     let v = Value::obj([
+        ("graphs", Value::List(graphs)),
         ("cpu", cpu.into()),
         ("gpu_count", (gpus.len() as i32).into()),
         ("gpus", gpu_cards),

@@ -42,8 +42,8 @@ pub struct ModuleDef {
     pub label: Template,
     /// Where it may be dropped; empty = any slot.
     pub slots: Vec<String>,
-    /// The old `show_*` param this Module replaced, so a saved `false` still hides it.
-    pub legacy: Option<String>,
+    /// layout entry -> the old `show_*` param it replaced, so a saved `false` still hides it.
+    pub legacy: BTreeMap<String, String>,
     /// Whether it exists at all right now (a battery on a desktop PC).
     pub when: Option<Template>,
     pub each: Option<Each>,
@@ -92,6 +92,8 @@ pub struct PlacedSlot {
     pub label: String,
     pub key: String,
     pub modules: Vec<Placed>,
+    /// Placed here, but the slot has no room for them at this size.
+    pub cut: Vec<Placed>,
 }
 
 /// What a build placed: for Settings to draw a tray, drop targets and tabs.
@@ -106,7 +108,7 @@ pub struct Arrangement {
 impl Arrangement {
     /// The saved form of what is placed now, for one tier.
     pub fn as_layout(&self) -> BTreeMap<String, Vec<String>> {
-        self.slots.iter().map(|s| (s.name.clone(), s.modules.iter().map(|m| m.id.clone()).collect())).collect()
+        self.slots.iter().map(|s| (s.name.clone(), s.modules.iter().chain(&s.cut).map(|m| m.id.clone()).collect())).collect()
     }
 }
 
@@ -114,6 +116,11 @@ impl ModuleDef {
     pub fn fits(&self, slot: &str) -> bool {
         self.slots.is_empty() || self.slots.iter().any(|s| s == slot)
     }
+}
+
+/// Whether a layout `entry` names `inst`: its id, its Module (every item), or a prefix (`gauge:gpu*`).
+pub fn names(entry: &str, inst: &Inst, module: &ModuleDef) -> bool {
+    inst.id == entry || module.name == entry || entry.strip_suffix('*').is_some_and(|p| inst.id.starts_with(p))
 }
 
 /// Indexes into `insts` per slot. Entries name an id, or a whole Module (every item of it).
@@ -126,7 +133,7 @@ pub fn place(set: &ModuleSet, insts: &[Inst], layout: &BTreeMap<String, Vec<Stri
         for e in entries {
             for (i, inst) in insts.iter().enumerate() {
                 let m = &set.modules[inst.module];
-                if !used[i] && (inst.id == *e || m.name == *e) && m.fits(slot) {
+                if !used[i] && names(e, inst, m) && m.fits(slot) {
                     used[i] = true;
                     list.push(i);
                 }
