@@ -51,6 +51,21 @@ impl App {
         self.log(format!("removed {id}"));
     }
 
+    /// The `show_*` params a widget's Modules replaced become a saved layout, once.
+    pub(super) fn migrate_instances(&mut self) {
+        let mut changed = false;
+        for cfg in &mut self.ws.instances {
+            if let Some(Ok(w)) = self.reg.get(&cfg.widget) {
+                let before = cfg.clone();
+                w.meta().migrate(cfg);
+                changed |= *cfg != before;
+            }
+        }
+        if changed {
+            self.mark_save();
+        }
+    }
+
     /// Saves a param of Instance `i`, from Settings, a source or a drop.
     pub(super) fn set_param(&mut self, i: usize, name: &str, v: &Value) {
         if self.ws.instances[i].params.get(name).map(Value::from).as_ref() == Some(v) {
@@ -78,6 +93,17 @@ impl App {
             Cmd::Param(id, name, v) => {
                 if let Some(i) = find(self, &id) {
                     self.set_param(i, &name, &v);
+                }
+            }
+            Cmd::Layout(id, tier, layout) => {
+                if let Some(i) = find(self, &id) {
+                    match layout {
+                        Some(l) => self.ws.instances[i].layout.insert(tier, l),
+                        None => self.ws.instances[i].layout.remove(&tier),
+                    };
+                    self.wins[i].redraw = true;
+                    self.sources.invalidate();
+                    self.mark_save();
                 }
             }
             Cmd::Items(id, items) => {

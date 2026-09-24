@@ -90,7 +90,6 @@ mod tests {
     use crate::data::Sys;
     use crate::theme::{Library, Selection, Theme};
     use crate::ui::{Kind, Node};
-    use crate::value::Value;
     use crate::widgets::Inputs;
 
     #[test]
