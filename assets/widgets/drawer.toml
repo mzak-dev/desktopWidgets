@@ -1,5 +1,5 @@
 name = "Drawer"
-description = "A collapsible drawer of app shortcuts."
+description = "A collapsible drawer of app shortcuts. Drop files on it to add them; x removes one."
 size = [260, 220]
 min_size = [120, 60]
 max_size = [900, 720]
@@ -139,6 +139,27 @@ clip = true
       hover = { fill = "$surface-hover" }
       transition = 140
       enter = { ms = 240, dy = 8, stagger = 24 }
+        [[root.children.children.children.children]]
+        width = 16
+        height = 16
+        radius = 8
+        position = "absolute"
+        top = 2
+        right = 2
+        align = "center"
+        justify = "center"
+        on_click = "remove_app {item.target}"
+        fill = "$surface-hover"
+        opacity = 0.7
+        hover = { fill = "$danger", opacity = 1 }
+        transition = 120
+          [[root.children.children.children.children.children]]
+          type = "text"
+          text = "$glyph-close"
+          font = "$font-glyph"
+          size = 8
+          color = "$text"
+
         [[root.children.children.children.children]]
         type = "image"
         src = "{item.icon_id}"
