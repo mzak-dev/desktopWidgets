@@ -200,8 +200,8 @@ enum Open {
     Color(String),
 }
 
-const GUTTER: f32 = 24.0;
 const WIN: (f32, f32) = (960.0, 680.0);
+const MIN_WIN: (f32, f32) = (760.0, 520.0);
 const NAV_W: f32 = 196.0;
 const LABEL_W: f32 = 132.0;
 const CONTROL_W: f32 = 250.0;
@@ -652,7 +652,6 @@ impl UiState {
     pub fn build(&self, ctx: &Ctx, size: (f32, f32)) -> (Node, Vec<String>) {
         let k = Kit { t: ctx.theme };
         let mut images = Vec::new();
-        let card_size = (size.0 - 2.0 * GUTTER, size.1 - 2.0 * GUTTER);
         let idx = Page::ALL.iter().position(|p| *p == self.page).unwrap_or(0);
 
         let mut nav = Node::new("s/nav").col().w(NAV_W).no_shrink().pad(14.0).gap(4.0).fill(Color([0.0, 0.0, 0.0, 0.16]));
@@ -698,10 +697,7 @@ impl UiState {
             .align(taffy::AlignItems::CENTER)
             .pad_xy(24.0, 0.0)
             .gap(6.0)
-            .on("drag")
-            .child(Node::new("s/title/l").col().grow(1.0).gap(1.0).child(k.bold("s/title/t".into(), self.page.title(), 19.0, k.c("text"))).child(k.txt("s/title/s".into(), self.page.subtitle(), 12.0, k.c("text-dim"))))
-            .child(k.icon_button("s/min", "minimize", "min".into(), false))
-            .child(k.icon_button("s/close", "close", "close".into(), false));
+            .child(Node::new("s/title/l").col().grow(1.0).gap(1.0).child(k.bold("s/title/t".into(), self.page.title(), 19.0, k.c("text"))).child(k.txt("s/title/s".into(), self.page.subtitle(), 12.0, k.c("text-dim"))));
 
         let body = match self.page {
             Page::Widgets => self.page_widgets(&k, ctx, &mut images),
@@ -715,17 +711,9 @@ impl UiState {
         // min_w(0), like `w/right`: a page's unwrapped text must not widen the window
         let content = Node::new("s/content").col().grow(1.0).min_w(0.0).child(titlebar).child(page_root);
 
-        let card = Node::new("s/card")
-            .row()
-            .wh(card_size.0, card_size.1)
-            .fill(k.c("surface"))
-            .radius(22.0)
-            .border(1.0, k.c("border"))
-            .shadow(26.0, 10.0, k.c("shadow"))
-            .clip()
-            .child(nav)
-            .child(content);
-        let mut root = Node::new("s").wh(size.0, size.1).pad(GUTTER).child(card);
+        // the native frame supplies the title bar, border and shadow; the card fills the client area
+        let card = Node::new("s/card").row().wh(size.0, size.1).fill(k.c("surface").with_alpha(1.0)).clip().child(nav).child(content);
+        let mut root = Node::new("s").wh(size.0, size.1).child(card);
 
         if let Some(o) = &self.open {
             root = root.child(self.popup(&k, ctx, o, size));
@@ -1686,11 +1674,10 @@ impl SettingsWin {
         });
         let mut attrs = WindowAttributes::default()
             .with_title("Wayfinder Settings")
-            .with_decorations(false)
-            .with_transparent(true)
-            .with_resizable(false)
+            .with_resizable(true)
             .with_visible(false)
             .with_inner_size(LogicalSize::new(WIN.0 as f64, WIN.1 as f64))
+            .with_min_inner_size(LogicalSize::new(MIN_WIN.0 as f64, MIN_WIN.1 as f64))
             .with_no_redirection_bitmap(true);
         if let Some(p) = pos {
             attrs = attrs.with_position(p);
