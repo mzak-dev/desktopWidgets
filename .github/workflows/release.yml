@@ -42,3 +42,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: vpk upload github --repoUrl "https://github.com/${{ github.repository }}" --token $env:GH_TOKEN --publish --tag $env:GITHUB_REF_NAME
+      - name: Set release notes from the changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -sSfL https://github.com/orhun/git-cliff/releases/download/v2.14.2/git-cliff-2.14.2-x86_64-pc-windows-msvc.zip -o cliff.zip
+          Expand-Archive cliff.zip -DestinationPath $env:RUNNER_TEMP\git-cliff
+          $cliffExe = (Get-ChildItem -Path $env:RUNNER_TEMP\git-cliff -Recurse -Filter git-cliff.exe | Select-Object -First 1).FullName
+          & $cliffExe --config cliff.toml --tag $env:GITHUB_REF_NAME --latest --strip header -o RELEASE_NOTES.md
+          gh release edit $env:GITHUB_REF_NAME --notes-file RELEASE_NOTES.md
