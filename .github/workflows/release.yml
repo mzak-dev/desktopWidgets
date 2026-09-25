@@ -31,12 +31,19 @@ jobs:
           echo "APP_VERSION=$cargoVersion" >> $env:GITHUB_ENV
       - name: Install vpk
         run: dotnet tool update -g vpk
+      - name: Download previous release (delta base)
+        # vpk pack diffs against whatever full package already sits in .\Releases; with
+        # nothing there (the very first release) it just packs full-only, so this is best-effort.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: vpk download github --repoUrl "https://github.com/${{ github.repository }}" --token $env:GH_TOKEN
       - name: Stage package contents
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target/release/wayfinder.exe dist/
           Copy-Item -Recurse -Force assets/guides dist/guides
-      - name: Pack
+      - name: Pack (full + delta, if a previous release was found)
         run: vpk pack -u Wayfinder -v $env:APP_VERSION -p dist -e wayfinder.exe
       - name: Publish
         env:
