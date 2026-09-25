@@ -52,13 +52,14 @@ step = 2
 label = "Header padding, sides"
 group = "Header"
 
-[params.header_pad_y]
+[params.header_gap]
 type = "number"
-default = 0
+default = 6
 min = 0
-max = 30
+max = 40
 step = 2
-label = "Header padding, top and bottom"
+label = "Space between title and icons"
+help = "The gap under the header, before the shortcuts."
 group = "Header"
 
 [params.font_header]
@@ -90,7 +91,7 @@ scroll = 0
 # collapsing shrinks the window to the header row
 [expand]
 when = "{state.collapsed}"
-height = "{44 + param.header_pad_y * 2}"
+height = "44"
 
 [root]
 direction = "column"
@@ -99,15 +100,15 @@ radius = "$radius-lg"
 border = 1
 shadow = { blur = 14, dy = 5 }
 padding = [8, 10]
-gap = 6
+gap = "{param.header_gap}"
 clip = true
 
   [[root.children]]
   direction = "{param.title_align == 'right' ? 'row-reverse' : 'row'}"
   align = "center"
   gap = 4
-  height = "{28 + param.header_pad_y * 2}"
-  padding = ["{param.header_pad_y}", "{param.header_pad_x}"]
+  height = 28
+  padding = [0, "{param.header_pad_x}"]
   shrink = 0
   on_click = "{param.toggle == 'header' ? 'toggle collapsed' : ''}"
 
