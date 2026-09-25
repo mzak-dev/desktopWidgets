@@ -59,6 +59,7 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 # plugin code (ADR-0008): an interpreter, no JIT, no WASI
 wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "validate", "auto-dispatch"] }
+velopack = "1.2.158"
 
 [profile.release]
 debug = 1

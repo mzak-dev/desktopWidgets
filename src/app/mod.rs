@@ -123,6 +123,34 @@ impl Options {
     }
 }
 
+/// Where release builds are published; Velopack reads updates from this repo's GitHub Releases.
+const UPDATE_REPO: &str = "https://github.com/mzak-dev/desktopWidgets";
+
+/// Checks for a newer release roughly hourly and downloads it, staged for next launch.
+/// Never applies or restarts here: `VelopackApp::run()` in `main()` already applies any
+/// pending package silently the next time the app starts.
+fn spawn_update_checker() {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        loop {
+            match velopack::UpdateManager::new(velopack::sources::GithubSource::new(UPDATE_REPO, None, false), None, None) {
+                Ok(um) => match um.check_for_updates() {
+                    Ok(velopack::UpdateCheck::UpdateAvailable(update)) => {
+                        if let Err(e) = um.download_updates(&update, None) {
+                            eprintln!("wayfinder: update download failed: {e}");
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("wayfinder: update check failed: {e}"),
+                },
+                // Not installed via Velopack (e.g. a dev build) — nothing to check.
+                Err(_) => return,
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        }
+    });
+}
+
 /// Runs Wayfinder until it quits: one copy per data folder, `--install` first, then the
 /// tray, the widgets and the event loop.
 pub fn run(mut opts: Options) {
@@ -151,12 +179,19 @@ pub fn run(mut opts: Options) {
     let event_loop = winit::event_loop::EventLoop::<UserEvent>::with_user_event().build().expect("event loop");
     let proxy = event_loop.create_proxy();
     let edit = opts.edit;
+    let selftest = opts.selftest;
+    let exit_after_secs = opts.exit_after_secs;
     let mut app = App::new(proxy, opts);
     if edit {
         app.request_edit_on_start();
     }
     if installing.is_some() {
         app.request_settings_on_start("plugins");
+    }
+    // Skip on automated runs (selftest, --exit-after): they don't live long enough to matter
+    // and shouldn't make network calls.
+    if !selftest && exit_after_secs.is_none() {
+        spawn_update_checker();
     }
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("wayfinder: event loop error: {e}");

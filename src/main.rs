@@ -19,6 +19,11 @@
 //! `let mut o = Options::from_args(); o.extra_sources.push(Box::new(Mine)); wayfinder::run(o)`.
 
 fn main() {
+    // Must run before anything else: on install/update/uninstall Velopack re-invokes this
+    // exe with a lifecycle flag, runs the matching hook, and exits — it should never reach
+    // CLI dispatch or `wayfinder::run` on those invocations.
+    velopack::VelopackApp::build().run();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     if let Some(cmd) = wayfinder::cli::command(&args) {
         std::process::exit(wayfinder::cli::run(cmd));

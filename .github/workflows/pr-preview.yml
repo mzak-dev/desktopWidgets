@@ -1,0 +1,54 @@
+name: PR Preview
+
+on:
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+# One rolling preview per PR: a new push cancels any preview still building for it.
+concurrency:
+  group: pr-preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  preview:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --locked --release
+      - name: Install vpk
+        run: dotnet tool update -g vpk
+      - name: Stage package contents
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/wayfinder.exe dist/
+          Copy-Item -Recurse -Force assets/guides dist/guides
+      - name: Pack a flagged preview build
+        run: |
+          $cargoVersion = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches.Groups[1].Value
+          # a semver *prerelease* — UpdateManager on installed copies runs with prerelease:false,
+          # so this never shows up as an update for anyone on the real release channel
+          $previewVersion = "$cargoVersion-pr${{ github.event.pull_request.number }}.${{ github.run_number }}"
+          echo "PREVIEW_VERSION=$previewVersion" >> $env:GITHUB_ENV
+          vpk pack -u Wayfinder -v $previewVersion -p dist -e wayfinder.exe
+      - name: Publish (or update) the PR's rolling prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "pr-${{ github.event.pull_request.number }}-preview"
+          $title = "Preview: #${{ github.event.pull_request.number }} ${{ github.event.pull_request.title }}"
+          $notes = "Unofficial preview build of ${{ github.event.pull_request.head.sha }}, version $env:PREVIEW_VERSION. Not a real release — installs alongside it, does not auto-update, and this release is replaced on the PR's next push."
+          $setup = (Get-ChildItem -Path Releases -Recurse -Filter "*-Setup.exe" | Select-Object -First 1).FullName
+          if (gh release view $tag 2>$null) {
+            gh release upload $tag $setup --clobber
+            gh release edit $tag --title $title --notes $notes --prerelease
+          } else {
+            gh release create $tag $setup --title $title --notes $notes --prerelease
+          }

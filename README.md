@@ -85,6 +85,15 @@ Wayfinder can render on the CPU (the "Microsoft Basic Render Driver"). It is slo
 
 </details>
 
+<details>
+<summary><b>Prefer an installer?</b></summary>
+
+<br>
+
+Each [release](https://github.com/mzak-dev/desktopWidgets/releases) also has a `Setup.exe`, built with [Velopack](https://velopack.io) ([ADR-010](docs/adr/0010-velopack-installer-and-autoupdate.md)). It installs to `%LocalAppData%\Wayfinder` with a Start Menu shortcut and an uninstaller, and the app checks for updates in the background and applies them silently the next time it starts — no prompts, nothing to run by hand. `%APPDATA%\Wayfinder` (your widgets, themes, settings) is untouched by installs or updates.
+
+</details>
+
 <br>
 
 ## 🖱️ Using it
@@ -151,11 +160,12 @@ Wayfinder/
 ├─ iconpacks/<name>/     chrome.png ...  replaces the icon of a matching app
 ├─ plugins/<id>/         installed plugins, each laid out like this folder
 ├─ THEMES.md             how to make palettes, font sets, glyph sets and icon packs
+├─ WIDGETS.md            how to write or override a widget
 ├─ PLUGINS.md            how to make and share a plugin
-└─ .claude/skills/       Claude Code skills for making themes and plugins
+└─ .claude/skills/       Claude Code skills for making themes, widgets and plugins
 ```
 
-Wayfinder writes `THEMES.md`, `PLUGINS.md` and their Claude Code skills at startup when they are missing, and never overwrites your edits. Run `claude` in the data folder and ask for a theme ("a warm sunset palette") or a plugin to have Claude Code write the files for you.
+Wayfinder writes `THEMES.md`, `WIDGETS.md`, `PLUGINS.md` and their Claude Code skills at startup when they are missing, and never overwrites your edits. Run `claude` in the data folder and ask for a theme ("a warm sunset palette"), a widget or a plugin to have Claude Code write the files for you.
 
 ### Plugins
 
@@ -319,6 +329,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 | [Content plugins](docs/adr/0007-content-plugins.md) | A `.wfplugin` is a zip that installs by unpacking. Widget ids stay flat, so a plugin can restyle built-ins. No native code. |
 | [Plugin code](docs/adr/0008-plugin-code.md) | WebAssembly Code Sources in wasmi, one thread per plugin, a JSON ABI, HTTPS to listed hosts, read-only folders it declares and 1 MB of saved data. The UI never waits for plugin code. |
 | [Native sources in your own build](docs/adr/0009-native-sources-in-your-own-build.md) | Native code joins through an exe built on the engine as a library, never through DLLs. Sources can act, notify and forget Instances like Code Sources. |
+| [Velopack installer and auto-update](docs/adr/0010-velopack-installer-and-autoupdate.md) | A `Setup.exe` installs to `%LocalAppData%\Wayfinder`; a background thread downloads updates and Velopack applies them silently on the next launch. `%APPDATA%\Wayfinder` is untouched. |
 
 > [!IMPORTANT]
 > **Which GPU?** Wayfinder defaults to the **integrated** GPU (`"gpu": "low"`). On the AMD machine it was developed on, selecting the dedicated GPU pinned one CPU core at 99% while idle with two or more widgets on screen, in a driver thread outside Wayfinder, whereas the integrated GPU idled at 0.00%. Widgets are tiny, so the integrated GPU is plenty. You can change it in **Settings → General**, or set `"gpu": "high"` in `workspace.json`. `"software"` renders on the CPU. Details in [ADR-005](docs/adr/0005-adapter-and-present-mode.md).
@@ -353,7 +364,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 </tr>
 </table>
 
-**Ideas, not promises:** a plugin catalogue to browse and install from, shader widgets, an installer.
+**Ideas, not promises:** a plugin catalogue to browse and install from, shader widgets.
 
 <br>
 
