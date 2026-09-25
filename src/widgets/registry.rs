@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{Drawer, TomlWidget, Widget};
-use crate::format::WidgetDef;
+use crate::format::{Base, WidgetDef};
 
 const BUILTIN: &[(&str, &str)] = include!(concat!(env!("OUT_DIR"), "/builtin_widgets.rs"));
 
@@ -28,26 +28,43 @@ fn adapt(id: &str, def: WidgetDef) -> Arc<dyn Widget> {
     }
 }
 
+/// `*.toml` files directly in `dir`, sorted, with their Widget ids (file stems).
+pub fn widget_files(dir: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+    let mut paths: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();
+    paths.sort();
+    paths.into_iter().filter_map(|p| Some((p.file_stem()?.to_str()?.to_string(), p))).collect()
+}
+
 impl Registry {
-    pub fn load(user_dir: &Path) -> Registry {
-        let mut defs = BTreeMap::new();
-        for (id, src) in BUILTIN {
-            defs.insert(id.to_string(), WidgetDef::parse(id, src).map(|d| adapt(id, d)));
-        }
-        if let Ok(rd) = std::fs::read_dir(user_dir) {
-            let mut paths: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();
-            paths.sort();
-            for p in paths {
-                let id = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
-                let def = std::fs::read_to_string(&p)
-                    .map_err(|e| e.to_string())
-                    .and_then(|s| WidgetDef::parse(&id, &s))
-                    .map(|d| adapt(&id, d))
-                    .map_err(|e| format!("{}: {e}", p.display()));
-                defs.insert(id, def);
-            }
-        }
+    pub fn builtin() -> Registry {
+        let defs = BUILTIN.iter().map(|(id, src)| (id.to_string(), WidgetDef::parse(id, src).map(|d| adapt(id, d)))).collect();
         Registry { defs }
+    }
+
+    /// Built-ins, then the user's folder.
+    pub fn load(user_dir: &Path) -> Registry {
+        let mut r = Registry::builtin();
+        r.load_dir(user_dir);
+        r
+    }
+
+    /// Every Widget file in `dir` replaces the one with its id, even when it is broken
+    /// (decision 14). Returns the ids it read. `./` paths in them stay inside `dir`'s parent,
+    /// the content root.
+    pub fn load_dir(&mut self, dir: &Path) -> Vec<String> {
+        let base = Base { dir: dir.to_path_buf(), root: dir.parent().unwrap_or(dir).to_path_buf() };
+        let mut ids = Vec::new();
+        for (id, p) in widget_files(dir) {
+            let def = std::fs::read_to_string(&p)
+                .map_err(|e| e.to_string())
+                .and_then(|s| WidgetDef::parse(&id, &s))
+                .map(|d| adapt(&id, WidgetDef { base: Some(base.clone()), ..d }))
+                .map_err(|e| format!("{}: {e}", p.display()));
+            self.defs.insert(id.clone(), def);
+            ids.push(id);
+        }
+        ids
     }
 
     pub fn register(&mut self, w: Arc<dyn Widget>) {

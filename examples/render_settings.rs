@@ -10,6 +10,7 @@ use wayfinder::anim::Anim;
 use wayfinder::data::Shortcut;
 use wayfinder::gfx::{Gpu, Power};
 use wayfinder::icons::IconService;
+use wayfinder::plugins::PluginRow;
 use wayfinder::settings::{Ctx, UiState};
 use wayfinder::text::TextEngine;
 use wayfinder::theme::{Library, Selection, Theme};
@@ -23,7 +24,7 @@ fn main() {
     let mut gpu = Gpu::new_headless(power).expect("gpu");
     println!("gpu: {}", gpu.info);
     let mut text = TextEngine::new();
-    let mut icons = IconService::new("iconpacks".into());
+    let mut icons = IconService::default();
     let lib = Library::load(Path::new("nope"));
     let theme = Theme::compose(&lib, &Selection::default(), &[]);
     let reg = Registry::load(Path::new("nope"));
@@ -44,8 +45,22 @@ fn main() {
         ws.instances.push(c);
     }
     ws.style.insert("radius-lg".into(), 26.into());
+    let plugins = vec![
+        PluginRow {
+            id: "sunset".into(),
+            name: "Sunset".into(),
+            version: "1.2.0".into(),
+            author: "Ada".into(),
+            description: "Warm evening colours, a serif font set and a weather card.".into(),
+            summary: "1 widget · 2 palettes · 1 font set".into(),
+            enabled: true,
+            notes: vec!["Restyles Analog Clock".into()],
+            ..Default::default()
+        },
+        PluginRow { id: "neon-icons".into(), name: "Neon Icons".into(), version: "0.3".into(), author: "Lin".into(), summary: "1 icon pack".into(), enabled: false, ..Default::default() },
+    ];
     let log: Vec<String> = ["monitor \\\\.\\DISPLAY1: 1920x1080 @ 1.00x", "gpu: AMD Radeon(TM) Graphics / Dx12 / IntegratedGpu", "ready: 4 instance(s), theme Midnight / System / Fluent", "edit mode on"].iter().map(|s| s.to_string()).collect();
-    let ctx = Ctx { ws: &ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "AMD Radeon(TM) Graphics / Dx12 / IntegratedGpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, parked: &[] };
+    let ctx = Ctx { ws: &ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "AMD Radeon(TM) Graphics / Dx12 / IntegratedGpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &wayfinder::data::DataSources::builtin().names(), plugin_files: &wayfinder::platform::win32::FileOwner::Me };
 
     let size = (960.0f32, 680.0f32);
     let states: Vec<(&str, Vec<&str>)> = vec![
@@ -54,6 +69,7 @@ fn main() {
         ("appearance_picker", vec!["nav:appearance", "cp:sy:*:accent"]),
         ("widgets_clock_style", vec!["nav:widgets", "sel:clock-1"]),
         ("general", vec!["nav:general"]),
+        ("plugins", vec!["nav:plugins"]),
     ];
     for (name, acts) in states {
         let mut ui = UiState::default();

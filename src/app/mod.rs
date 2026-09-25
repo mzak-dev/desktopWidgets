@@ -4,6 +4,7 @@
 mod commands;
 mod desktop;
 mod edit_mode;
+mod explorer;
 mod first_run;
 mod host;
 mod input;
@@ -14,7 +15,7 @@ mod tray;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
@@ -32,12 +33,18 @@ use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
 use crate::anim::{self, Anim, Ease};
 use crate::card::Card;
+use crate::code::runtime::Limits;
+use crate::code::store::KvStore;
+use crate::code::{Deps, WasmSource};
+use crate::content::{Catalog, Root};
 use crate::data::{self, DataSources};
 use crate::draw::DrawList;
 use crate::edit::{self, Handle, Rect, Snap};
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
+use crate::net::Fetch;
 use crate::platform::win32::{self, ZMode};
+use crate::plugins::{self, Plugin, PluginRow, PluginStore};
 use crate::settings::{self, Cmd, Scope, SettingsWin};
 use crate::text::TextEngine;
 use crate::theme::{Library, Theme};
@@ -46,10 +53,12 @@ use crate::value::Value;
 use crate::widgets::{self, ActionCx, Def, ExpandInfo, Host, Registry, Services, View};
 use crate::workspace::{self, InstanceCfg, MonitorInfo, Workspace};
 
+pub use self::explorer::install_from_explorer;
+
 use self::edit_mode::UndoEntry;
 use self::first_run::{default_instances, write_missing_guides};
 use self::host::AppHost;
-use self::instance::{Drag, EXPAND_SECS, GLIDE_SECS, Instance, VerbOutcome, SizeTween, base_size_after_edit, engine_action, expand_target, scrolled_offset, snap_offset};
+use self::instance::{Drag, EXPAND_SECS, GLIDE_SECS, Instance, VerbOutcome, SizeTween, base_size_after_edit, engine_action, expand_target, click_param, on_drop, scrolled_offset, snap_offset, wheel_target, OnDrop};
 use self::selftest::SelfTest;
 
 #[derive(Debug)]
@@ -58,15 +67,135 @@ pub enum UserEvent {
     Hotkey,
     TrayClick,
     FilesChanged,
+    /// A folder a Data Source watches changed.
+    WatchedChanged(Vec<PathBuf>),
     ForegroundChanged,
     DisplaysChanged,
+    /// A Data Source has new values, logs or status.
+    SourceNews,
+    /// Small copies of pictures (`image` with `max`) are ready to upload.
+    ImagesReady,
 }
 
+/// How to run Wayfinder. `Options::from_args()` reads the command line; an app built on
+/// Wayfinder adds its own Data Sources to `extra_sources` and calls `run`.
 pub struct Options {
     pub dir: PathBuf,
     pub selftest: bool,
     pub gpu_override: Option<String>,
     pub exit_after_secs: Option<f32>,
+    /// Point `.wfplugin` files at this exe (not for throwaway `--data` runs).
+    pub register_file_type: bool,
+    /// Start in Edit Mode.
+    pub edit: bool,
+    /// Install this `.wfplugin` first (what double-clicking one runs).
+    pub install: Option<PathBuf>,
+    /// Data Sources beyond the built-ins, registered at startup.
+    pub extra_sources: Vec<Box<dyn data::DataSource>>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Options { dir: workspace::data_dir(), selftest: false, gpu_override: None, exit_after_secs: None, register_file_type: true, edit: false, install: None, extra_sources: Vec::new() }
+    }
+}
+
+impl Options {
+    pub fn from_args() -> Options {
+        Options::parse(&std::env::args().skip(1).collect::<Vec<_>>())
+    }
+
+    /// `--data <dir> --exit-after <sec> --gpu <mode> --edit --selftest --install <file>`.
+    pub fn parse(args: &[String]) -> Options {
+        let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned());
+        let flag = |name: &str| args.iter().any(|a| a == name);
+        let selftest = flag("--selftest");
+        Options {
+            dir: value("--data").map(PathBuf::from).unwrap_or_else(workspace::data_dir),
+            selftest,
+            gpu_override: value("--gpu"),
+            exit_after_secs: value("--exit-after").and_then(|s| s.parse().ok()),
+            register_file_type: value("--data").is_none() && !selftest,
+            edit: flag("--edit"),
+            install: value("--install").map(PathBuf::from),
+            extra_sources: Vec::new(),
+        }
+    }
+}
+
+/// Where release builds are published; Velopack reads updates from this repo's GitHub Releases.
+const UPDATE_REPO: &str = "https://github.com/mzak-dev/desktopWidgets";
+
+/// Checks for a newer release roughly hourly and downloads it, staged for next launch.
+/// Never applies or restarts here: `VelopackApp::run()` in `main()` already applies any
+/// pending package silently the next time the app starts.
+fn spawn_update_checker() {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        loop {
+            match velopack::UpdateManager::new(velopack::sources::GithubSource::new(UPDATE_REPO, None, false), None, None) {
+                Ok(um) => match um.check_for_updates() {
+                    Ok(velopack::UpdateCheck::UpdateAvailable(update)) => {
+                        if let Err(e) = um.download_updates(&update, None) {
+                            eprintln!("wayfinder: update download failed: {e}");
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("wayfinder: update check failed: {e}"),
+                },
+                // Not installed via Velopack (e.g. a dev build) — nothing to check.
+                Err(_) => return,
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3600));
+        }
+    });
+}
+
+/// Runs Wayfinder until it quits: one copy per data folder, `--install` first, then the
+/// tray, the widgets and the event loop.
+pub fn run(mut opts: Options) {
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows::Win32::System::Threading::CreateMutexW;
+    use windows::core::HSTRING;
+
+    // One running copy per data directory: a second launch exits quietly.
+    let key = format!("Wayfinder-{:x}", opts.dir.to_string_lossy().bytes().fold(5381u64, |h, b| h.wrapping_mul(33) ^ b as u64));
+    let _mutex = unsafe { CreateMutexW(None, true, &HSTRING::from(key)) };
+    let running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    let installing = opts.install.take();
+    if let Some(file) = &installing {
+        let installed = install_from_explorer(&opts.dir, file, running);
+        if running || !installed {
+            return; // a running copy reloads by itself
+        }
+    } else if running {
+        eprintln!("wayfinder: already running (data dir {})", opts.dir.display());
+        return;
+    }
+    // COM for the file pickers; S_FALSE (already initialised) is fine.
+    unsafe {
+        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_APARTMENTTHREADED);
+    }
+    let event_loop = winit::event_loop::EventLoop::<UserEvent>::with_user_event().build().expect("event loop");
+    let proxy = event_loop.create_proxy();
+    let edit = opts.edit;
+    let selftest = opts.selftest;
+    let exit_after_secs = opts.exit_after_secs;
+    let mut app = App::new(proxy, opts);
+    if edit {
+        app.request_edit_on_start();
+    }
+    if installing.is_some() {
+        app.request_settings_on_start("plugins");
+    }
+    // Skip on automated runs (selftest, --exit-after): they don't live long enough to matter
+    // and shouldn't make network calls.
+    if !selftest && exit_after_secs.is_none() {
+        spawn_update_checker();
+    }
+    if let Err(e) = event_loop.run_app(&mut app) {
+        eprintln!("wayfinder: event loop error: {e}");
+    }
 }
 
 pub struct App {
@@ -103,34 +232,62 @@ pub struct App {
     started: Instant,
     booted: bool,
     start_edit: bool,
+    /// A Settings page to open once started (after `--install`).
+    start_page: Option<String>,
     selftest: Option<SelfTest>,
     gpu_lost_reason: Option<String>,
     gpu_recoveries: Vec<Instant>,
     forced_software: bool,
     families: Vec<String>,
+    plugins: Vec<Plugin>,
+    plugin_rows: Vec<PluginRow>,
+    /// The last install's outcome, shown on the Plugins page.
+    plugin_note: String,
+    /// Each code Plugin's saved data, shared by every generation of its Code Source.
+    stores: BTreeMap<String, Arc<KvStore>>,
+    /// The network for plugin code, opened the first time a Plugin lists hosts.
+    fetch: Option<Arc<dyn Fetch>>,
+    /// Which exe double-clicking a `.wfplugin` runs, for Settings.
+    plugin_files: win32::FileOwner,
 }
 
 impl App {
-    pub fn new(proxy: EventLoopProxy<UserEvent>, opts: Options) -> App {
+    pub fn new(proxy: EventLoopProxy<UserEvent>, mut opts: Options) -> App {
         let dir = opts.dir.clone();
+        let extra_sources = std::mem::take(&mut opts.extra_sources);
+        let mut sources = DataSources::builtin_in(&opts.dir);
+        let waker = Mutex::new(proxy.clone());
+        sources.set_waker(Arc::new(move || {
+            let _ = waker.lock().unwrap().send_event(UserEvent::SourceNews);
+        }));
+        let mut source_errors = Vec::new();
+        for s in extra_sources {
+            if let Err(e) = sources.register(s) {
+                source_errors.push(e);
+            }
+        }
         let _ = std::fs::create_dir_all(&dir);
         let _ = std::fs::remove_file(dir.join("wayfinder.log")); // one log per run
         let guide_errors = write_missing_guides(&dir);
+        PluginStore::new(&dir).sweep();
         let (ws, ws_err) = Workspace::load(&dir);
-        let lib = Library::load(&dir);
         let theme = Theme::default(); // composed by `rebuild_theme` below
-        let reg = Registry::load(&dir.join("widgets"));
-        let mut text = TextEngine::new();
-        let fonts = text.load_font_dir(&dir.join("fonts"));
+        let text = TextEngine::new();
+        let mut icons = IconService::default();
+        icons.set_cache(dir.join(".cache").join("thumbs"));
+        let waker = Mutex::new(proxy.clone());
+        icons.set_waker(Arc::new(move || {
+            let _ = waker.lock().unwrap().send_event(UserEvent::ImagesReady);
+        }));
         let mut app = App {
             proxy,
-            icons: IconService::new(dir.join("iconpacks")),
+            icons,
             opts,
             ws,
-            lib,
+            lib: Library::default(), // filled by `load_content` below
             theme,
-            reg,
-            sources: DataSources::builtin(),
+            reg: Registry::default(),
+            sources,
             gpu: None,
             text,
             wins: Vec::new(),
@@ -155,22 +312,26 @@ impl App {
             started: Instant::now(),
             booted: false,
             start_edit: false,
+            start_page: None,
             selftest: None,
             gpu_lost_reason: None,
             gpu_recoveries: Vec::new(),
             forced_software: false,
             families: Vec::new(),
+            plugins: Vec::new(),
+            plugin_rows: Vec::new(),
+            plugin_note: String::new(),
+            stores: BTreeMap::new(),
+            fetch: None,
+            plugin_files: win32::FileOwner::Nobody,
         };
+        app.load_content();
         app.rebuild_theme();
-        app.families = app.text.family_names();
         app.selftest = app.opts.selftest.then(|| SelfTest { step: 0, at: Instant::now() + Duration::from_millis(2200), checks: Vec::new(), rect: None, collapsed: None, configures0: 0, fake: None });
         if let Some(e) = ws_err {
             app.log(e);
         }
-        if fonts > 0 {
-            app.log(format!("loaded {fonts} user font faces"));
-        }
-        for e in guide_errors.into_iter().chain(app.lib.errors.clone()).chain(app.reg.errors()) {
+        for e in guide_errors.into_iter().chain(source_errors) {
             app.log(e);
         }
         app
@@ -185,6 +346,10 @@ impl App {
 
     pub fn request_edit_on_start(&mut self) {
         self.start_edit = true;
+    }
+
+    pub fn request_settings_on_start(&mut self, page: &str) {
+        self.start_page = Some(page.to_string());
     }
 
     fn log(&mut self, s: impl Into<String>) {
@@ -202,11 +367,6 @@ impl App {
 
     fn rebuild_theme(&mut self) {
         self.theme = self.ws.global_theme(&self.lib);
-        let sets = std::iter::once(self.ws.theme.fonts.clone()).chain(self.ws.instances.iter().filter_map(|c| c.theme.fonts.clone()));
-        let files: Vec<PathBuf> = sets.flat_map(|n| self.lib.fonts(&n).files.clone()).collect();
-        for f in files {
-            self.text.load_font_file(&f);
-        }
         self.redraw_all();
     }
 
@@ -255,8 +415,10 @@ impl App {
             self.wins.push(Instance::new());
         }
         self.wins.truncate(self.ws.instances.len());
+        let hidden = plugins::hidden_instances(&self.ws, &self.reg, &self.plugins);
         for i in 0..self.ws.instances.len() {
-            let pos = workspace::resolve(&self.ws.instances[i], &self.monitors);
+            let id = &self.ws.instances[i].id;
+            let pos = if hidden.contains_key(id) { None } else { workspace::resolve(&self.ws.instances[i], &self.monitors) };
             match (pos, self.wins[i].window.is_some()) {
                 (Some(p), false) => {
                     if let Err(e) = self.create_window(el, i, p) {
@@ -266,7 +428,10 @@ impl App {
                 }
                 (None, true) => {
                     let id = self.ws.instances[i].id.clone();
-                    self.log(format!("monitor for {id} is gone: parked (kept in place for when it returns)"));
+                    match hidden.get(&id) {
+                        Some(p) => self.log(format!("{id} is hidden while the plugin {p} is off")),
+                        None => self.log(format!("monitor for {id} is gone: parked (kept in place for when it returns)")),
+                    }
                     let iw = &mut self.wins[i];
                     iw.target = None;
                     iw.window = None;
@@ -275,6 +440,7 @@ impl App {
                 _ => {}
             }
         }
+        self.retain_code();
     }
 
     fn create_window(&mut self, el: &ActiveEventLoop, i: usize, pos: (i32, i32)) -> Result<(), String> {
@@ -379,29 +545,195 @@ impl App {
         }
     }
 
-    fn reload(&mut self) {
-        self.lib = Library::load(&self.opts.dir);
-        self.reg = Registry::load(&self.opts.dir.join("widgets"));
-        for e in self.lib.errors.clone().into_iter().chain(self.reg.errors()) {
+    /// What Instance `i`'s sources see: its params with the Widget's defaults, the time and its icon pack.
+    fn with_source_cx<R>(&self, i: usize, f: impl FnOnce(&data::SourceCx) -> R) -> R {
+        let cfg = &self.ws.instances[i];
+        let params = match self.reg.get(&cfg.widget) {
+            Some(Ok(w)) => w.meta().effective_params(&cfg.params_map()),
+            _ => cfg.params_map(),
+        };
+        let icon_pack = cfg.theme.resolve(&self.ws.theme).icon_pack;
+        f(&data::SourceCx { cfg, params: &params, tm: data::now_local(), icon_pack: &icon_pack })
+    }
+
+    /// The folders content is read from, after the built-ins; later ones win.
+    fn content_roots(&self) -> Vec<Root> {
+        let mut roots = plugins::roots(&self.plugins, &self.ws.disabled_plugins);
+        roots.push(Root::user(&self.opts.dir));
+        roots
+    }
+
+    /// Plugins, then Widgets, themes and Icon Packs from every content root, with their
+    /// errors logged.
+    fn load_content(&mut self) {
+        self.plugins = PluginStore::new(&self.opts.dir).list();
+        let broken: Vec<String> = self.plugins.iter().filter_map(|p| p.manifest.as_ref().err().map(|e| format!("plugin {}: {e}", p.id))).collect();
+        for e in broken {
             self.log(e);
         }
+        let cat = Catalog::load(&self.content_roots());
+        self.plugin_rows = plugins::rows(&self.plugins, &self.ws.disabled_plugins, &cat, &self.sources.native_names());
+        self.reg = cat.registry;
+        self.lib = cat.library;
+        self.icons.set_packs(cat.icon_packs);
+        if let Some(g) = self.gpu.as_mut() {
+            self.icons.flush_files(g);
+        }
+        let font_problems = self.text.sync_fonts(&cat.font_files);
+        self.families = self.text.family_names();
+        for e in self.lib.errors.clone().into_iter().chain(self.reg.errors()).chain(font_problems) {
+            self.log(e);
+        }
+        self.sync_code();
+    }
+
+    /// Starts the Code Sources of enabled Plugins and stops the rest; unchanged ones keep running.
+    fn sync_code(&mut self) {
+        let (specs, _) = plugins::code_specs(&self.plugins, &self.ws.disabled_plugins);
+        if self.fetch.is_none() && specs.iter().any(|(_, s)| !s.hosts.is_empty()) {
+            match crate::platform::winhttp::WinHttp::new() {
+                Ok(w) => self.fetch = Some(Arc::new(w)),
+                Err(e) => self.log(format!("plugins cannot use the network: {e}")),
+            }
+        }
+        for (_, spec) in &specs {
+            let path = plugins::data_file(&self.opts.dir, &spec.plugin);
+            self.stores.entry(spec.plugin.clone()).or_insert_with(|| Arc::new(KvStore::open(&path)));
+        }
+        let proxy = Mutex::new(self.proxy.clone());
+        let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+            let _ = proxy.lock().unwrap().send_event(UserEvent::SourceNews);
+        });
+        let (fetch, stores) = (self.fetch.clone(), &self.stores);
+        let places = crate::code::fs::Places { home: std::env::var_os("USERPROFILE").map(PathBuf::from), private: vec![self.opts.dir.clone()] };
+        self.sources.sync_code(specs, |spec| {
+            let deps = Deps { fetch: fetch.clone(), store: stores.get(&spec.plugin).cloned(), notify: notify.clone(), limits: Limits::default(), places: places.clone() };
+            WasmSource::start(spec, deps)
+        });
+        self.refresh_code_status();
+    }
+
+    /// Points `.wfplugin` files at this exe, unless another build that still exists has them;
+    /// `take` (the Settings button) claims them anyway. A throwaway `--data` run only looks.
+    fn claim_plugin_files(&mut self, take: bool) {
+        let Ok(exe) = std::env::current_exe() else { return };
+        if !self.opts.register_file_type && !take {
+            self.plugin_files = win32::file_type_owner(&exe);
+            return;
+        }
+        match win32::register_file_type(&exe, take) {
+            Ok((owner, changed)) => {
+                if changed {
+                    self.log("double-clicking a .wfplugin file now installs it with this app");
+                }
+                if let win32::FileOwner::Other(p) = &owner {
+                    self.log(format!(".wfplugin files open with {}; Settings > General can switch them to this app", p.display()));
+                }
+                self.plugin_files = owner;
+            }
+            Err(e) => self.log(format!("could not register .wfplugin files: {e}")),
+        }
+        if let Some(s) = &mut self.settings {
+            s.invalidate();
+        }
+    }
+
+    /// Copies each Code Source's status onto its Plugins page row; a Plugin with several
+    /// names each one.
+    fn refresh_code_status(&mut self) {
+        let status: BTreeMap<String, String> = self.sources.code_status().into_iter().map(|(n, s)| (n, s.line())).collect();
+        for row in &mut self.plugin_rows {
+            let lines: Vec<String> = row.code_sources.iter().filter_map(|n| Some((n, status.get(n)?))).map(|(n, s)| if row.code_sources.len() > 1 { format!("`{n}`: {s}") } else { s.clone() }).collect();
+            row.status = lines.join(" · ");
+        }
+    }
+
+    fn take_source_news(&mut self) {
+        let mut status = false;
+        for (name, news) in self.sources.take_news() {
+            for l in news.logs {
+                self.log(format!("{name}: {l}"));
+            }
+            status |= news.status_changed;
+            if news.all {
+                for iw in self.wins.iter_mut().filter(|w| DataSources::reads(&w.deps, &name)) {
+                    iw.redraw = true;
+                }
+            }
+            for id in news.changed {
+                if let Some(iw) = self.ws.instances.iter().position(|c| c.id == id).and_then(|i| self.wins.get_mut(i)) {
+                    iw.redraw = true;
+                }
+            }
+            for (id, param, v) in news.params {
+                match self.ws.instances.iter().position(|c| c.id == id) {
+                    Some(i) => self.set_param(i, &param, &v),
+                    None => self.log(format!("{name}: no widget `{id}` to save `{param}` for")),
+                }
+            }
+        }
+        if status {
+            self.refresh_code_status();
+            let failing: Vec<String> = self.plugin_rows.iter().filter(|r| r.status.contains("Error") || r.status.contains("Cannot")).map(|r| format!("plugin {}: {}", r.id, r.status)).collect();
+            for l in failing {
+                self.log(l);
+            }
+            if let Some(s) = &mut self.settings {
+                s.invalidate();
+            }
+        }
+    }
+
+    /// Uploads the pictures made off-thread and redraws what shows them.
+    fn images_ready(&mut self) {
+        let Some(gpu) = self.gpu.as_mut() else { return };
+        let ids = self.icons.take_ready(gpu);
+        if ids.is_empty() {
+            return;
+        }
+        let shows = |f: &crate::ui::Frame| f.list.image_ids().any(|i| ids.iter().any(|r| r == i));
+        for iw in &mut self.wins {
+            if iw.frame.as_ref().is_some_and(|f| shows(f)) {
+                iw.redraw = true;
+            }
+        }
+        if let Some(s) = &mut self.settings {
+            if s.drawn_images().any(|i| ids.iter().any(|r| r == i)) {
+                s.invalidate();
+            }
+        }
+    }
+
+    /// Code Sources keep values only for Instances on screen.
+    fn retain_code(&self) {
+        let live: BTreeSet<String> = self.ws.instances.iter().zip(&self.wins).filter(|(_, w)| w.window.is_some()).map(|(c, _)| c.id.clone()).collect();
+        self.sources.retain(&live);
+    }
+
+    fn reload(&mut self, el: &ActiveEventLoop) {
+        self.load_content();
+        self.sync_windows(el);
         self.rebuild_theme();
         self.sources.invalidate();
+        if let Some(s) = &mut self.settings {
+            s.invalidate();
+        }
         self.log("reloaded widget definitions, themes and folders");
     }
 
     /// With `only_assets`, our own log and workspace.json don't count, or saving would reload forever.
     fn watcher(&self, only_assets: bool) -> Option<RecommendedWatcher> {
         let proxy = self.proxy.clone();
+        let data = self.opts.dir.clone();
         notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
             let Ok(ev) = res else { return };
             if matches!(ev.kind, notify::EventKind::Access(_)) {
                 return;
             }
-            let relevant = ev.paths.iter().any(|p| {
-                !only_assets || p.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "toml" | "png" | "ttf" | "otf" | "ttc"))
-            });
-            if relevant {
+            if !only_assets {
+                // a Data Source's own folder: only that source looks again
+                let _ = proxy.send_event(UserEvent::WatchedChanged(ev.paths));
+            } else if ev.paths.iter().any(|p| plugins::is_content_change(&data, p)) {
                 let _ = proxy.send_event(UserEvent::FilesChanged);
             }
         })
@@ -417,7 +749,7 @@ impl App {
                 }
             }
         }
-        let want: Vec<(String, PathBuf)> = self.ws.instances.iter().flat_map(|c| self.sources.watched_paths(c).into_iter().map(|p| (c.id.clone(), p))).collect();
+        let want: Vec<(String, PathBuf)> = (0..self.ws.instances.len()).flat_map(|i| self.with_source_cx(i, |cx| self.sources.watched_paths(cx)).into_iter().map(move |p| (i, p))).map(|(i, p)| (self.ws.instances[i].id.clone(), p)).collect();
         if want != self.watched_paths {
             self.watchers.truncate(1);
             self.watched_paths = want.clone();
@@ -487,6 +819,13 @@ impl ApplicationHandler<UserEvent> for App {
         if self.start_edit {
             self.set_edit(true);
         }
+        if let Some(page) = self.start_page.take() {
+            self.open_settings(el);
+            if let Some(s) = &mut self.settings {
+                s.show_page(&page);
+            }
+        }
+        self.claim_plugin_files(false);
         self.log(format!("ready: {} instance(s), theme {} / {} / {}", self.ws.instances.len(), self.ws.theme.palette, self.ws.theme.fonts, self.ws.theme.glyphs));
     }
 
@@ -495,7 +834,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Menu(id) => match id.as_str() {
                 "edit" => self.set_edit(!self.edit),
                 "settings" => self.open_settings(el),
-                "reload" => self.reload(),
+                "reload" => self.reload(el),
                 "folder" => self.apply(el, Cmd::OpenFolder),
                 "quit" => el.exit(),
                 _ => {}
@@ -503,21 +842,31 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Hotkey => self.set_edit(!self.edit),
             UserEvent::TrayClick => self.open_settings(el),
             UserEvent::FilesChanged => self.reload_at = Some(Instant::now() + Duration::from_millis(250)),
+            UserEvent::WatchedChanged(paths) => {
+                for p in &paths {
+                    self.sources.path_changed(p);
+                }
+                self.redraw_all();
+            }
             UserEvent::ForegroundChanged => {
                 // Explorer reorders a few ms after the event: check a few times, growing gaps
                 let now = Instant::now();
                 self.show_desktop_checks = [4u64, 20, 60, 140, 300, 700].iter().map(|ms| now + Duration::from_millis(*ms)).collect();
             }
             UserEvent::DisplaysChanged => self.display_at = Some(Instant::now() + Duration::from_millis(500)),
+            UserEvent::SourceNews => self.take_source_news(),
+            UserEvent::ImagesReady => self.images_ready(),
         }
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
         if self.settings.as_ref().is_some_and(|s| s.window.id() == id) {
             let gpu_info = self.gpu.as_ref().map(|g| g.info.clone()).unwrap_or_else(|| "no GPU yet".into());
-            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, .. } = self;
-            let parked: Vec<String> = ws.instances.iter().zip(wins.iter()).filter(|(_, w)| w.window.is_none()).map(|(c, _)| c.id.clone()).collect();
-            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, parked: &parked };
+            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, .. } = self;
+            let off = plugins::hidden_instances(ws, reg, installed);
+            let hidden: Vec<(String, settings::Hidden)> = ws.instances.iter().zip(wins.iter()).filter(|(_, w)| w.window.is_none()).map(|(c, _)| (c.id.clone(), off.get(&c.id).map_or(settings::Hidden::Parked, |p| settings::Hidden::PluginOff(p.clone())))).collect();
+            let source_names = sources.names();
+            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files };
             let s = settings.as_mut().unwrap();
             let cmds = s.event(&ev, &ctx, text);
             if matches!(ev, WindowEvent::RedrawRequested) {
@@ -542,6 +891,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::MouseInput { state, button, .. } => self.on_mouse(i, state, button),
             WindowEvent::MouseWheel { delta, .. } => self.on_wheel(i, delta),
+            WindowEvent::DroppedFile(path) => self.on_drop(i, &path),
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput { event, .. } => self.on_key(i, &event.logical_key, event.state),
             WindowEvent::Resized(s) => {
@@ -590,7 +940,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
         if self.reload_at.is_some_and(|t| t <= now) {
             self.reload_at = None;
-            self.reload();
+            self.reload(el);
         }
         if self.save_at.is_some_and(|t| t <= now) {
             self.save_at = None;
@@ -623,6 +973,11 @@ impl ApplicationHandler<UserEvent> for App {
                 soonest(t, &mut wake);
             }
         }
+        if let Some(g) = self.gpu.as_mut() {
+            let shown = self.wins.iter().filter(|w| w.window.is_some()).filter_map(|w| w.frame.as_ref());
+            let drawn = shown.flat_map(|f| f.list.image_ids()).chain(self.settings.iter().flat_map(|s| s.drawn_images()));
+            self.icons.release_unused(g, drawn);
+        }
         if let Some(s) = &self.settings {
             match s.next_frame(now) {
                 Some(t) if t <= now => s.window.request_redraw(),
@@ -641,5 +996,20 @@ impl ApplicationHandler<UserEvent> for App {
             eprintln!("wayfinder: could not save workspace on exit: {e}");
         }
         let _ = DrawList::default();
+    }
+}
+
+#[cfg(test)]
+mod options_tests {
+    use super::*;
+
+    #[test]
+    fn options_come_from_the_command_line() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let o = Options::parse(&args(&["--data", "D:\\wf", "--gpu", "software", "--edit", "--install", "x.wfplugin", "--exit-after", "2.5"]));
+        assert_eq!((o.dir, o.gpu_override.as_deref(), o.edit, o.install, o.exit_after_secs), (PathBuf::from("D:\\wf"), Some("software"), true, Some(PathBuf::from("x.wfplugin")), Some(2.5)));
+        assert!(!o.register_file_type, "a throwaway --data run leaves the file association alone");
+        let plain = Options::parse(&[]);
+        assert!(plain.register_file_type && plain.extra_sources.is_empty() && !plain.selftest);
     }
 }

@@ -113,27 +113,42 @@ pub struct Library {
     pub icon_packs: Vec<String>,
     /// Problems found while loading user files, for the settings log.
     pub errors: Vec<String>,
+    /// The built-in default axes' tokens, untouched by any override, so a partial
+    /// override of Midnight still inherits the rest of Midnight.
+    base: BTreeMap<String, Value>,
 }
 
-fn load_dir(dir: &Path, into: &mut Vec<Axis>, errors: &mut Vec<String>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    let mut paths: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();
-    paths.sort();
-    for p in paths {
-        match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| Axis::parse(&s, p.parent())) {
-            // a user file with the same name replaces the built-in
-            Ok(a) => {
-                into.retain(|x| x.name != a.name);
-                into.push(a);
-            }
-            Err(e) => errors.push(format!("{}: {e}", p.display())),
+/// The three token axes, each read from its own folder of a content root.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AxisKind {
+    Palette,
+    Fonts,
+    Glyphs,
+}
+
+impl AxisKind {
+    pub const ALL: [AxisKind; 3] = [AxisKind::Palette, AxisKind::Fonts, AxisKind::Glyphs];
+
+    pub fn folder(self) -> &'static str {
+        match self {
+            AxisKind::Palette => "palettes",
+            AxisKind::Fonts => "fonts",
+            AxisKind::Glyphs => "glyphs",
         }
     }
 }
 
+/// Subfolders of `<root>/iconpacks`, sorted; "Default" is the engine's own and never a folder.
+pub fn icon_pack_dirs(root: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(rd) = std::fs::read_dir(root.join("iconpacks")) else { return vec![] };
+    let mut packs: Vec<(String, PathBuf)> = rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).filter_map(|e| Some((e.file_name().into_string().ok()?, e.path()))).filter(|(n, _)| n != "Default").collect();
+    packs.sort();
+    packs
+}
+
 impl Library {
-    /// Built-ins plus anything in `<data>/{palettes,fonts,glyphs,iconpacks}`.
-    pub fn load(data: &Path) -> Library {
+    /// Only what ships inside the engine.
+    pub fn builtin() -> Library {
         let mut lib = Library::default();
         for (src, into) in [
             (BUILTIN_PALETTES, &mut lib.palettes),
@@ -144,30 +159,76 @@ impl Library {
                 into.push(Axis::parse(s, None).expect("built-in axis is valid"));
             }
         }
-        load_dir(&data.join("palettes"), &mut lib.palettes, &mut lib.errors);
-        load_dir(&data.join("fonts"), &mut lib.fonts, &mut lib.errors);
-        load_dir(&data.join("glyphs"), &mut lib.glyphs, &mut lib.errors);
-        lib.icon_packs = vec!["Default".into()];
-        if let Ok(rd) = std::fs::read_dir(data.join("iconpacks")) {
-            let mut names: Vec<String> = rd.filter_map(|e| e.ok()).filter(|e| e.path().is_dir()).filter_map(|e| e.file_name().into_string().ok()).collect();
-            names.sort();
-            lib.icon_packs.extend(names);
+        let d = Selection::default();
+        for axis in [Self::pick(&lib.glyphs, &d.glyphs), Self::pick(&lib.fonts, &d.fonts), Self::pick(&lib.palettes, &d.palette)] {
+            lib.base.extend(axis.tokens.clone());
         }
+        lib.icon_packs = vec!["Default".into()];
         lib
+    }
+
+    /// Built-ins plus anything in `<data>/{palettes,fonts,glyphs,iconpacks}`.
+    pub fn load(data: &Path) -> Library {
+        let mut lib = Library::builtin();
+        for kind in AxisKind::ALL {
+            lib.load_axes(kind, &data.join(kind.folder()));
+        }
+        lib.icon_packs.extend(icon_pack_dirs(data).into_iter().map(|(n, _)| n));
+        lib
+    }
+
+    pub fn axes(&self, kind: AxisKind) -> &[Axis] {
+        match kind {
+            AxisKind::Palette => &self.palettes,
+            AxisKind::Fonts => &self.fonts,
+            AxisKind::Glyphs => &self.glyphs,
+        }
+    }
+
+    /// Every `*.toml` in `dir`; one named like an existing axis replaces it in its place.
+    /// A broken file is skipped and reported. Returns the names it read.
+    pub fn load_axes(&mut self, kind: AxisKind, dir: &Path) -> Vec<String> {
+        let Ok(rd) = std::fs::read_dir(dir) else { return vec![] };
+        let mut paths: Vec<_> = rd.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "toml")).collect();
+        paths.sort();
+        let mut names = Vec::new();
+        for p in paths {
+            match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|s| Axis::parse(&s, p.parent())) {
+                Ok(a) => {
+                    names.push(a.name.clone());
+                    let into = match kind {
+                        AxisKind::Palette => &mut self.palettes,
+                        AxisKind::Fonts => &mut self.fonts,
+                        AxisKind::Glyphs => &mut self.glyphs,
+                    };
+                    match into.iter_mut().find(|x| x.name == a.name) {
+                        Some(slot) => *slot = a,
+                        None => into.push(a),
+                    }
+                }
+                Err(e) => self.errors.push(format!("{}: {e}", p.display())),
+            }
+        }
+        names
     }
 
     fn pick<'a>(axes: &'a [Axis], name: &str) -> &'a Axis {
         axes.iter().find(|a| a.name == name).unwrap_or(&axes[0])
     }
 
+    /// An unknown name (a removed file) falls back to the default axis, wherever it sits.
+    fn pick_or_default<'a>(axes: &'a [Axis], name: &str, default: &str) -> &'a Axis {
+        axes.iter().find(|a| a.name == name).unwrap_or_else(|| Self::pick(axes, default))
+    }
+
     pub fn palette(&self, n: &str) -> &Axis {
-        Self::pick(&self.palettes, n)
+        Self::pick_or_default(&self.palettes, n, &Selection::default().palette)
     }
     pub fn fonts(&self, n: &str) -> &Axis {
-        Self::pick(&self.fonts, n)
+        Self::pick_or_default(&self.fonts, n, &Selection::default().fonts)
     }
     pub fn glyphs(&self, n: &str) -> &Axis {
-        Self::pick(&self.glyphs, n)
+        Self::pick_or_default(&self.glyphs, n, &Selection::default().glyphs)
     }
 }
 
@@ -203,10 +264,8 @@ impl Theme {
     /// style layers (later wins) > palette > fonts > glyphs > base (decision 19's fallback chain).
     pub fn compose(lib: &Library, sel: &Selection, layers: &[&BTreeMap<String, Value>]) -> Theme {
         let mut tokens = base_tokens();
-        // Base colours/fonts come from the first (built-in) entry of each axis.
-        for axis in [&lib.glyphs[0], &lib.fonts[0], &lib.palettes[0]] {
-            tokens.extend(axis.tokens.clone());
-        }
+        // Base colours/fonts come from the built-in default axes, as shipped.
+        tokens.extend(lib.base.clone());
         for axis in [lib.glyphs(&sel.glyphs), lib.fonts(&sel.fonts), lib.palette(&sel.palette)] {
             tokens.extend(axis.tokens.clone());
         }
@@ -309,6 +368,45 @@ mod tests {
     fn the_style_schema_keeps_its_file_order() {
         let names: Vec<&str> = style_schema().iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["accent", "radius-lg", "outlines", "blur", "transparent", "bg-opacity", "tint", "shadow", "text-scale", "anim-speed"]);
+    }
+
+    #[test]
+    fn a_user_axis_replaces_the_builtin_in_place() {
+        let dir = std::env::temp_dir().join(format!("wf-axis-inplace-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("palettes")).unwrap();
+        std::fs::write(dir.join("palettes").join("mine.toml"), "name = 'Midnight'\n[tokens]\naccent = '#123456'").unwrap();
+        let lib = Library::load(&dir);
+        assert_eq!(lib.palettes[0].name, "Midnight", "the override keeps the built-in's place");
+        assert_eq!(lib.palettes.iter().filter(|a| a.name == "Midnight").count(), 1);
+        assert_eq!(lib.palettes[1].name, "Daylight");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_partial_override_keeps_builtin_tokens() {
+        let builtin = Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[]);
+        let dir = std::env::temp_dir().join(format!("wf-axis-partial-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("palettes")).unwrap();
+        std::fs::write(dir.join("palettes").join("mine.toml"), "name = 'Midnight'\n[tokens]\naccent = '#123456'").unwrap();
+        let t = Theme::compose(&Library::load(&dir), &Selection::default(), &[]);
+        assert_eq!(t.color("accent").to_hex(), "#123456");
+        assert_eq!(t.color("surface"), builtin.color("surface"), "the rest of Midnight still applies");
+        assert_ne!(t.color("surface"), MAGENTA);
+        // an unknown name falls back to Midnight even when it is no longer first
+        let mut lib = Library::load(&dir);
+        lib.palettes.rotate_left(1);
+        assert_eq!(lib.palette("Removed").name, "Midnight");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn every_file_in_assets_axes_is_built_in() {
+        let lib = Library::load(Path::new("nope"));
+        for (sub, axes) in [("palettes", &lib.palettes), ("fonts", &lib.fonts), ("glyphs", &lib.glyphs)] {
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets").join(sub);
+            let files = std::fs::read_dir(dir).unwrap().filter(|e| e.as_ref().unwrap().path().extension().is_some_and(|x| x == "toml")).count();
+            assert_eq!(axes.len(), files, "assets/{sub} has a file missing from the built-in list");
+        }
     }
 
     #[test]

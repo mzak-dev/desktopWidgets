@@ -43,8 +43,12 @@ impl Power {
 
 struct GpuImage {
     bind: wgpu::BindGroup,
+    /// Its layout size: one frame's, for an animation.
     w: u32,
     h: u32,
+    frames: Option<crate::images::Frames>,
+    /// Its texture's size in memory.
+    bytes: u64,
 }
 
 struct Buf {
@@ -136,6 +140,8 @@ pub struct Gpu {
     images: HashMap<String, GpuImage>,
     lost: Arc<std::sync::atomic::AtomicBool>,
     pub reconfigure_count: std::cell::Cell<u32>,
+    /// Animations play against this clock.
+    epoch: std::time::Instant,
 }
 
 fn instance_desc(dcomp: bool) -> wgpu::InstanceDescriptor {
@@ -282,6 +288,7 @@ impl Gpu {
             attr(3, 20, Float32),
             attr(4, 32, Float32x4),
             attr(5, 48, Float32x4),
+            attr(6, 64, Float32x4),
         ];
         let mk = |label: &str, layouts: &[Option<&wgpu::BindGroupLayout>], vs: &str, fs: &str, stride: u64, attrs: &[wgpu::VertexAttribute]| {
             let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: layouts, immediate_size: 0 });
@@ -329,6 +336,7 @@ impl Gpu {
             atlas,
             text_r,
             images: HashMap::new(),
+            epoch: std::time::Instant::now(),
             lost,
             reconfigure_count: std::cell::Cell::new(0),
         })
@@ -449,8 +457,28 @@ impl Gpu {
         self.images.get(id).map(|i| (i.w, i.h))
     }
 
+    pub fn image_bytes(&self, id: &str) -> Option<u64> {
+        self.images.get(id).map(|i| i.bytes)
+    }
+
     /// Upload straight-alpha RGBA8.
     pub fn upload_image(&mut self, id: &str, rgba: &[u8], w: u32, h: u32) {
+        self.upload(id, rgba, w, h, None);
+    }
+
+    /// A decoded file: a still, or an animation's packed frames.
+    pub fn upload_decoded(&mut self, id: &str, d: &crate::images::Decoded) {
+        self.upload(id, &d.px, d.w, d.h, d.frames.clone());
+    }
+
+    /// How soon a playing animation in `list` shows its next frame.
+    pub fn animation_delay(&self, list: &DrawList) -> Option<std::time::Duration> {
+        let delays = list.layers.iter().flat_map(|l| &l.images).filter(|d| d.play && d.frame.is_none());
+        let ms = delays.filter_map(|d| self.images.get(&d.tex)?.frames.as_ref()?.delays_ms.iter().min().copied()).min()?;
+        Some(std::time::Duration::from_millis(ms.max(16) as u64))
+    }
+
+    fn upload(&mut self, id: &str, rgba: &[u8], w: u32, h: u32, frames: Option<crate::images::Frames>) {
         let tex = self.device.create_texture_with_data(
             &self.queue,
             &wgpu::TextureDescriptor {
@@ -475,7 +503,9 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
-        self.images.insert(id.to_string(), GpuImage { bind, w, h });
+        let bytes = w as u64 * h as u64 * 4;
+        let (w, h) = frames.as_ref().map_or((w, h), |f| (f.frame_w, f.frame_h));
+        self.images.insert(id.to_string(), GpuImage { bind, w, h, frames, bytes });
     }
 
     pub fn drop_image(&mut self, id: &str) {
@@ -512,7 +542,23 @@ impl Gpu {
                 .prepare(&self.device, &self.queue, fs, &mut self.atlas, &t.viewport, areas, swash)
                 .map_err(|e| format!("text prepare: {e}"))?;
             t.shapes[i].write(&self.device, &self.queue, bytemuck::cast_slice(&layer.shapes));
-            let imgs: Vec<ImgInst> = layer.images.iter().map(|d| d.inst).collect();
+            let elapsed = self.epoch.elapsed().as_millis() as u64;
+            let imgs: Vec<ImgInst> = layer
+                .images
+                .iter()
+                .map(|d| {
+                    let mut inst = d.inst;
+                    if let Some(f) = self.images.get(&d.tex).and_then(|i| i.frames.as_ref()) {
+                        let i = match d.frame {
+                            Some(n) => n,
+                            None if d.play => crate::images::frame_at(f, elapsed),
+                            None => 0,
+                        };
+                        inst.uv = crate::images::compose(crate::images::cell_uv(f, i), inst.uv);
+                    }
+                    inst
+                })
+                .collect();
             t.imgs[i].write(&self.device, &self.queue, bytemuck::cast_slice(&imgs));
         }
 

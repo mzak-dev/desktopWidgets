@@ -64,6 +64,8 @@ shadow = { blur = 14, dy = 5 }
   size = "{max(11, min((self.h - ((self.h >= 190 && self.w >= 240 && len(clock.zones) > 0) ? 76 : 0)) * 0.115, self.w * 0.052))}"
   weight = 500
   color = "$text-dim"
+  text_align = "center"
+  text_wrap = true
 
   # ---- tall: a row of city chips ----
   [[root.children]]

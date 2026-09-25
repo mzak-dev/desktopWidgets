@@ -18,5 +18,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --locked --all-targets
+      - name: Plugin SDK tests
+        run: |
+          cargo test --locked --manifest-path sdk/wayfinder-plugin/Cargo.toml
+          cargo test --locked --manifest-path sdk/examples/weather/Cargo.toml
+      - name: Build the example plugin's code
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo build --locked --release --target wasm32-unknown-unknown --manifest-path sdk/examples/weather/Cargo.toml
       - name: Unit tests
+        # WF_EXAMPLE_WASM also runs the example end to end inside the engine
+        env:
+          WF_EXAMPLE_WASM: ${{ github.workspace }}/sdk/examples/weather/target/wasm32-unknown-unknown/release/weather.wasm
         run: cargo test --locked --lib

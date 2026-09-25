@@ -65,8 +65,16 @@ impl App {
         for w in &p.warnings {
             eprintln!("wayfinder: {}: {w}", cfg.id);
         }
-        let continuous = sources.needs_every_frame(&p.deps);
-        iw.next_tick = if continuous { None } else { sources.next_wake(&p.deps, &tm).map(|d| now + d) };
+        // cadence follows each source's state, so it is asked again after every redraw
+        let params = match def {
+            Ok(w) => w.meta().effective_params(&cfg.params_map()),
+            Err(_) => cfg.params_map(),
+        };
+        let cx = data::SourceCx { cfg, params: &params, tm, icon_pack: &pack };
+        let continuous = sources.needs_every_frame(&p.deps, &cx);
+        // a playing GIF wakes at its own frame rate, never every display frame
+        let frame_due = gpu.animation_delay(&p.frame.list).map(|d| now + d);
+        iw.next_tick = if continuous { None } else { sources.next_wake(&p.deps, &cx).map(|d| now + d).into_iter().chain(frame_due).min() };
         iw.widget_error = p.error.clone();
         iw.animating = p.frame.animating || continuous || iw.tween.is_some();
         iw.deps = p.deps;

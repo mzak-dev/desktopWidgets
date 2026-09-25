@@ -1,7 +1,7 @@
 //! `workspace.json` (decision 24). Positions are relative to a monitor's work
 //! area (decision 14); a missing monitor parks its Instances instead of moving them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -112,6 +112,9 @@ pub struct Workspace {
     pub autostart: bool,
     pub header_drag: bool,
     pub instances: Vec<InstanceCfg>,
+    /// Plugins switched off; every other installed Plugin loads.
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub disabled_plugins: BTreeSet<String>,
     /// Version 1 fields, folded into `style` by `migrate`; read, never written.
     #[serde(skip_serializing)]
     overrides: BTreeMap<String, String>,
@@ -132,6 +135,7 @@ impl Default for Workspace {
             autostart: false,
             header_drag: false,
             instances: Vec::new(),
+            disabled_plugins: BTreeSet::new(),
             overrides: BTreeMap::new(),
             blur: None,
             outlines: None,
@@ -370,6 +374,15 @@ mod tests {
         let w: Workspace = serde_json::from_str(r#"{"instances":[{"id":"a","widget":"clock","future_field":1}],"other":true}"#).unwrap();
         assert_eq!((w.instances[0].w, w.gpu.as_str()), (200.0, "low"));
         assert_eq!(Workspace::default().next_id("clock"), "clock-1");
+    }
+
+    #[test]
+    fn disabled_plugins_round_trip_and_are_omitted_when_empty() {
+        assert!(!serde_json::to_string(&Workspace::default()).unwrap().contains("disabled_plugins"));
+        let mut w = Workspace::default();
+        w.disabled_plugins.insert("sunset".into());
+        let back: Workspace = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+        assert_eq!(back.disabled_plugins, w.disabled_plugins);
     }
 
     #[test]

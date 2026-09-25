@@ -62,7 +62,7 @@ _Avoid_: theme, glyph set
 The global state in which Instances show handles and can be dragged and resized.
 
 **Data Source**:
-A named producer of values that widget definitions bind to (`clock`, `sys`, `shortcuts`). It declares how often each of its fields can change, which is what lets an idle desktop cost nothing.
+A named producer of values that widget definitions bind to (`clock`, `sys`, `shortcuts`, `media`, `audio`). It declares how often each of its fields can change, or says through its Notifier when it changed, which is what lets an idle desktop cost nothing. It may also handle action verbs (`media.play_pause`). Built-ins, Code Sources and native sources an app built on Wayfinder registers (ADR-0009) are all Data Sources.
 _Avoid_: measure, plugin
 
 **Z-mode**:
@@ -70,6 +70,26 @@ Where an Instance sits relative to other windows: Desktop, Bottom, Normal or Top
 
 **Park**:
 To hide an Instance whose monitor is absent while remembering it, instead of relocating or deleting it.
+
+**Plugin**:
+A package of content (Widgets, palettes, font sets, glyph sets, Icon Packs), and optionally Code Sources, that is installed, switched off and on, and removed as one unit. Its folder under `plugins/` has the data folder's layout plus a `plugin.toml` manifest; it is shared as a `.wfplugin` file, a zip of that folder.
+_Avoid_: add-on, extension, skin, package (for the installed folder)
+
+**Code Source**:
+A Data Source whose values come from a Plugin's WebAssembly module (written in Rust with the `wayfinder-plugin` crate), run sandboxed on its own thread. The Plugin's Widgets stay TOML Widgets that bind to it (`{weather.temp}`) and send it actions (`weather.refresh`).
+_Avoid_: Rust Widget (that is engine code, like the Drawer), script, native plugin
+
+**File access**:
+What a Code Source may read: folders under the home folder its `plugin.toml` declares (`fs_read`), and the folder the user picked in a param it names (`fs_read_params`). Read-only, shown when installing.
+
+**Plugin data**:
+What a Plugin's code saves between runs, up to 1 MB, in `plugin-data/<id>.json`. It survives upgrades and goes when the Plugin is removed.
+
+**Content root**:
+A folder laid out like the data folder that content is read from: each enabled Plugin, then the data folder itself, after the built-ins. A later root wins, so a Plugin may restyle a built-in Widget and the user's own file still beats the Plugin's.
+
+**Catalog**:
+Everything the engine can show once every content root is read, and which root each piece came from.
 
 ## Relationships
 
@@ -79,6 +99,7 @@ To hide an Instance whose monitor is absent while remembering it, instead of rel
 - A **Widget** binds to one or more **Data Sources**; its appearance resolves through the active **Theme**.
 - An **Instance** takes the global **Style** and axes unless it overrides them; its own values win.
 - An **Instance** has exactly one **Z-mode** and is anchored to one monitor; if that monitor is absent it is **Parked**.
+- A **Plugin** is a **Content root** while it is on, and runs its **Code Source** while it is on. An **Instance** whose Widget only a switched-off Plugin provides is hidden like a Parked one, and shows again when the Plugin is back on.
 
 ## Commit messages
 

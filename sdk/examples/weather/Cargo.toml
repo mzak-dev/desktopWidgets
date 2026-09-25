@@ -1,0 +1,20 @@
+[package]
+name = "weather"
+version = "1.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wayfinder-plugin = { path = "../../wayfinder-plugin" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+
+# its own project, built for wasm32-unknown-unknown
+[workspace]

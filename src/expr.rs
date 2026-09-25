@@ -18,6 +18,8 @@ enum Node {
     Bin(Op, Box<Node>, Box<Node>),
     Tern(Box<Node>, Box<Node>, Box<Node>),
     Call(String, Vec<Node>),
+    /// `at(list, i).url`: a field of a computed value.
+    Get(Box<Node>, String),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,7 +95,10 @@ impl<'a> Scope<'a> {
             }
             Ok(cur.clone())
         };
-        let undefined = || format!("undefined name `{}`", path[0]);
+        let undefined = || match self.provider {
+            Some(_) => format!("no data source or variable `{}` (if a plugin provides it, is the plugin installed and switched on?)", path[0]),
+            None => format!("undefined name `{}`", path[0]),
+        };
         let v = match self.vars.iter().rev().find(|(n, _)| *n == path[0]) {
             Some((_, root)) => walk(root)?,
             None => {
@@ -278,7 +283,15 @@ impl Parser {
                             }
                         }
                     }
-                    Ok(Node::Call(id, args))
+                    let mut node = Node::Call(id, args);
+                    while self.eat(".") {
+                        match self.toks.get(self.pos).cloned() {
+                            Some(Tok::Ident(s)) => node = Node::Get(node.into(), s),
+                            _ => return Err("expected a name after `.`".into()),
+                        }
+                        self.pos += 1;
+                    }
+                    Ok(node)
                 }
                 _ => {
                     let mut path = vec![id];
@@ -398,7 +411,26 @@ fn eval(n: &Node, sc: &Scope) -> Result<Value, String> {
             let a: Vec<Value> = args.iter().map(|x| eval(x, sc)).collect::<Result<_, _>>()?;
             call(name, &a)?
         }
+        Node::Get(base, key) => eval(base, sc)?.get(key).cloned().ok_or_else(|| format!("undefined `.{key}`"))?,
     })
+}
+
+/// `v[k]`: a list by position (negative counts from the end), an object by key; nil when
+/// there is none, so a gallery past its last picture shows nothing rather than an error.
+fn index(v: &Value, k: &Value) -> Value {
+    let pos = match k {
+        Value::Num(n) => Some(n.floor() as i64),
+        Value::Str(s) => s.trim().parse::<i64>().ok(),
+        _ => None,
+    };
+    match (v, pos) {
+        (Value::List(l), Some(i)) => {
+            let i = if i < 0 { i + l.len() as i64 } else { i };
+            usize::try_from(i).ok().and_then(|i| l.get(i)).cloned().unwrap_or_default()
+        }
+        (Value::Obj(o), _) => o.get(&k.to_string()).cloned().unwrap_or_default(),
+        _ => Value::Nil,
+    }
 }
 
 fn call(name: &str, a: &[Value]) -> Result<Value, String> {
@@ -422,6 +454,7 @@ fn call(name: &str, a: &[Value]) -> Result<Value, String> {
         "floor" => Value::Num(n(0)?.floor()),
         "ceil" => Value::Num(n(0)?.ceil()),
         "clamp" => Value::Num(n(0)?.clamp(n(1)?, n(2)?.max(n(1)?))),
+        "at" => a.get(1..).unwrap_or_default().iter().fold(a.first().cloned().unwrap_or_default(), |v, k| index(&v, k)),
         "len" => Value::Num(match a.first() {
             Some(Value::Str(s)) => s.chars().count(),
             Some(Value::List(l)) => l.len(),
@@ -588,6 +621,30 @@ mod tests {
         assert_eq!(ev("'h' + clock.hour").unwrap(), Value::Str("h7".into()));
         assert_eq!(ev("max(1, 9, 3) + clamp(15, 0, 10)").unwrap(), Value::Num(19.0));
         assert_eq!(ev("pad(clock.minute, 2) + ':' + pad(clock.hour, 3)").unwrap(), Value::Str("05:007".into()));
+    }
+
+    #[test]
+    fn at_indexes_by_a_computed_position_or_key() {
+        let mut sc = Scope::new();
+        let pics = Value::List(vec![Value::obj([("url", "a.png".into())]), Value::obj([("url", "b.png".into())])]);
+        sc.set("gallery", Value::obj([("items", pics), ("by", Value::obj([("x", 7.into())]))]));
+        sc.set("state", Value::obj([("selected", 1.into()), ("key", "x".into())]));
+        let ev = |src: &str| Template::parse(&format!("{{{src}}}")).and_then(|t| t.eval(&sc));
+        assert_eq!(ev("at(gallery.items, state.selected).url").unwrap(), Value::Str("b.png".into()));
+        assert_eq!(ev("at(gallery.items, -1, 'url')").unwrap(), Value::Str("b.png".into()), "from the end, then a key");
+        assert_eq!(ev("at(gallery.items, (state.selected + 1) % len(gallery.items)).url").unwrap(), Value::Str("a.png".into()), "wraps for a next arrow");
+        assert_eq!(ev("at(gallery.by, state.key)").unwrap(), Value::Num(7.0));
+        assert_eq!(ev("at(gallery.items, 5)").unwrap(), Value::Nil, "past the end is nothing, not an error");
+        assert!(ev("at(gallery.items, 5).url").unwrap_err().contains("url"));
+        assert!(sc.deps().contains("gallery.items") && sc.deps().contains("state.selected"));
+    }
+
+    #[test]
+    fn a_missing_source_is_named() {
+        let provider = |n: &str| (n == "clock").then(|| Value::obj([("hour", 1.into())]));
+        let sc = Scope::with_provider(&provider);
+        let e = Template::parse("{agents.items}").unwrap().eval(&sc).unwrap_err();
+        assert!(e.contains("`agents`") && e.contains("plugin"), "{e}");
     }
 
     #[test]

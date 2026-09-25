@@ -16,9 +16,24 @@ pub struct WidgetMeta {
     pub max_card_size: Option<(f32, f32)>,
     pub params: Vec<ParamDef>,
     pub initial_state: BTreeMap<String, Value>,
+    /// Data sources it cannot work without (`needs = ["agents"]`), so a missing one is
+    /// named instead of the widget showing blank.
+    pub needs: Vec<String>,
+}
+
+/// "needs the `agents` data source, which is missing…"
+pub fn needs_message(missing: &[&str]) -> String {
+    let names = missing.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(" and ");
+    let (what, is) = if missing.len() == 1 { ("data source", "is") } else { ("data sources", "are") };
+    format!("needs the {names} {what}, which {is} missing. Is the plugin that provides it installed and switched on?")
 }
 
 impl WidgetMeta {
+    /// Its needed data sources that `has` does not know.
+    pub fn unmet(&self, has: impl Fn(&str) -> bool) -> Vec<&str> {
+        self.needs.iter().map(String::as_str).filter(|n| !has(n)).collect()
+    }
+
     pub fn effective_params(&self, saved: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
         self.params.iter().map(|p| (p.name.clone(), saved.get(&p.name).cloned().unwrap_or_else(|| p.default.clone()))).collect()
     }
@@ -62,7 +77,11 @@ impl ParamType {
         }
     }
 
+    /// `folder` names the folder picker too.
     pub fn parse(s: &str) -> Option<Self> {
+        if s == "folder" {
+            return Some(Self::Path);
+        }
         Self::ALL.into_iter().find(|t| t.id() == s)
     }
 }
@@ -77,8 +96,34 @@ pub struct ParamDef {
     pub min: Option<f64>,
     pub max: Option<f64>,
     pub step: Option<f64>,
-    pub choices: Vec<String>,
+    pub choices: Vec<Choice>,
     pub seed: Option<Seed>,
+    /// Settings shows params with one group under its own heading (`group = "Motion"`).
+    pub group: Option<String>,
+}
+
+/// One option of an `enum` param: the saved value, and what Settings shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    pub value: String,
+    pub label: String,
+}
+
+impl ParamDef {
+    /// The params in the order Settings shows them: ungrouped first, then each group in
+    /// the order it first appears.
+    pub fn grouped(params: &[ParamDef]) -> Vec<(Option<&str>, Vec<&ParamDef>)> {
+        let mut out: Vec<(Option<&str>, Vec<&ParamDef>)> = vec![(None, vec![])];
+        for p in params {
+            let g = p.group.as_deref();
+            match out.iter_mut().find(|(k, _)| *k == g) {
+                Some((_, v)) => v.push(p),
+                None => out.push((g, vec![p])),
+            }
+        }
+        out.retain(|(_, v)| !v.is_empty());
+        out
+    }
 }
 
 /// Unlike a default, a seed is written once and then saved like any edit.

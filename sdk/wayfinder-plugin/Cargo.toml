@@ -1,0 +1,13 @@
+[package]
+name = "wayfinder-plugin"
+version = "0.1.0"
+edition = "2024"
+description = "Write the code of a Wayfinder plugin (a Code Source) in Rust"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# its own project: the engine is Windows-only, this builds for wasm32-unknown-unknown
+[workspace]
