@@ -95,12 +95,14 @@ pub enum ParamType {
     Bool,
     Str,
     Path,
+    /// One file, picked with a file dialog (`folder` is the folder picker).
+    File,
     Duration,
     Shortcuts,
 }
 
 impl ParamType {
-    pub const ALL: [ParamType; 9] = [Self::Color, Self::Font, Self::Number, Self::Enum, Self::Bool, Self::Str, Self::Path, Self::Duration, Self::Shortcuts];
+    pub const ALL: [ParamType; 10] = [Self::Color, Self::Font, Self::Number, Self::Enum, Self::Bool, Self::Str, Self::Path, Self::File, Self::Duration, Self::Shortcuts];
 
     pub fn id(self) -> &'static str {
         match self {
@@ -111,6 +113,7 @@ impl ParamType {
             Self::Bool => "bool",
             Self::Str => "string",
             Self::Path => "path",
+            Self::File => "file",
             Self::Duration => "duration",
             Self::Shortcuts => "shortcuts",
         }

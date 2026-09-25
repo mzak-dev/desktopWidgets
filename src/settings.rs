@@ -966,15 +966,16 @@ impl UiState {
                 let f = self.focus.as_ref().filter(|f| f.key == ik).map(|f| (f.caret, self.caret_on));
                 k.input(&ik, &self.input_text(ctx, &ik), "", f, CONTROL_W, false)
             }
-            ParamType::Path => {
+            ParamType::Path | ParamType::File => {
                 let ik = format!("n:{id}:{name}");
+                let pick = if pd.ty == ParamType::File { "file" } else { "folder" };
                 let f = self.focus.as_ref().filter(|f| f.key == ik).map(|f| (f.caret, self.caret_on));
                 let has_list = self.def_of(ctx, &cfg.widget).is_some_and(|d| d.params.iter().any(|p| p.ty == ParamType::Shortcuts));
                 Node::new(format!("{rk}/pc"))
                     .col()
                     .gap(8.0)
-                    .child(k.input(&ik, &self.input_text(ctx, &ik), if has_list { "no folder: use the list below" } else { "no folder chosen" }, f, CONTROL_W, false))
-                    .child(Node::new(format!("{rk}/pb")).row().gap(8.0).child(k.button(&format!("{rk}/browse"), "Browse...", format!("folder:{id}|{name}"), false)).child(k.button(&format!("{rk}/clear"), "Clear", format!("clear:{id}|{name}"), false)))
+                    .child(k.input(&ik, &self.input_text(ctx, &ik), if has_list { "no folder: use the list below" } else if pd.ty == ParamType::File { "no file chosen" } else { "no folder chosen" }, f, CONTROL_W, false))
+                    .child(Node::new(format!("{rk}/pb")).row().gap(8.0).child(k.button(&format!("{rk}/browse"), "Browse...", format!("{pick}:{id}|{name}"), false)).child(k.button(&format!("{rk}/clear"), "Clear", format!("clear:{id}|{name}"), false)))
             }
             ParamType::Shortcuts => return self.shortcuts_editor(k, ctx, cfg, pd, images),
         };
@@ -1522,6 +1523,14 @@ impl UiState {
             "folder" => {
                 let Some((id, name)) = rest.split_once('|') else { return vec![] };
                 match dialog::pick_folder(hwnd) {
+                    Some(p) => vec![Cmd::Param(id.into(), name.into(), Value::Str(p.to_string_lossy().into_owned()))],
+                    None => vec![],
+                }
+            }
+            "file" => {
+                let Some((id, name)) = rest.split_once('|') else { return vec![] };
+                let types = [("Images and GIFs", "*.gif;*.png;*.jpg;*.jpeg;*.webp;*.bmp"), ("All files", "*.*")];
+                match dialog::pick_file_of(hwnd, &types) {
                     Some(p) => vec![Cmd::Param(id.into(), name.into(), Value::Str(p.to_string_lossy().into_owned()))],
                     None => vec![],
                 }

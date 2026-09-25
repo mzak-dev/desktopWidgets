@@ -1164,6 +1164,8 @@ mod tests {
         assert_eq!(groups, [(None, vec!["color"]), (Some("Motion"), vec!["speed", "decay"]), (Some("Shape"), vec!["bars"])]);
         let pics = WidgetDef::parse("t", "[params.pics]\ntype = 'folder'\n[root]\ntype = 'box'").unwrap();
         assert_eq!(pics.meta.params[0].ty, ParamType::Path, "a folder picker");
+        let pic = WidgetDef::parse("t", "[params.pic]\ntype = 'file'\n[root]\ntype = 'box'").unwrap();
+        assert_eq!(pic.meta.params[0].ty, ParamType::File, "a file picker");
         let e = WidgetDef::parse("t", "[params.s]\ntype = 'enum'\nchoices = [{ label = 'x' }]\n[root]\ntype = 'box'").err().unwrap();
         assert!(e.contains("params.s.choices"), "{e}");
     }

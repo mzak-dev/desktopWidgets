@@ -36,7 +36,9 @@ pub struct ImgInst {
     pub half: [f32; 2],
     pub radius: f32,
     pub alpha: f32,
-    pub _pad: [f32; 2],
+    /// Physical px the edge fades over.
+    pub feather: f32,
+    pub _pad: f32,
     pub tint: [f32; 4],
     pub clip: [f32; 4],
     /// The part of the texture to show: `[u0, v0, u1, v1]`.

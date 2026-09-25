@@ -40,6 +40,8 @@ pub struct ImageSpec {
     /// Shows this frame of an animation instead of playing it.
     pub frame: Option<u32>,
     pub fit: Fit,
+    /// Logical px over which the edge fades to transparent, inside the rounded shape.
+    pub feather: f32,
 }
 
 /// How an image fills a box of another shape.
@@ -623,6 +625,7 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                         center: [cx, cy],
                         half: [dw, dh],
                         radius: r.min(dw).min(dh),
+                        feather: im.feather * s,
                         alpha: op,
                         tint: im.tint.map_or([1.0; 4], |t| t.0),
                         clip,
