@@ -92,6 +92,8 @@ pub enum Cmd {
     /// Make double-clicking a `.wfplugin` run this exe.
     ClaimPluginFiles,
     Quit,
+    /// Save, start a fresh copy and quit this one.
+    Restart,
     Close,
     Minimize,
 }
@@ -1173,6 +1175,7 @@ impl UiState {
             .child(k.section("gn/s1", "Graphics"))
             .child(k.row("gn/gpu", "Adapter", note, k.dropdown("gpu", &self.dropdown_label(ctx, "gpu"), CONTROL_W, f("gpu"))))
             .child(k.row("gn/info", "In use", "", k.txt("gn/info/t".into(), ctx.gpu_info, 12.0, k.c("text-dim")).wrap_text()))
+            .child(k.row("gn/restart", "Apply the adapter", "Restarts Wayfinder so the choice above takes effect. Your widgets stay where they are.", k.button("gn/restart/b", "Restart Wayfinder", "restart".into(), true)))
             .child(k.section("gn/s2", "Behaviour"))
             .child(k.row("gn/auto", "Start with Windows", "Launch quietly into the tray at sign-in", k.toggle("tg:autostart", ws.autostart, "autostart:toggle".into())))
             .child(k.row("gn/grid", "Snap grid", "Edit layout snaps to this many pixels (0 = off). Hold Shift to ignore snapping.", Node::new("gn/grid/c").row().align(taffy::AlignItems::CENTER).gap(12.0).child(k.slider("sl:grid", (grid.3 / grid.1) as f32, 178.0, "sl:grid".into())).child(k.txt("gn/grid/v".into(), &fmt_num(grid.3), 12.5, k.c("text-dim")))))
@@ -1592,6 +1595,7 @@ impl UiState {
             "claimfiles" => vec![Cmd::ClaimPluginFiles],
             "reload" => vec![Cmd::Reload],
             "quit" => vec![Cmd::Quit],
+            "restart" => vec![Cmd::Restart],
             "close" => vec![Cmd::Close],
             "min" => vec![Cmd::Minimize],
             _ => vec![],

@@ -286,8 +286,31 @@ impl App {
                 win32::open(&store.dir().to_string_lossy());
             }
             Cmd::Quit => el.exit(),
+            Cmd::Restart => match relaunch() {
+                Ok(()) => el.exit(), // `exiting` saves the workspace; the new copy waits for this one to go
+                Err(e) => self.log(format!("could not restart: {e}")),
+            },
             Cmd::Close => self.settings = None,
             Cmd::Minimize => {} // handled by the settings window itself
         }
     }
+}
+
+/// Starts a new copy of this app a moment from now, when this one has released the
+/// single-instance lock, with the same arguments.
+fn relaunch() -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let quoted = |s: &str| format!("\"{}\"", s.replace('"', ""));
+    let line = std::iter::once(quoted(&exe.to_string_lossy())).chain(args.iter().map(|a| quoted(a))).collect::<Vec<_>>().join(" ");
+    std::process::Command::new("cmd")
+        // raw, so cmd sees the quotes as written: the outer pair is the one `/C` strips
+        .raw_arg(format!("/C \"timeout /T 2 /NOBREAK >NUL & {line}\""))
+        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
