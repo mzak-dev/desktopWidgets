@@ -10,7 +10,7 @@ use crate::anim::Ease;
 use crate::color::{Color, MAGENTA};
 use crate::elements;
 use crate::expr::{Scope, Template};
-use crate::modules::{Arrange, Arrangement, Each, Inst, ModuleDef, ModuleSet, Placed, PlacedSlot, SlotDef, TierDef, place};
+use crate::modules::{Arrange, Arrangement, Each, Inst, ModuleDef, ModuleSet, Placed, PlacedSlot, SlotDef, TierDef};
 use crate::theme::Theme;
 use crate::ui::*;
 use crate::value::Value;
@@ -557,69 +557,14 @@ impl<'a> Attrs<'_, 'a> {
 }
 
 impl<'a> TreeBuilder<'a> {
-    /// Picks the tier, lists the Modules that exist, and places them per the layout.
+    /// Picks the tier, lists the Modules that exist, and places them per the layout
+    /// (`ModuleSet::resolve`), which is where that decision lives and is tested.
     fn arrange(&mut self, ms: &'a ModuleSet, a: Option<Arrange>) -> Result<(), String> {
-        let forced = a.and_then(|a| a.tier).and_then(|n| ms.tiers.iter().find(|t| t.name == n));
-        let tier = match forced {
-            Some(t) => t,
-            None => {
-                let mut hit = None;
-                for t in &ms.tiers {
-                    if let Some(w) = &t.when {
-                        if w.eval(&self.scope).map_err(|e| format!("tiers.{}.when: {e}", t.name))?.truthy() {
-                            hit = Some(t);
-                            break;
-                        }
-                    }
-                }
-                hit.or_else(|| ms.tiers.iter().find(|t| t.when.is_none())).unwrap_or(&ms.tiers[ms.tiers.len() - 1])
-            }
-        };
-        self.tier = tier.name.clone();
-        self.scope.set("tier", Value::Str(tier.name.clone()));
-        for (mi, m) in ms.modules.iter().enumerate() {
-            let what = format!("modules.{}", m.name);
-            let Some(e) = &m.each else {
-                if let Some(inst) = self.instance(m, mi, None, 0, &what)? {
-                    self.insts.push(inst);
-                }
-                continue;
-            };
-            let list = match e.list.eval(&self.scope).map_err(|x| format!("{what}.for: {x}"))? {
-                Value::List(l) => l,
-                Value::Nil => vec![],
-                other => return Err(format!("{what}.for: expected a list, got `{other}`")),
-            };
-            for (i, item) in list.into_iter().enumerate() {
-                self.scope.set(&e.var, item.clone());
-                self.scope.set("index", Value::Num(i as f64));
-                let inst = self.instance(m, mi, Some(item), i, &what);
-                self.scope.pop();
-                self.scope.pop();
-                if let Some(inst) = inst? {
-                    self.insts.push(inst);
-                }
-            }
-        }
-        let user = a.and_then(|a| a.layout.get(&tier.name));
-        self.placed = place(ms, &self.insts, user.unwrap_or(&tier.layout));
+        let resolved = ms.resolve(&mut self.scope, a)?;
+        self.tier = resolved.tier;
+        self.insts = resolved.insts;
+        self.placed = resolved.placed;
         Ok(())
-    }
-
-    /// The Module (or one item of it), unless its `when` says it does not exist.
-    fn instance(&self, m: &ModuleDef, module: usize, item: Option<Value>, i: usize, what: &str) -> Result<Option<Inst>, String> {
-        if let Some(w) = &m.when {
-            if !w.eval(&self.scope).map_err(|e| format!("{what}.when: {e}"))?.truthy() {
-                return Ok(None);
-            }
-        }
-        let label = m.label.eval(&self.scope).map_err(|e| format!("{what}.label: {e}"))?.to_string();
-        let id = match m.each.as_ref().map(|e| &e.key) {
-            None => m.name.clone(),
-            Some(None) => format!("{}:{i}", m.name),
-            Some(Some(k)) => format!("{}:{}", m.name, k.eval(&self.scope).map_err(|e| format!("{what}.key: {e}"))?),
-        };
-        Ok(Some(Inst { id, module, label, item }))
     }
 
     fn arrangement(&self) -> Option<Arrangement> {

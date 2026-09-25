@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::expr::Template;
+use crate::expr::{Scope, Template};
 use crate::format::Elem;
 use crate::value::Value;
 use crate::workspace::Layout;
@@ -143,6 +143,85 @@ pub fn place(set: &ModuleSet, insts: &[Inst], layout: &BTreeMap<String, Vec<Stri
     out
 }
 
+/// What arranging a Widget for one frame produced, before its Modules are built into a tree:
+/// which Tier is active, every Module (or item of a `for` Module) that exists right now, and
+/// which slot each landed in (see `place`).
+pub struct Resolved {
+    pub tier: String,
+    pub insts: Vec<Inst>,
+    pub placed: BTreeMap<String, Vec<usize>>,
+}
+
+impl ModuleSet {
+    /// Picks the Tier (forced, else the first whose `when` holds, else the one with none, else
+    /// the last), lists the Modules that exist now against `scope`, and places them per the
+    /// Instance's saved layout or the Tier's default.
+    pub fn resolve(&self, scope: &mut Scope, a: Option<Arrange>) -> Result<Resolved, String> {
+        let forced = a.and_then(|a| a.tier).and_then(|n| self.tiers.iter().find(|t| t.name == n));
+        let tier = match forced {
+            Some(t) => t,
+            None => {
+                let mut hit = None;
+                for t in &self.tiers {
+                    if let Some(w) = &t.when {
+                        if w.eval(scope).map_err(|e| format!("tiers.{}.when: {e}", t.name))?.truthy() {
+                            hit = Some(t);
+                            break;
+                        }
+                    }
+                }
+                hit.or_else(|| self.tiers.iter().find(|t| t.when.is_none())).unwrap_or(&self.tiers[self.tiers.len() - 1])
+            }
+        };
+        let tier_name = tier.name.clone();
+        scope.set("tier", Value::Str(tier_name.clone()));
+        let mut insts = Vec::new();
+        for (mi, m) in self.modules.iter().enumerate() {
+            let what = format!("modules.{}", m.name);
+            let Some(e) = &m.each else {
+                if let Some(inst) = Self::instance(scope, m, mi, None, 0, &what)? {
+                    insts.push(inst);
+                }
+                continue;
+            };
+            let list = match e.list.eval(scope).map_err(|x| format!("{what}.for: {x}"))? {
+                Value::List(l) => l,
+                Value::Nil => vec![],
+                other => return Err(format!("{what}.for: expected a list, got `{other}`")),
+            };
+            for (i, item) in list.into_iter().enumerate() {
+                scope.set(&e.var, item.clone());
+                scope.set("index", Value::Num(i as f64));
+                let inst = Self::instance(scope, m, mi, Some(item), i, &what);
+                scope.pop();
+                scope.pop();
+                if let Some(inst) = inst? {
+                    insts.push(inst);
+                }
+            }
+        }
+        let user = a.and_then(|a| a.layout.get(&tier_name));
+        let placed = place(self, &insts, user.unwrap_or(&tier.layout));
+        Ok(Resolved { tier: tier_name, insts, placed })
+    }
+
+    /// The Module (or one item of it), unless its `when` says it does not exist.
+    fn instance(scope: &Scope, m: &ModuleDef, module: usize, item: Option<Value>, i: usize, what: &str) -> Result<Option<Inst>, String> {
+        if let Some(w) = &m.when {
+            if !w.eval(scope).map_err(|e| format!("{what}.when: {e}"))?.truthy() {
+                return Ok(None);
+            }
+        }
+        let label = m.label.eval(scope).map_err(|e| format!("{what}.label: {e}"))?.to_string();
+        let id = match m.each.as_ref().map(|e| &e.key) {
+            None => m.name.clone(),
+            Some(None) => format!("{}:{i}", m.name),
+            Some(Some(k)) => format!("{}:{}", m.name, k.eval(scope).map_err(|e| format!("{what}.key: {e}"))?),
+        };
+        Ok(Some(Inst { id, module, label, item }))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,5 +247,50 @@ mod tests {
         let moved = BTreeMap::from([("col".to_string(), vec!["y".to_string()]), ("row".to_string(), vec!["y".into(), "x".into()])]);
         let placed = place(&ms, &insts, &moved);
         assert_eq!((&placed["col"], &placed["row"]), (&vec![1], &vec![0]), "y is placed once, in the first slot that names it");
+    }
+
+    fn modules(src: &str) -> ModuleSet {
+        WidgetDef::parse("t", src).unwrap().modules.unwrap()
+    }
+
+    fn scope_at(w: f64) -> Scope<'static> {
+        let mut sc = Scope::new();
+        sc.set("self", Value::obj([("w", w.into())]));
+        sc
+    }
+
+    #[test]
+    fn a_forced_tier_wins_even_if_its_when_does_not_hold() {
+        let ms = modules("[tiers.compact]\nwhen = \"{self.w < 260}\"\n[tiers.normal]\n[root]\ntype = 'box'");
+        let layout = Layout::new();
+        let a = Arrange { layout: &layout, tier: Some("compact"), preview: false };
+        let r = ms.resolve(&mut scope_at(500.0), Some(a)).unwrap();
+        assert_eq!(r.tier, "compact", "the caller named a tier, so its own `when` is not asked");
+    }
+
+    #[test]
+    fn the_first_tier_whose_when_holds_wins_else_the_one_without() {
+        let ms = modules("[tiers.a]\nwhen = \"{self.w < 100}\"\n[tiers.b]\nwhen = \"{self.w < 300}\"\n[tiers.c]\n[root]\ntype = 'box'");
+        assert_eq!(ms.resolve(&mut scope_at(200.0), None).unwrap().tier, "b", "a's when fails, b's holds");
+        assert_eq!(ms.resolve(&mut scope_at(500.0), None).unwrap().tier, "c", "neither a nor b holds, c has no when");
+    }
+
+    #[test]
+    fn the_last_tier_is_the_fallback_when_every_one_has_a_when() {
+        let ms = modules("[tiers.a]\nwhen = \"{self.w < 100}\"\n[tiers.b]\nwhen = \"{self.w < 200}\"\n[root]\ntype = 'box'");
+        assert_eq!(ms.resolve(&mut scope_at(500.0), None).unwrap().tier, "b", "nothing holds and nothing lacks a when");
+    }
+
+    #[test]
+    fn a_for_module_makes_one_instance_per_item_and_when_hides_others() {
+        let ms = modules(
+            "[tiers.a]\n[modules.g]\nfor = \"{items}\"\nas = \"it\"\nkey = \"{it.k}\"\n[modules.hidden]\nwhen = \"{show_hidden}\"\n[root]\ntype = 'box'",
+        );
+        let mut sc = Scope::new();
+        sc.set("items", Value::List(vec![Value::obj([("k", "x".into())]), Value::obj([("k", "y".into())])]));
+        sc.set("show_hidden", Value::Bool(false));
+        let r = ms.resolve(&mut sc, None).unwrap();
+        let ids: Vec<&str> = r.insts.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["g:x", "g:y"], "one Inst per item, keyed by `key`, and `hidden`'s when excludes it");
     }
 }
