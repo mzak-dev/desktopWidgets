@@ -512,7 +512,11 @@ impl UiState {
             return std::iter::once(global).chain(names.into_iter().map(|n| (n.clone(), n))).collect();
         }
         if let Some((_, tok)) = key.strip_prefix("sy:").and_then(Self::style_target) {
-            return style_schema().iter().find(|p| p.name == tok).map(|p| p.choices.iter().map(|c| (c.value.clone(), capitalized(&c.label))).collect()).unwrap_or_default();
+            let Some(p) = style_schema().iter().find(|p| p.name == tok) else { return Vec::new() };
+            if p.ty == ParamType::Font {
+                return std::iter::once((String::new(), "Theme font".to_string())).chain(ctx.fonts.iter().map(|f| (f.clone(), f.clone()))).collect();
+            }
+            return p.choices.iter().map(|c| (c.value.clone(), capitalized(&c.label))).collect();
         }
         if let Some(rest) = key.strip_prefix("p:") {
             if let Some((id, name)) = rest.split_once(':') {
@@ -1401,7 +1405,8 @@ impl UiState {
             return vec![Cmd::Theme(sel)];
         }
         if let Some((scope, tok)) = key.strip_prefix("sy:").and_then(Self::style_target) {
-            return vec![Cmd::Style(scope, tok.into(), Some(Value::Str(value.into())))];
+            // the empty pick of a font is "Theme font": no override at all
+            return vec![Cmd::Style(scope, tok.into(), (!value.is_empty()).then(|| Value::Str(value.into())))];
         }
         if let Some((id, axis)) = key.strip_prefix("tp:").and_then(|r| r.split_once(':')) {
             return vec![Cmd::ThemePick(id.into(), axis.into(), (!value.is_empty()).then(|| value.to_string()))];

@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn the_style_schema_keeps_its_file_order() {
         let names: Vec<&str> = style_schema().iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["accent", "radius-lg", "outlines", "blur", "transparent", "bg-opacity", "tint", "shadow", "text-scale", "anim-speed"]);
+        assert_eq!(names, ["accent", "radius-lg", "outlines", "blur", "transparent", "bg-opacity", "tint", "shadow", "font-body", "text-scale", "anim-speed"]);
     }
 
     #[test]

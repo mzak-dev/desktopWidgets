@@ -68,8 +68,43 @@ fn resolve_path(target: &str) -> Option<PathBuf> {
     None
 }
 
-/// 48px via the system image list, falling back to the classic 32px icon.
+/// Where a `.lnk` points, and the file it takes its icon from if it names one.
+fn link_target(lnk: &Path) -> Option<(PathBuf, Option<PathBuf>)> {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ};
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink, SLR_NO_UI};
+    use windows::core::Interface;
+    unsafe {
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+        link.cast::<IPersistFile>().ok()?.Load(&HSTRING::from(lnk.as_os_str()), STGM_READ).ok()?;
+        let _ = link.Resolve(windows::Win32::Foundation::HWND::default(), SLR_NO_UI.0 as u32);
+        let mut buf = [0u16; 520];
+        link.GetPath(&mut buf, std::ptr::null_mut(), 0).ok()?;
+        let path = String::from_utf16_lossy(&buf[..buf.iter().position(|c| *c == 0).unwrap_or(buf.len())]);
+        let mut icon = [0u16; 520];
+        let mut idx = 0;
+        let _ = link.GetIconLocation(&mut icon, &mut idx);
+        let icon = String::from_utf16_lossy(&icon[..icon.iter().position(|c| *c == 0).unwrap_or(icon.len())]);
+        // an icon file is used only when it is a plain image; `.exe` and `.dll` icons go through the shell
+        let icon = (!icon.is_empty() && idx == 0).then(|| PathBuf::from(icon)).filter(|p| p.exists());
+        (!path.is_empty()).then(|| (PathBuf::from(path), icon))
+    }
+}
+
+/// 48px via the system image list, falling back to the classic 32px icon. A shortcut shows
+/// what it opens, so a `.lnk` to a document or folder has that icon, not a blank page.
 fn shell_icon(path: &Path) -> Option<Rgba> {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk")) {
+        if let Some((target, icon)) = link_target(path) {
+            if let Some(i) = icon.as_deref().and_then(load_image) {
+                return Some(i);
+            }
+            if target.exists() {
+                if let Some(i) = shell_icon(&target) {
+                    return Some(i);
+                }
+            }
+        }
+    }
     unsafe {
         let wide = HSTRING::from(path.as_os_str());
         let mut sfi = SHFILEINFOW::default();

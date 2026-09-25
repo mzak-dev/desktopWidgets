@@ -15,6 +15,66 @@ default = ""
 label = "Shortcut folder"
 help = "Filled in for you. Drop shortcuts into it, or use + on the drawer."
 
+[params.toggle]
+type = "enum"
+default = "button"
+choices = [{ value = "button", label = "The arrow button" }, { value = "header", label = "Click the header" }]
+label = "Open and close with"
+help = "With the header, the arrow button is hidden."
+group = "Header"
+
+[params.show_add]
+type = "bool"
+default = true
+label = "Add (+) button"
+group = "Header"
+
+[params.show_count]
+type = "bool"
+default = true
+label = "App count"
+help = "\"3 apps\" in the header, when it is wide enough."
+group = "Header"
+
+[params.title_align]
+type = "enum"
+default = "left"
+choices = [{ value = "left", label = "Left" }, { value = "icons", label = "Next to the icons" }, { value = "center", label = "Centre" }, { value = "right", label = "Right (icons move left)" }]
+label = "Title position"
+group = "Header"
+
+[params.header_pad_x]
+type = "number"
+default = 0
+min = 0
+max = 40
+step = 2
+label = "Header padding, sides"
+group = "Header"
+
+[params.header_pad_y]
+type = "number"
+default = 0
+min = 0
+max = 30
+step = 2
+label = "Header padding, top and bottom"
+group = "Header"
+
+[params.font_header]
+type = "font"
+default = ""
+label = "Header font"
+help = "Any installed font. Empty uses the widget's text font."
+group = "Fonts"
+
+[params.font_body]
+type = "font"
+default = ""
+label = "Shortcut names font"
+help = "Any installed font. Empty uses the widget's text font."
+group = "Fonts"
+
 [params.icon_size]
 type = "number"
 default = 36
@@ -30,7 +90,7 @@ scroll = 0
 # collapsing shrinks the window to the header row
 [expand]
 when = "{state.collapsed}"
-height = "44"
+height = "{44 + param.header_pad_y * 2}"
 
 [root]
 direction = "column"
@@ -43,30 +103,36 @@ gap = 6
 clip = true
 
   [[root.children]]
-  direction = "row"
+  direction = "{param.title_align == 'right' ? 'row-reverse' : 'row'}"
   align = "center"
   gap = 4
-  height = 28
+  height = "{28 + param.header_pad_y * 2}"
+  padding = ["{param.header_pad_y}", "{param.header_pad_x}"]
   shrink = 0
+  on_click = "{param.toggle == 'header' ? 'toggle collapsed' : ''}"
 
     [[root.children.children]]
     type = "text"
     text = "{param.title}"
+    font = "{param.font_header != '' ? param.font_header : '$font-body'}"
     size = 13
     weight = 700
     color = "$text"
     grow = 1
     padding = [0, 6]
+    text_align = "{param.title_align == 'center' ? 'center' : param.title_align == 'icons' || param.title_align == 'right' ? 'right' : 'left'}"
 
     [[root.children.children]]
     type = "text"
-    when = "{self.w >= 280 && shortcuts.count > 0}"
+    when = "{param.show_count && self.w >= 280 && shortcuts.count > 0}"
     text = "{shortcuts.count} apps"
+    font = "{param.font_header != '' ? param.font_header : '$font-body'}"
     size = 11
     color = "$text-dim"
     padding = [0, 4]
 
     [[root.children.children]]
+    when = "{param.show_add}"
     width = 28
     height = 28
     radius = 14
@@ -88,6 +154,7 @@ clip = true
     radius = 14
     align = "center"
     justify = "center"
+    when = "{param.toggle == 'button'}"
     on_click = "toggle collapsed"
     hover = { fill = "$surface-hover" }
     transition = 120
@@ -170,6 +237,7 @@ clip = true
         type = "text"
         when = "{self.w >= 200}"
         text = "{item.name}"
+        font = "{param.font_body != '' ? param.font_body : '$font-body'}"
         size = 11
         color = "$text"
         text_align = "center"

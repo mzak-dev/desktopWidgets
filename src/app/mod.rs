@@ -805,7 +805,11 @@ impl ApplicationHandler<UserEvent> for App {
                 "quit" => el.exit(),
                 _ => {}
             },
-            UserEvent::Hotkey => self.set_edit(!self.edit),
+            UserEvent::Hotkey => {
+                if win32::deliberate_ctrl_alt() {
+                    self.set_edit(!self.edit);
+                }
+            }
             UserEvent::TrayClick => self.open_settings(el),
             UserEvent::FilesChanged => self.reload_at = Some(Instant::now() + Duration::from_millis(250)),
             UserEvent::WatchedChanged(paths) => {
