@@ -2416,6 +2416,12 @@ mod tests {
     }
 
     #[test]
+    fn general_offers_a_restart_for_the_adapter_choice() {
+        let w = world();
+        assert_eq!(UiState::default().act("restart", &ctx(&w), None), vec![Cmd::Restart]);
+    }
+
+    #[test]
     fn size_limit_toggles_per_widget() {
         let mut w = world();
         let c = ctx(&w);
