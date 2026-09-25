@@ -18,6 +18,9 @@ pub struct MonitorRef {
     pub height: u32,
 }
 
+/// Per tier, per slot, the Module ids an Instance's user arranged; a tier with no entry uses the Widget's default.
+pub type Layout = BTreeMap<String, BTreeMap<String, Vec<String>>>;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct InstanceCfg {
@@ -42,6 +45,9 @@ pub struct InstanceCfg {
     /// Its Style overrides, over the Workspace's.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub style: BTreeMap<String, serde_json::Value>,
+    /// Where its user put the Widget's Modules.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub layout: Layout,
 }
 
 impl Default for InstanceCfg {
@@ -60,6 +66,7 @@ impl Default for InstanceCfg {
             params: BTreeMap::new(),
             theme: ThemePick::default(),
             style: BTreeMap::new(),
+            layout: BTreeMap::new(),
         }
     }
 }

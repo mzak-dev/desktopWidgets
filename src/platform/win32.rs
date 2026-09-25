@@ -217,6 +217,15 @@ pub fn create_shortcut(dir: &std::path::Path, target: &std::path::Path) -> Optio
     Some(out)
 }
 
+/// Whether the Ctrl+Alt that fired the edit hotkey was pressed on purpose. Windows reports
+/// AltGr (the right Alt, which types letters like "ę") as Ctrl+Alt, so the hotkey alone cannot
+/// tell them apart: it counts only with the left Alt, or with the right Ctrl.
+pub fn deliberate_ctrl_alt() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LMENU, VK_RCONTROL};
+    let down = |vk: i32| unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000 != 0;
+    down(VK_LMENU.0 as i32) || down(VK_RCONTROL.0 as i32)
+}
+
 /// Physical px.
 pub fn monitors(el: &winit::event_loop::ActiveEventLoop) -> Vec<crate::workspace::MonitorInfo> {
     use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO, MONITORINFOEXW};

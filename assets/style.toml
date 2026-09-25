@@ -57,6 +57,11 @@ step = 10
 label = "Shadow (%)"
 help = "0 removes it."
 
+[params.font-body]
+type = "font"
+label = "Text font"
+help = "Any font installed on this PC. Empty uses the theme's font set."
+
 [params.text-scale]
 type = "number"
 default = 100

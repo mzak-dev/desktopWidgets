@@ -18,6 +18,7 @@ use crate::data::{DataSources, SourceCx, Tm};
 use crate::format;
 use crate::gfx::Gpu;
 use crate::icons::IconService;
+use crate::modules::{Arrange, Arrangement};
 use crate::text::TextEngine;
 use crate::theme::Theme;
 use crate::ui::{self, Env, Frame, Node};
@@ -25,7 +26,7 @@ use crate::value::Value;
 use crate::workspace::InstanceCfg;
 
 pub use drawer::Drawer;
-pub use meta::{Choice, ParamDef, ParamType, Seed, WidgetMeta, needs_message};
+pub use meta::{Choice, ModuleMeta, ParamDef, ParamType, Seed, TierMeta, WidgetMeta, needs_message};
 pub use registry::{Def, Registry, widget_files};
 pub use toml_widget::TomlWidget;
 
@@ -75,6 +76,8 @@ pub struct Inputs<'a> {
     /// Unique per Instance, so text, hover and animation state never collide.
     pub key_prefix: &'a str,
     pub read_source: &'a dyn Fn(&str) -> Option<Value>,
+    /// The Instance's arranged Modules; `None` uses each Widget's defaults.
+    pub arrange: Option<Arrange<'a>>,
 }
 
 #[derive(Debug)]
@@ -84,6 +87,8 @@ pub struct Built {
     pub image_ids: BTreeSet<String>,
     pub warnings: Vec<String>,
     pub expand: Option<ExpandInfo>,
+    /// What the Module slots held, for Widgets that declare them.
+    pub arrangement: Option<Arrangement>,
 }
 
 /// In card units from a Widget, window units after `Card::expand_in_window_units`.
@@ -142,7 +147,7 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
             Ok(w) => {
                 let unmet = w.meta().unmet(|n| sources.get(n).is_some());
                 if unmet.is_empty() {
-                    let inp = Inputs { params: &params, state: v.state, card_size, key_prefix: &v.cfg.id, read_source: &read };
+                    let inp = Inputs { params: &params, state: v.state, card_size, key_prefix: &v.cfg.id, read_source: &read, arrange: Some(Arrange { layout: &v.cfg.layout, tier: None, preview: false }) };
                     let gpu = &*sv.gpu;
                     w.build(&inp, v.theme, &|id| gpu.image_size(id).map(|(w, h)| (w as f32, h as f32)))
                 } else {
@@ -203,19 +208,19 @@ mod tests {
             let scope = Scope::with_provider(inp.read_source);
             let minute = scope.read("clock.minute")?;
             let root = Node::new(inp.key_prefix).wh(inp.card_size.0, inp.card_size.1).fill(theme.color("surface")).border(1.0, Color([1.0; 4])).child(Node::text(format!("{}/t", inp.key_prefix), format!("{minute}"), 12.0, theme.color("text")));
-            Ok(Built { root, deps: scope.deps(), image_ids: BTreeSet::new(), warnings: vec![], expand: Some(ExpandInfo { active: true, width: Some(300.0), height: None }) })
+            Ok(Built { root, deps: scope.deps(), image_ids: BTreeSet::new(), warnings: vec![], expand: Some(ExpandInfo { active: true, width: Some(300.0), height: None }), arrangement: None })
         }
     }
 
     #[test]
     fn a_rust_widget_builds_through_the_same_seam_and_gets_a_window() {
-        let meta = WidgetMeta { id: "badge".into(), name: "Badge".into(), description: String::new(), default_card_size: (100.0, 40.0), min_card_size: (48.0, 48.0), max_card_size: None, params: vec![], initial_state: BTreeMap::new(), needs: vec![] };
+        let meta = WidgetMeta { id: "badge".into(), name: "Badge".into(), description: String::new(), default_card_size: (100.0, 40.0), min_card_size: (48.0, 48.0), max_card_size: None, params: vec![], initial_state: BTreeMap::new(), needs: vec![], tiers: vec![], slots: vec![], modules: vec![] };
         let def: Def = Ok(Arc::new(Badge(meta)));
         let t = theme();
         let src = |n: &str| (n == "clock").then(|| Value::obj([("minute", 7.into())]));
         let Ok(w) = &def else { unreachable!() };
         let (st, params) = (BTreeMap::new(), BTreeMap::new());
-        let inp = Inputs { params: &params, state: &st, card_size: (100.0, 40.0), key_prefix: "b-1", read_source: &src };
+        let inp = Inputs { params: &params, state: &st, card_size: (100.0, 40.0), key_prefix: "b-1", read_source: &src, arrange: None };
         let b = w.build(&inp, &t, &|_| None).unwrap();
         assert!(b.deps.contains("clock.minute"), "{:?}", b.deps);
 

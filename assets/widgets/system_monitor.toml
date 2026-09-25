@@ -1,53 +1,47 @@
 name = "System Monitor"
-description = "Live CPU, memory, disk and battery. Small: bars. Medium: gauges. Large: every drive, memory commit and a minute of history."
+description = "Live CPU, GPU, memory, drives and battery, as bars, gauges and a minute of graphs. Arrange it per size in Settings."
 size = [340, 190]
 min_size = [150, 64]
 max_size = [760, 520]
 
-[params.show_cpu]
-type = "bool"
-default = true
-label = "CPU"
+# What the user arranges: each size tier has slots, and gauges, graphs and the footer are
+# Modules that go in them. Settings shows the widget with a tab per tier.
+[tiers.compact]
+label = "Compact"
+size = [240, 130]
+when = "{self.w < 260 || self.h < 150}"
+layout = { bars = ["gauge:cpu", "gauge:ram", "gauge:gpu*", "gauge:igpu", "gauge:disk", "gauge:battery"] }
 
-[params.show_ram]
-type = "bool"
-default = true
-label = "Memory"
-help = "Also memory commit on a large monitor."
+[tiers.normal]
+label = "Normal"
+size = [340, 190]
+layout = { gauges = ["gauge:cpu", "gauge:ram", "gauge:gpu*", "gauge:igpu", "gauge:disk", "gauge:battery"], footer = ["footer"] }
 
-[params.show_disk]
-type = "bool"
-default = true
-label = "Drives"
-help = "The system drive; every fixed drive on a large monitor."
+[tiers.large]
+label = "Large"
+size = [500, 320]
+when = "{self.w >= 480 && self.h >= 300}"
+layout = { gauges = ["gauge:cpu", "gauge:ram", "gauge:gpu*", "gauge:igpu", "gauge:commit", "gauge:disk", "gauge:drive:*", "gauge:battery"], graphs = ["graph:cpu", "graph:ram", "graph:net", "graph:gpu*", "graph:igpu"], footer = ["footer"] }
 
-[params.show_battery]
-type = "bool"
-default = true
-label = "Battery"
-help = "Only appears on machines that have one."
+[slots.bars]
+label = "Bars"
+[slots.gauges]
+label = "Gauges"
+[slots.graphs]
+label = "Graphs"
+[slots.footer]
+label = "Footer"
 
 [params.show_detail]
 type = "bool"
 default = true
 label = "Detail line"
-help = "GB used, process count or charging state under each gauge, when there is room."
-
-[params.show_graphs]
-type = "bool"
-default = true
-label = "History graphs"
-help = "The last minute of CPU, memory and download, on a large monitor."
-
-[params.show_footer]
-type = "bool"
-default = true
-label = "Uptime footer"
+help = "GB used, process count or charging state under each gauge, on a large monitor."
 
 [params.gauge_size]
 type = "number"
 default = 84
-min = 48
+min = 56
 max = 200
 step = 4
 label = "Largest gauge size"
@@ -79,257 +73,235 @@ step = 5
 label = "Warn above (%)"
 help = "The ring turns to the warning colour past this load. Battery warns when below 100 minus this."
 
-[params.cpu_color]
-type = "color"
-default = "$accent"
-label = "CPU colour"
-
-[params.ram_color]
-type = "color"
-default = "#4da3ff"
-label = "Memory colour"
-
-[params.disk_color]
-type = "color"
-default = "#5fd38d"
-label = "Drive colour"
-
-[params.battery_color]
-type = "color"
-default = "#f2c94c"
-label = "Battery colour"
-
 [params.warn_color]
 type = "color"
 default = "$danger"
 label = "Warning colour"
 
-# Size tiers. Compact (under 260 x 150): one bar per gauge, as many as fit. Normal:
-# ring gauges that shrink to fit. Large (480 x 300 and up): every gauge that fits in
-# a row, a minute of history as graphs, and a longer footer.
+[params.cpu_color]
+type = "color"
+default = "$accent"
+label = "CPU colour"
+module = "gauge:cpu,graph:cpu"
+
+[params.gpu_color]
+type = "color"
+default = "#b07cff"
+label = "GPU colour"
+module = "gauge:gpu*,gauge:igpu,graph:gpu*,graph:igpu"
+
+[params.ram_color]
+type = "color"
+default = "#4da3ff"
+label = "Memory colour"
+module = "gauge:ram,gauge:commit,graph:ram"
+
+[params.disk_color]
+type = "color"
+default = "#5fd38d"
+label = "Drive colour"
+module = "gauge:disk,gauge:drive:*"
+
+[params.battery_color]
+type = "color"
+default = "#f2c94c"
+label = "Battery colour"
+module = "gauge:battery"
+
+[params.net_color]
+type = "color"
+default = "#5fd38d"
+label = "Download colour"
+module = "graph:net"
+
+# One Module per gauge the machine has: CPU, RAM, each GPU, commit, each drive, battery.
+# In a `bars` slot it is a row with a bar; in `gauges` a ring, its label and detail.
+[modules.gauge]
+label = "{g.label}"
+for = "{sys.gauges_all}"
+as = "g"
+key = "{g.key}"
+slots = ["bars", "gauges"]
+legacy = { "gauge:cpu" = "show_cpu", "gauge:ram" = "show_ram", "gauge:gpu*" = "show_gpu", "gauge:igpu" = "show_gpu", "gauge:commit" = "show_ram", "gauge:disk" = "show_disk", "gauge:drive:*" = "show_disk", "gauge:battery" = "show_battery" }
+direction = "{slot == 'bars' ? 'row' : 'column'}"
+align = "center"
+gap = "{slot == 'bars' ? 8 : 3}"
+height = "{slot == 'bars' ? 16 : 'auto'}"
+grow = "{slot == 'bars' ? 0 : 1}"
+shrink = "{slot == 'bars' ? 0 : 1}"
+basis = "{slot == 'bars' ? 'auto' : 0}"
+min_width = "{slot == 'bars' ? 0 : 44}"
+max_width = "{slot == 'bars' ? 'auto' : param.gauge_size}"
+enter = { ms = 240, dy = 6, stagger = 30 }
+
+  [[modules.gauge.children]]
+  type = "text"
+  when = "{slot == 'bars'}"
+  text = "{g.label}"
+  width = 46
+  size = 11
+  weight = 600
+  color = "$text"
+
+  [[modules.gauge.children]]
+  when = "{slot == 'bars'}"
+  grow = 1
+  height = 6
+  radius = 3
+  fill = "$track"
+    [[modules.gauge.children.children]]
+    width = "{g.value}%"
+    height = 6
+    radius = 3
+    fill = "{((g.id == 'battery' ? 100 - g.value : g.value) > param.warn) ? param.warn_color : (g.id == 'cpu' ? param.cpu_color : g.id == 'ram' || g.id == 'commit' ? param.ram_color : g.id == 'gpu' || g.id == 'igpu' ? param.gpu_color : g.id == 'battery' ? param.battery_color : param.disk_color)}"
+    transition = 400
+
+  [[modules.gauge.children]]
+  type = "text"
+  when = "{slot == 'bars'}"
+  text = "{g.value}%"
+  width = 36
+  size = 11
+  text_align = "right"
+  color = "$text-dim"
+
+  [[modules.gauge.children]]
+  when = "{slot == 'gauges'}"
+  width = "100%"
+  aspect = 1
+    [[modules.gauge.children.children]]
+    type = "arc"
+    start = "{180 + (360 - param.sweep) / 2}"
+    sweep = "{param.sweep}"
+    stroke = "{param.stroke}"
+    value = "{g.value}"
+    color = "{((g.id == 'battery' ? 100 - g.value : g.value) > param.warn) ? param.warn_color : (g.id == 'cpu' ? param.cpu_color : g.id == 'ram' || g.id == 'commit' ? param.ram_color : g.id == 'gpu' || g.id == 'igpu' ? param.gpu_color : g.id == 'battery' ? param.battery_color : param.disk_color)}"
+
+    [[modules.gauge.children.children]]
+    inset = 0
+    align = "center"
+    justify = "center"
+      [[modules.gauge.children.children.children]]
+      type = "text"
+      text = "{g.value}%"
+      size = 13
+      weight = 600
+      color = "$text"
+
+  [[modules.gauge.children]]
+  type = "text"
+  when = "{slot == 'gauges'}"
+  text = "{g.label}"
+  size = 12
+  weight = 600
+  color = "$text"
+
+  [[modules.gauge.children]]
+  type = "text"
+  when = "{slot == 'gauges' && param.show_detail && tier == 'large'}"
+  text = "{g.detail}"
+  size = 10
+  color = "$text-dim"
+
+# A minute of history: CPU, memory, download and each GPU.
+[modules.graph]
+label = "{gp.label}"
+for = "{sys.graphs}"
+as = "gp"
+key = "{gp.key}"
+slots = ["graphs"]
+legacy = { "graph:cpu" = "show_graphs", "graph:ram" = "show_graphs", "graph:net" = "show_graphs", "graph:gpu*" = "show_graphs", "graph:igpu" = "show_graphs" }
+direction = "column"
+grow = 1
+basis = 0
+min_width = 0
+padding = [8, 10]
+gap = 4
+radius = "$radius-sm"
+fill = "$face"
+enter = { ms = 260, dy = 10 }
+
+  [[modules.graph.children]]
+  direction = "row"
+  align = "center"
+    [[modules.graph.children.children]]
+    type = "text"
+    text = "{gp.label}"
+    size = 11
+    weight = 600
+    color = "$text-dim"
+    grow = 1
+    [[modules.graph.children.children]]
+    type = "text"
+    text = "{gp.text}"
+    size = 11
+    weight = 600
+    color = "$text"
+
+  [[modules.graph.children]]
+  type = "graph"
+  grow = 1
+  values = "{gp.values}"
+  span = 60
+  stroke = 1.5
+  color = "{gp.key == 'cpu' ? param.cpu_color : gp.key == 'ram' ? param.ram_color : gp.key == 'net' ? param.net_color : param.gpu_color}"
+  area = "{gp.key == 'cpu' ? param.cpu_color : gp.key == 'ram' ? param.ram_color : gp.key == 'net' ? param.net_color : param.gpu_color}"
+
+[modules.footer]
+label = "Uptime footer"
+slots = ["footer"]
+legacy = { "footer" = "show_footer" }
+type = "text"
+text = "{tier == 'large' ? 'Up ' + sys.uptime + '   ·   ' + sys.processes + ' processes   ·   up ' + sys.net_up + '   down ' + sys.net_down : 'Up ' + sys.uptime}"
+size = 11
+text_align = "center"
+color = "$text-dim"
+
 [root]
 direction = "column"
 justify = "center"
-gap = "{(self.w < 260 || self.h < 150) ? 6 : 10}"
-padding = "{(self.w < 260 || self.h < 150) ? 10 : 14}"
+gap = "{tier == 'compact' ? 6 : 10}"
+padding = "{tier == 'compact' ? 10 : 14}"
 fill = ["$surface", "$surface-2"]
 radius = "$radius-lg"
 border = 1
 shadow = { blur = 14, dy = 5 }
 
-  # ---- compact: bars ----
   [[root.children]]
-  type = "repeat"
-  when = "{(self.w < 260 || self.h < 150)}"
-  for = "{sys.gauges}"
-  as = "g"
-    [[root.children.children]]
-    when = "{(g.id == 'cpu' ? param.show_cpu : g.id == 'ram' || g.id == 'commit' ? param.show_ram : g.id == 'disk' || g.id == 'drive' ? param.show_disk : param.show_battery) && index < floor((self.h - 14) / 22)}"
-    direction = "row"
-    align = "center"
-    gap = 8
-    height = 16
-    shrink = 0
-      [[root.children.children.children]]
-      type = "text"
-      text = "{g.label}"
-      width = 46
-      size = 11
-      weight = 600
-      color = "$text"
-      [[root.children.children.children]]
-      grow = 1
-      height = 6
-      radius = 3
-      fill = "$track"
-        [[root.children.children.children.children]]
-        width = "{g.value}%"
-        height = 6
-        radius = 3
-        fill = "{((g.id == 'battery' ? 100 - g.value : g.value) > param.warn ? param.warn_color : (g.id == 'cpu' ? param.cpu_color : g.id == 'ram' || g.id == 'commit' ? param.ram_color : g.id == 'disk' || g.id == 'drive' ? param.disk_color : param.battery_color))}"
-        transition = 400
-      [[root.children.children.children]]
-      type = "text"
-      text = "{g.value}%"
-      width = 36
-      size = 11
-      text_align = "right"
-      color = "$text-dim"
+  type = "slot"
+  slot = "bars"
+  when = "{tier == 'compact'}"
+  direction = "column"
+  gap = 6
+  min_height = 22
+  shrink = 0
+  max = "{floor((self.h - 14) / 22)}"
 
-  # ---- normal and large: ring gauges in one row ----
   [[root.children]]
-  when = "{!(self.w < 260 || self.h < 150)}"
+  type = "slot"
+  slot = "gauges"
+  when = "{tier != 'compact'}"
   direction = "row"
   justify = "center"
   align = "start"
-  gap = 12
+  gap = 6
+  min_height = 60
   shrink = 0
-    [[root.children.children]]
-    type = "repeat"
-    for = "{(!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? sys.gauges_all : sys.gauges}"
-    as = "g"
-      [[root.children.children.children]]
-      when = "{(g.id == 'cpu' ? param.show_cpu : g.id == 'ram' || g.id == 'commit' ? param.show_ram : g.id == 'disk' || g.id == 'drive' ? param.show_disk : param.show_battery) && index < floor((self.w - 16) / (((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) + 12))}"
-      direction = "column"
-      align = "center"
-      gap = 3
-      width = "{((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0))))}"
-      enter = { ms = 240, dy = 6, stagger = 30 }
-        [[root.children.children.children.children]]
-        width = "{((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0))))}"
-        height = "{((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0))))}"
-          [[root.children.children.children.children.children]]
-          type = "arc"
-          start = "{180 + (360 - param.sweep) / 2}"
-          sweep = "{param.sweep}"
-          stroke = "{min(param.stroke, ((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) * 0.12)}"
-          value = "{g.value}"
-          color = "{((g.id == 'battery' ? 100 - g.value : g.value) > param.warn ? param.warn_color : (g.id == 'cpu' ? param.cpu_color : g.id == 'ram' || g.id == 'commit' ? param.ram_color : g.id == 'disk' || g.id == 'drive' ? param.disk_color : param.battery_color))}"
+  max = "{floor((self.w - 28 + 6) / (44 + 6))}"
 
-          [[root.children.children.children.children.children]]
-          inset = 0
-          align = "center"
-          justify = "center"
-            [[root.children.children.children.children.children.children]]
-            type = "text"
-            text = "{g.value}%"
-            size = "{max(10, ((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) * 0.25)}"
-            weight = 600
-            color = "$text"
-
-        [[root.children.children.children.children]]
-        type = "text"
-        text = "{g.label}"
-        size = "{max(10, min(((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) * 0.14, 14))}"
-        weight = 600
-        color = "$text"
-
-        [[root.children.children.children.children]]
-        type = "text"
-        when = "{param.show_detail && ((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) >= 72}"
-        text = "{g.detail}"
-        size = "{max(9, min(((!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? max(48, min(param.gauge_size, self.h - 28 - 40 - (param.show_graphs ? 80 : 0) - (param.show_footer ? 30 : 0))) : max(40, min(param.gauge_size, (self.w - 28 - 12 * (max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)) - 1)) / max(1, (param.show_cpu ? 1 : 0) + (param.show_ram ? 1 : 0) + (param.show_disk ? 1 : 0) + (param.show_battery && sys.has_battery ? 1 : 0)), self.h - 28 - 40 - (param.show_footer ? 30 : 0)))) * 0.115, 12))}"
-        color = "$text-dim"
-
-  # ---- large: a minute of history ----
   [[root.children]]
-  when = "{(!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) && param.show_graphs}"
+  type = "slot"
+  slot = "graphs"
+  when = "{tier == 'large'}"
   direction = "row"
   gap = 10
   grow = 1
   min_height = 70
   max_height = 220
-  enter = { ms = 260, dy = 10 }
-
-  [[root.children.children]]
-  direction = "column"
-  grow = 1
-  basis = 0
-  min_width = 0
-  padding = [8, 10]
-  gap = 4
-  radius = "$radius-sm"
-  fill = "$face"
-    [[root.children.children.children]]
-    direction = "row"
-    align = "center"
-      [[root.children.children.children.children]]
-      type = "text"
-      text = "CPU"
-      size = 11
-      weight = 600
-      color = "$text-dim"
-      grow = 1
-      [[root.children.children.children.children]]
-      type = "text"
-      text = "{sys.cpu}%"
-      size = 11
-      weight = 600
-      color = "$text"
-    [[root.children.children.children]]
-    type = "graph"
-    grow = 1
-    values = "{sys.cpu_history}"
-    span = 60
-    stroke = 1.5
-    color = "{param.cpu_color}"
-    area = "{param.cpu_color}"
-
-
-  [[root.children.children]]
-  direction = "column"
-  grow = 1
-  basis = 0
-  min_width = 0
-  padding = [8, 10]
-  gap = 4
-  radius = "$radius-sm"
-  fill = "$face"
-    [[root.children.children.children]]
-    direction = "row"
-    align = "center"
-      [[root.children.children.children.children]]
-      type = "text"
-      text = "Memory"
-      size = 11
-      weight = 600
-      color = "$text-dim"
-      grow = 1
-      [[root.children.children.children.children]]
-      type = "text"
-      text = "{sys.ram}%"
-      size = 11
-      weight = 600
-      color = "$text"
-    [[root.children.children.children]]
-    type = "graph"
-    grow = 1
-    values = "{sys.ram_history}"
-    span = 60
-    stroke = 1.5
-    color = "{param.ram_color}"
-    area = "{param.ram_color}"
-
-
-  [[root.children.children]]
-  direction = "column"
-  grow = 1
-  basis = 0
-  min_width = 0
-  padding = [8, 10]
-  gap = 4
-  radius = "$radius-sm"
-  fill = "$face"
-    [[root.children.children.children]]
-    direction = "row"
-    align = "center"
-      [[root.children.children.children.children]]
-      type = "text"
-      text = "Download"
-      size = 11
-      weight = 600
-      color = "$text-dim"
-      grow = 1
-      [[root.children.children.children.children]]
-      type = "text"
-      text = "{sys.net_down}"
-      size = 11
-      weight = 600
-      color = "$text"
-    [[root.children.children.children]]
-    type = "graph"
-    grow = 1
-    values = "{sys.net_history}"
-    span = 60
-    stroke = 1.5
-    color = "{param.disk_color}"
-    area = "{param.disk_color}"
-
 
   [[root.children]]
-  type = "text"
-  when = "{!(self.w < 260 || self.h < 150) && param.show_footer}"
-  text = "{(!(self.w < 260 || self.h < 150) && self.w >= 480 && self.h >= 300) ? 'Up ' + sys.uptime + '   ·   ' + sys.processes + ' processes   ·   up ' + sys.net_up + '   down ' + sys.net_down : 'Up ' + sys.uptime}"
-  size = 11
-  text_align = "center"
-  color = "$text-dim"
+  type = "slot"
+  slot = "footer"
+  when = "{tier != 'compact'}"
+  direction = "column"
+  min_height = 16

@@ -51,6 +51,21 @@ impl App {
         self.log(format!("removed {id}"));
     }
 
+    /// The `show_*` params a widget's Modules replaced become a saved layout, once.
+    pub(super) fn migrate_instances(&mut self) {
+        let mut changed = false;
+        for cfg in &mut self.ws.instances {
+            if let Some(Ok(w)) = self.reg.get(&cfg.widget) {
+                let before = cfg.clone();
+                w.meta().migrate(cfg);
+                changed |= *cfg != before;
+            }
+        }
+        if changed {
+            self.mark_save();
+        }
+    }
+
     /// Saves a param of Instance `i`, from Settings, a source or a drop.
     pub(super) fn set_param(&mut self, i: usize, name: &str, v: &Value) {
         if self.ws.instances[i].params.get(name).map(Value::from).as_ref() == Some(v) {
@@ -78,6 +93,17 @@ impl App {
             Cmd::Param(id, name, v) => {
                 if let Some(i) = find(self, &id) {
                     self.set_param(i, &name, &v);
+                }
+            }
+            Cmd::Layout(id, tier, layout) => {
+                if let Some(i) = find(self, &id) {
+                    match layout {
+                        Some(l) => self.ws.instances[i].layout.insert(tier, l),
+                        None => self.ws.instances[i].layout.remove(&tier),
+                    };
+                    self.wins[i].redraw = true;
+                    self.sources.invalidate();
+                    self.mark_save();
                 }
             }
             Cmd::Items(id, items) => {
@@ -260,8 +286,31 @@ impl App {
                 win32::open(&store.dir().to_string_lossy());
             }
             Cmd::Quit => el.exit(),
+            Cmd::Restart => match relaunch() {
+                Ok(()) => el.exit(), // `exiting` saves the workspace; the new copy waits for this one to go
+                Err(e) => self.log(format!("could not restart: {e}")),
+            },
             Cmd::Close => self.settings = None,
             Cmd::Minimize => {} // handled by the settings window itself
         }
     }
+}
+
+/// Starts a new copy of this app a moment from now, when this one has released the
+/// single-instance lock, with the same arguments.
+fn relaunch() -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let quoted = |s: &str| format!("\"{}\"", s.replace('"', ""));
+    let line = std::iter::once(quoted(&exe.to_string_lossy())).chain(args.iter().map(|a| quoted(a))).collect::<Vec<_>>().join(" ");
+    std::process::Command::new("cmd")
+        // raw, so cmd sees the quotes as written: the outer pair is the one `/C` strips
+        .raw_arg(format!("/C \"timeout /T 2 /NOBREAK >NUL & {line}\""))
+        .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }

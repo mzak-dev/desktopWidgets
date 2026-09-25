@@ -1,6 +1,6 @@
 //! A Rust Widget drawn from `drawer.toml`, so a user copy of that file restyles it.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::{ActionCx, Built, Host, Inputs, TomlWidget, Widget, WidgetMeta};
@@ -35,22 +35,43 @@ impl Widget for Drawer {
         cfg.set_param("folder", &Value::Str(dir.to_string_lossy().into_owned()));
     }
 
-    fn handle_action(&self, verb: &str, _arg: &str, cx: &mut ActionCx) -> bool {
-        if verb != "add_app" {
+    fn handle_action(&self, verb: &str, arg: &str, cx: &mut ActionCx) -> bool {
+        if !matches!(verb, "add_app" | "drop" | "remove_app") {
             return false;
         }
-        let Some(picked) = cx.host.pick_file() else { return true };
         let folder = cx.cfg.folder();
         if folder.is_empty() {
             cx.host.log("this drawer has no shortcut folder".into());
             return true;
         }
-        if !cx.host.create_shortcut(Path::new(&folder), &picked) {
-            cx.host.log(format!("could not create a shortcut to `{}`", picked.display()));
+        match verb {
+            "remove_app" => remove_shortcut(Path::new(&folder), Path::new(arg.trim()), cx.host),
+            _ => {
+                // `+` asks for a file; a drop already names it
+                let picked = if verb == "drop" { Some(PathBuf::from(arg.trim())) } else { cx.host.pick_file() };
+                let Some(picked) = picked else { return true };
+                if !cx.host.create_shortcut(Path::new(&folder), &picked) {
+                    cx.host.log(format!("could not create a shortcut to `{}`", picked.display()));
+                }
+            }
         }
         cx.sources.invalidate(); // the folder watcher would also catch it, a moment later
         cx.wants_redraw = true;
         true
+    }
+}
+
+/// Deletes one `.lnk` the drawer holds. The folder may be any folder the user mirrored, so
+/// nothing else in it is ever touched, and nothing outside it.
+fn remove_shortcut(folder: &Path, file: &Path, host: &mut dyn Host) {
+    let inside = match (file.parent().map(Path::canonicalize), folder.canonicalize()) {
+        (Some(Ok(p)), Ok(f)) => p == f,
+        _ => false,
+    };
+    if !inside || !file.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk")) {
+        host.log(format!("the drawer only removes its own shortcuts, not `{}`", file.display()));
+    } else if let Err(e) = std::fs::remove_file(file) {
+        host.log(format!("could not remove `{}`: {e}", file.display()));
     }
 }
 
@@ -117,6 +138,30 @@ mod tests {
         assert!(cx.wants_redraw);
         assert!(!w.handle_action("toggle", "collapsed", &mut cx), "engine verbs are not the drawer's");
         assert_eq!(host.shortcuts, [(PathBuf::from("D:\\drawer"), PathBuf::from("C:\\Apps\\app.exe"))]);
+    }
+
+    #[test]
+    fn a_dropped_file_becomes_a_shortcut_and_remove_only_deletes_lnk_files_in_the_folder() {
+        let w = drawer(Path::new("nope"));
+        let dir = std::env::temp_dir().join(format!("wf-drawer-rm-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (lnk, doc) = (dir.join("a.lnk"), dir.join("notes.txt"));
+        std::fs::write(&lnk, "x").unwrap();
+        std::fs::write(&doc, "x").unwrap();
+        let mut cfg = InstanceCfg::default();
+        cfg.set_param("folder", &Value::Str(dir.to_string_lossy().into_owned()));
+        let mut host = FakeHost::default();
+        let (mut state, sources) = (BTreeMap::new(), DataSources::builtin());
+        let mut cx = ActionCx { cfg: &cfg, state: &mut state, host: &mut host, sources: &sources, wants_redraw: false };
+        assert!(w.handle_action("drop", "C:/Apps/app.exe", &mut cx));
+        assert!(w.handle_action("remove_app", &doc.to_string_lossy(), &mut cx));
+        assert!(doc.exists(), "a document in a mirrored folder is not the drawer's to delete");
+        assert!(w.handle_action("remove_app", &std::env::temp_dir().join("x.lnk").to_string_lossy(), &mut cx));
+        assert!(w.handle_action("remove_app", &lnk.to_string_lossy(), &mut cx));
+        assert!(!lnk.exists());
+        assert_eq!(host.shortcuts, [(dir.clone(), PathBuf::from("C:/Apps/app.exe"))]);
+        assert_eq!(host.logs.len(), 2, "{:?}", host.logs);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

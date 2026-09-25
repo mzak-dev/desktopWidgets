@@ -539,6 +539,7 @@ impl App {
         let cat = Catalog::load(&self.content_roots());
         self.plugin_rows = plugins::rows(&self.plugins, &self.ws.disabled_plugins, &cat, &self.sources.native_names());
         self.reg = cat.registry;
+        self.migrate_instances();
         self.lib = cat.library;
         self.icons.set_packs(cat.icon_packs);
         if let Some(g) = self.gpu.as_mut() {
@@ -804,7 +805,11 @@ impl ApplicationHandler<UserEvent> for App {
                 "quit" => el.exit(),
                 _ => {}
             },
-            UserEvent::Hotkey => self.set_edit(!self.edit),
+            UserEvent::Hotkey => {
+                if win32::deliberate_ctrl_alt() {
+                    self.set_edit(!self.edit);
+                }
+            }
             UserEvent::TrayClick => self.open_settings(el),
             UserEvent::FilesChanged => self.reload_at = Some(Instant::now() + Duration::from_millis(250)),
             UserEvent::WatchedChanged(paths) => {
@@ -831,7 +836,7 @@ impl ApplicationHandler<UserEvent> for App {
             let off = plugins::hidden_instances(ws, reg, installed);
             let hidden: Vec<(String, settings::Hidden)> = ws.instances.iter().zip(wins.iter()).filter(|(_, w)| w.window.is_none()).map(|(c, _)| (c.id.clone(), off.get(&c.id).map_or(settings::Hidden::Parked, |p| settings::Hidden::PluginOff(p.clone())))).collect();
             let source_names = sources.names();
-            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files };
+            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files, data: sources };
             let s = settings.as_mut().unwrap();
             let cmds = s.event(&ev, &ctx, text);
             if matches!(ev, WindowEvent::RedrawRequested) {

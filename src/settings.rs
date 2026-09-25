@@ -2,6 +2,7 @@
 //! action strings (`tog:clock-1|ticks`) that `UiState::act` turns into `Cmd`s
 //! for the app, with no window or GPU, so it is unit-testable.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,6 +21,7 @@ use crate::data::Shortcut;
 use crate::dialog;
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
+use crate::modules::Arrangement;
 use crate::plugins::PluginRow;
 use crate::text::TextEngine;
 use crate::theme::{Library, Selection, Theme, style_schema};
@@ -47,6 +49,8 @@ pub struct Ctx<'a> {
     pub sources: &'a [String],
     /// Which exe double-clicking a `.wfplugin` runs.
     pub plugin_files: &'a FileOwner,
+    /// Live data for the widget preview.
+    pub data: &'a crate::data::DataSources,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,6 +67,8 @@ pub enum Cmd {
     Remove(String),
     Param(String, String, Value),
     Items(String, Vec<Shortcut>),
+    /// An Instance's arrangement of one tier's Modules; `None` goes back to the Widget's default.
+    Layout(String, String, Option<std::collections::BTreeMap<String, Vec<String>>>),
     Z(String, String),
     ClickThrough(String, bool),
     SizeLimit(String, bool),
@@ -86,6 +92,8 @@ pub enum Cmd {
     /// Make double-clicking a `.wfplugin` run this exe.
     ClaimPluginFiles,
     Quit,
+    /// Save, start a fresh copy and quit this one.
+    Restart,
     Close,
     Minimize,
 }
@@ -200,8 +208,8 @@ enum Open {
     Color(String),
 }
 
-const GUTTER: f32 = 24.0;
 const WIN: (f32, f32) = (960.0, 680.0);
+const MIN_WIN: (f32, f32) = (760.0, 520.0);
 const NAV_W: f32 = 196.0;
 const LABEL_W: f32 = 132.0;
 const CONTROL_W: f32 = 250.0;
@@ -395,11 +403,20 @@ pub struct UiState {
     pub popup_anchor_rects: HashMap<String, (f32, f32, f32, f32)>,
     /// A file is being dragged over the window.
     pub drop_hover: bool,
+    /// The size tier the preview shows; none = the one the Instance's own size falls in.
+    pub tier_tab: Option<String>,
+    sel_module: Option<String>,
+    advanced: bool,
+    mdrag: Option<ModDrag>,
+    /// What the last preview build placed, and where the last frame drew it.
+    preview_arr: RefCell<Option<Arrangement>>,
+    tray_key: RefCell<String>,
+    preview_rects: HashMap<String, [f32; 4]>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
-        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), popup_anchor_rects: HashMap::new(), drop_hover: false }
+        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), popup_anchor_rects: HashMap::new(), drop_hover: false, tier_tab: None, sel_module: None, advanced: false, mdrag: None, preview_arr: RefCell::new(None), tray_key: RefCell::new(String::new()), preview_rects: HashMap::new() }
     }
 }
 
@@ -497,7 +514,11 @@ impl UiState {
             return std::iter::once(global).chain(names.into_iter().map(|n| (n.clone(), n))).collect();
         }
         if let Some((_, tok)) = key.strip_prefix("sy:").and_then(Self::style_target) {
-            return style_schema().iter().find(|p| p.name == tok).map(|p| p.choices.iter().map(|c| (c.value.clone(), capitalized(&c.label))).collect()).unwrap_or_default();
+            let Some(p) = style_schema().iter().find(|p| p.name == tok) else { return Vec::new() };
+            if p.ty == ParamType::Font {
+                return std::iter::once((String::new(), "Theme font".to_string())).chain(ctx.fonts.iter().map(|f| (f.clone(), f.clone()))).collect();
+            }
+            return p.choices.iter().map(|c| (c.value.clone(), capitalized(&c.label))).collect();
         }
         if let Some(rest) = key.strip_prefix("p:") {
             if let Some((id, name)) = rest.split_once(':') {
@@ -652,7 +673,6 @@ impl UiState {
     pub fn build(&self, ctx: &Ctx, size: (f32, f32)) -> (Node, Vec<String>) {
         let k = Kit { t: ctx.theme };
         let mut images = Vec::new();
-        let card_size = (size.0 - 2.0 * GUTTER, size.1 - 2.0 * GUTTER);
         let idx = Page::ALL.iter().position(|p| *p == self.page).unwrap_or(0);
 
         let mut nav = Node::new("s/nav").col().w(NAV_W).no_shrink().pad(14.0).gap(4.0).fill(Color([0.0, 0.0, 0.0, 0.16]));
@@ -698,10 +718,7 @@ impl UiState {
             .align(taffy::AlignItems::CENTER)
             .pad_xy(24.0, 0.0)
             .gap(6.0)
-            .on("drag")
-            .child(Node::new("s/title/l").col().grow(1.0).gap(1.0).child(k.bold("s/title/t".into(), self.page.title(), 19.0, k.c("text"))).child(k.txt("s/title/s".into(), self.page.subtitle(), 12.0, k.c("text-dim"))))
-            .child(k.icon_button("s/min", "minimize", "min".into(), false))
-            .child(k.icon_button("s/close", "close", "close".into(), false));
+            .child(Node::new("s/title/l").col().grow(1.0).gap(1.0).child(k.bold("s/title/t".into(), self.page.title(), 19.0, k.c("text"))).child(k.txt("s/title/s".into(), self.page.subtitle(), 12.0, k.c("text-dim"))));
 
         let body = match self.page {
             Page::Widgets => self.page_widgets(&k, ctx, &mut images),
@@ -715,18 +732,13 @@ impl UiState {
         // min_w(0), like `w/right`: a page's unwrapped text must not widen the window
         let content = Node::new("s/content").col().grow(1.0).min_w(0.0).child(titlebar).child(page_root);
 
-        let card = Node::new("s/card")
-            .row()
-            .wh(card_size.0, card_size.1)
-            .fill(k.c("surface"))
-            .radius(22.0)
-            .border(1.0, k.c("border"))
-            .shadow(26.0, 10.0, k.c("shadow"))
-            .clip()
-            .child(nav)
-            .child(content);
-        let mut root = Node::new("s").wh(size.0, size.1).pad(GUTTER).child(card);
+        // the native frame supplies the title bar, border and shadow; the card fills the client area
+        let card = Node::new("s/card").row().wh(size.0, size.1).fill(k.c("surface").with_alpha(1.0)).clip().child(nav).child(content);
+        let mut root = Node::new("s").wh(size.0, size.1).child(card);
 
+        if let Some(o) = self.module_overlay(&k, ctx) {
+            root = root.child(o);
+        }
         if let Some(o) = &self.open {
             root = root.child(self.popup(&k, ctx, o, size));
         }
@@ -756,32 +768,36 @@ impl UiState {
 
     fn page_widgets(&self, k: &Kit, ctx: &Ctx, images: &mut Vec<String>) -> Node {
         let sel = self.selected_cfg(ctx);
-        let mut list = Node::new("w/list").col().gap(4.0);
+        // the Instances as tabs, so the widget below gets the whole width
+        let mut list = Node::new("w/list").row().wrap().gap(6.0);
         if ctx.ws.instances.is_empty() {
             list = list.child(k.txt("w/empty".into(), "No widgets yet. Add one below.", 12.5, k.c("text-dim")).wrap_text());
         }
         for (i, c) in ctx.ws.instances.iter().enumerate() {
             let on = sel.is_some_and(|s| s.id == c.id);
-            let name = self.def_of(ctx, &c.widget).map_or(c.widget.clone(), |d| d.name.clone());
-            let hidden = ctx.hidden.iter().find(|(id, _)| *id == c.id).map(|(_, h)| match h {
+            let mut name = self.def_of(ctx, &c.widget).map_or(c.widget.clone(), |d| d.name.clone());
+            if ctx.ws.instances.iter().filter(|o| o.widget == c.widget).count() > 1 {
+                name = format!("{name} {}", c.id.rsplit('-').next().unwrap_or(""));
+            }
+            let note = ctx.hidden.iter().find(|(id, _)| *id == c.id).map(|(_, h)| match h {
                 Hidden::Parked => "  ·  parked (monitor missing)".to_string(),
                 Hidden::PluginOff(p) => format!("  ·  hidden (plugin {p} is off)"),
             });
-            let hidden = hidden.or_else(|| self.needs_note(ctx, &c.widget));
+            let note = note.or_else(|| self.needs_note(ctx, &c.widget));
             list = list.child(
                 Node::new(format!("w/i/{}", c.id))
-                    .col()
-                    .gap(1.0)
-                    .pad_xy(12.0, 9.0)
-                    .radius(10.0)
-                    .fill(if on { k.c("accent").with_alpha(0.16) } else { Color([1.0, 1.0, 1.0, 0.0]) })
-                    .hover_fill(if on { k.c("accent").with_alpha(0.22) } else { Color([1.0, 1.0, 1.0, 0.07]) })
+                    .row()
+                    .align(taffy::AlignItems::CENTER)
+                    .h(34.0)
+                    .pad_xy(14.0, 0.0)
+                    .radius(17.0)
+                    .fill(if on { k.c("accent").with_alpha(0.16) } else { Color([1.0, 1.0, 1.0, 0.06]) })
+                    .hover_fill(if on { k.c("accent").with_alpha(0.22) } else { Color([1.0, 1.0, 1.0, 0.12]) })
                     .border(if on { 1.0 } else { 0.0 }, k.c("accent").with_alpha(0.5))
                     .ease(150)
                     .on(format!("sel:{}", c.id))
                     .enter(220, 6.0, (i as u32) * 24)
-                    .child(k.bold(format!("w/i/{}/n", c.id), &name, 13.0, k.c("text")))
-                    .child(k.txt(format!("w/i/{}/s", c.id), &format!("{}{}", c.id, hidden.as_deref().unwrap_or("")), 11.5, if hidden.is_some() { k.c("danger") } else { k.c("text-dim") })),
+                    .child(k.bold(format!("w/i/{}/n", c.id), &format!("{name}{}", note.as_deref().unwrap_or("")), 13.0, if note.is_some() { k.c("danger") } else { k.c("text") })),
             );
         }
         let mut add = Node::new("w/add").col().gap(6.0).child(k.section("w/add/h", "Add a widget"));
@@ -805,15 +821,13 @@ impl UiState {
             );
         }
         add = add.child(chips);
-        let left = Node::new("w/left").col().w(214.0).no_shrink().gap(10.0).pad_xy(0.0, 0.0).child(self.scrolling("w/scroll-l", Node::new("w/l/c").col().gap(10.0).child(list).child(add)));
-
-        // min_w(0): text reports its unwrapped width as min-content, so without it a long description pushes Remove out
-        let right = Node::new("w/right").col().grow(1.0).min_w(0.0);
-        let right = match sel {
-            None => right.center().child(k.txt("w/none".into(), "Select a widget to configure it.", 13.0, k.c("text-dim"))),
-            Some(cfg) => right.child(self.scrolling("w/scroll-r", self.instance_panel(k, ctx, cfg, images))),
+        let panel = match sel {
+            None => Node::new("w/none").pad_xy(0.0, 24.0).child(k.txt("w/none/t".into(), "Select a widget to configure it.", 13.0, k.c("text-dim"))),
+            Some(cfg) => self.instance_panel(k, ctx, cfg, images),
         };
-        Node::new("w").row().grow(1.0).gap(22.0).pad_xy(24.0, 4.0).child(left).child(right)
+        // min_w(0): text reports its unwrapped width as min-content, so without it a long description pushes Remove out
+        let body = Node::new("w/c").col().gap(12.0).min_w(0.0).child(list).child(panel).child(add).child(Node::new("w/pad").h(16.0));
+        Node::new("w").col().grow(1.0).min_w(0.0).pad_xy(24.0, 4.0).child(self.scrolling("w/scroll-r", body))
     }
 
     fn instance_panel(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, images: &mut Vec<String>) -> Node {
@@ -834,6 +848,33 @@ impl UiState {
                     k.button(&format!("ip/{id}/del"), "Remove", format!("del:{id}"), false)
                 }),
         );
+        p = p.child(self.preview_block(k, ctx, cfg, images));
+        if let Some(d) = def.filter(|d| !d.modules.is_empty()) {
+            p = p.child(self.module_options(k, ctx, cfg, d, images));
+        } else if let Some(d) = def {
+            for (i, (group, params)) in ParamDef::grouped(&d.params).into_iter().enumerate() {
+                p = p.child(k.section(&format!("ip/{id}/s2/{i}"), group.unwrap_or("Options")));
+                for pd in params {
+                    p = p.child(self.param_row(k, ctx, cfg, pd, images));
+                }
+            }
+        } else {
+            p = p.child(k.txt(format!("ip/{id}/err"), "This widget's definition failed to load; see the Log page.", 12.5, k.c("danger")).wrap_text());
+        }
+        let adv = Node::new(format!("ip/{id}/adv"))
+            .row()
+            .h(36.0)
+            .align(taffy::AlignItems::CENTER)
+            .gap(8.0)
+            .pad_xy(4.0, 0.0)
+            .radius(8.0)
+            .hover_fill(Color([1.0, 1.0, 1.0, 0.06]))
+            .ease(120)
+            .on("adv:toggle")
+            .child(k.glyph(format!("ip/{id}/adv/g"), if self.advanced { "chevron-down" } else { "chevron-right" }, 11.0, k.c("text-dim")))
+            .child(k.bold(format!("ip/{id}/adv/t"), "ADVANCED: LAYER, CLICK-THROUGH, SIZE LIMIT, STYLE", 11.0, k.c("text-dim")));
+        p = p.child(adv);
+        if self.advanced {
         p = p.child(k.section(&format!("ip/{id}/s1"), "Placement"));
         let z = Node::new(format!("ip/{id}/zc")).child(k.dropdown(&format!("z:{id}"), &self.dropdown_label(ctx, &format!("z:{id}")), CONTROL_W, matches!(&self.open, Some(Open::Dropdown(o)) if *o == format!("z:{id}"))));
         p = p.child(k.row(&format!("ip/{id}/z"), "Layer", "Where it sits relative to other windows", z));
@@ -844,16 +885,6 @@ impl UiState {
         let placement = Node::new(format!("ip/{id}/pl")).row().gap(8.0).child(k.button(&format!("ip/{id}/edit"), "Edit layout", "edit:toggle".into(), false)).child(k.button(&format!("ip/{id}/reset"), "Reset position", format!("reset:{id}"), false));
         p = p.child(k.row(&format!("ip/{id}/pos"), "Position", &format!("{:.0}, {:.0}  ·  {:.0} x {:.0}", cfg.x, cfg.y, cfg.w, cfg.h), placement));
 
-        if let Some(d) = def {
-            for (i, (group, params)) in ParamDef::grouped(&d.params).into_iter().enumerate() {
-                p = p.child(k.section(&format!("ip/{id}/s2/{i}"), group.unwrap_or("Options")));
-                for pd in params {
-                    p = p.child(self.param_row(k, ctx, cfg, pd, images));
-                }
-            }
-        } else {
-            p = p.child(k.txt(format!("ip/{id}/err"), "This widget's definition failed to load; see the Log page.", 12.5, k.c("danger")).wrap_text());
-        }
         p = p.child(k.section(&format!("ip/{id}/s3"), "Style"));
         for (axis, label) in THEME_AXES {
             let key = format!("tp:{id}:{axis}");
@@ -864,6 +895,7 @@ impl UiState {
         p = p.kids(style_schema().iter().map(|pd| self.style_row(k, ctx, &scope, pd)));
         if !cfg.style.is_empty() || !cfg.theme.is_empty() {
             p = p.child(k.row(&format!("ip/{id}/rs"), "Reset style", "Back to the global style", k.button(&format!("ip/{id}/rs/b"), "Reset style", format!("syreset:{id}|*"), false)));
+        }
         }
         p.child(Node::new(format!("ip/{id}/pad")).h(24.0))
     }
@@ -934,15 +966,16 @@ impl UiState {
                 let f = self.focus.as_ref().filter(|f| f.key == ik).map(|f| (f.caret, self.caret_on));
                 k.input(&ik, &self.input_text(ctx, &ik), "", f, CONTROL_W, false)
             }
-            ParamType::Path => {
+            ParamType::Path | ParamType::File => {
                 let ik = format!("n:{id}:{name}");
+                let pick = if pd.ty == ParamType::File { "file" } else { "folder" };
                 let f = self.focus.as_ref().filter(|f| f.key == ik).map(|f| (f.caret, self.caret_on));
                 let has_list = self.def_of(ctx, &cfg.widget).is_some_and(|d| d.params.iter().any(|p| p.ty == ParamType::Shortcuts));
                 Node::new(format!("{rk}/pc"))
                     .col()
                     .gap(8.0)
-                    .child(k.input(&ik, &self.input_text(ctx, &ik), if has_list { "no folder: use the list below" } else { "no folder chosen" }, f, CONTROL_W, false))
-                    .child(Node::new(format!("{rk}/pb")).row().gap(8.0).child(k.button(&format!("{rk}/browse"), "Browse...", format!("folder:{id}|{name}"), false)).child(k.button(&format!("{rk}/clear"), "Clear", format!("clear:{id}|{name}"), false)))
+                    .child(k.input(&ik, &self.input_text(ctx, &ik), if has_list { "no folder: use the list below" } else if pd.ty == ParamType::File { "no file chosen" } else { "no folder chosen" }, f, CONTROL_W, false))
+                    .child(Node::new(format!("{rk}/pb")).row().gap(8.0).child(k.button(&format!("{rk}/browse"), "Browse...", format!("{pick}:{id}|{name}"), false)).child(k.button(&format!("{rk}/clear"), "Clear", format!("clear:{id}|{name}"), false)))
             }
             ParamType::Shortcuts => return self.shortcuts_editor(k, ctx, cfg, pd, images),
         };
@@ -1143,6 +1176,7 @@ impl UiState {
             .child(k.section("gn/s1", "Graphics"))
             .child(k.row("gn/gpu", "Adapter", note, k.dropdown("gpu", &self.dropdown_label(ctx, "gpu"), CONTROL_W, f("gpu"))))
             .child(k.row("gn/info", "In use", "", k.txt("gn/info/t".into(), ctx.gpu_info, 12.0, k.c("text-dim")).wrap_text()))
+            .child(k.row("gn/restart", "Apply the adapter", "Restarts Wayfinder so the choice above takes effect. Your widgets stay where they are.", k.button("gn/restart/b", "Restart Wayfinder", "restart".into(), true)))
             .child(k.section("gn/s2", "Behaviour"))
             .child(k.row("gn/auto", "Start with Windows", "Launch quietly into the tray at sign-in", k.toggle("tg:autostart", ws.autostart, "autostart:toggle".into())))
             .child(k.row("gn/grid", "Snap grid", "Edit layout snaps to this many pixels (0 = off). Hold Shift to ignore snapping.", Node::new("gn/grid/c").row().align(taffy::AlignItems::CENTER).gap(12.0).child(k.slider("sl:grid", (grid.3 / grid.1) as f32, 178.0, "sl:grid".into())).child(k.txt("gn/grid/v".into(), &fmt_num(grid.3), 12.5, k.c("text-dim")))))
@@ -1375,7 +1409,8 @@ impl UiState {
             return vec![Cmd::Theme(sel)];
         }
         if let Some((scope, tok)) = key.strip_prefix("sy:").and_then(Self::style_target) {
-            return vec![Cmd::Style(scope, tok.into(), Some(Value::Str(value.into())))];
+            // the empty pick of a font is "Theme font": no override at all
+            return vec![Cmd::Style(scope, tok.into(), (!value.is_empty()).then(|| Value::Str(value.into())))];
         }
         if let Some((id, axis)) = key.strip_prefix("tp:").and_then(|r| r.split_once(':')) {
             return vec![Cmd::ThemePick(id.into(), axis.into(), (!value.is_empty()).then(|| value.to_string()))];
@@ -1404,9 +1439,26 @@ impl UiState {
             "sel" => {
                 self.selected = Some(rest.into());
                 self.open = None;
+                self.tier_tab = None;
+                self.sel_module = None;
                 vec![]
             }
+            "tier" => {
+                self.tier_tab = Some(rest.into());
+                vec![]
+            }
+            "adv" => {
+                self.advanced = !self.advanced;
+                vec![]
+            }
+            "layreset" => rest.split_once('|').map(|(id, tier)| vec![Cmd::Layout(id.into(), tier.into(), None)]).unwrap_or_default(),
+            "layresetall" => {
+                let tiers: Vec<String> = Self::instance(ctx, rest).map(|c| c.layout.keys().cloned().collect()).unwrap_or_default();
+                tiers.into_iter().map(|t| Cmd::Layout(rest.into(), t, None)).collect()
+            }
             "add" => {
+                self.tier_tab = None;
+                self.sel_module = None;
                 self.selected = Some(ctx.ws.next_id(rest));
                 self.page = Page::Widgets;
                 vec![Cmd::Add(rest.into())]
@@ -1471,6 +1523,14 @@ impl UiState {
             "folder" => {
                 let Some((id, name)) = rest.split_once('|') else { return vec![] };
                 match dialog::pick_folder(hwnd) {
+                    Some(p) => vec![Cmd::Param(id.into(), name.into(), Value::Str(p.to_string_lossy().into_owned()))],
+                    None => vec![],
+                }
+            }
+            "file" => {
+                let Some((id, name)) = rest.split_once('|') else { return vec![] };
+                let types = [("Images and GIFs", "*.gif;*.png;*.jpg;*.jpeg;*.webp;*.bmp"), ("All files", "*.*")];
+                match dialog::pick_file_of(hwnd, &types) {
                     Some(p) => vec![Cmd::Param(id.into(), name.into(), Value::Str(p.to_string_lossy().into_owned()))],
                     None => vec![],
                 }
@@ -1544,6 +1604,7 @@ impl UiState {
             "claimfiles" => vec![Cmd::ClaimPluginFiles],
             "reload" => vec![Cmd::Reload],
             "quit" => vec![Cmd::Quit],
+            "restart" => vec![Cmd::Restart],
             "close" => vec![Cmd::Close],
             "min" => vec![Cmd::Minimize],
             _ => vec![],
@@ -1575,6 +1636,7 @@ impl UiState {
         let Some(f) = self.focus.as_mut() else {
             if matches!(key, Key::Named(NamedKey::Escape)) {
                 self.open = None;
+                self.mdrag = None;
             }
             return vec![];
         };
@@ -1652,6 +1714,316 @@ impl UiState {
     }
 }
 
+
+/// A Module being dragged in the preview or from the tray.
+struct ModDrag {
+    id: String,
+    label: String,
+    pos: (f32, f32),
+    start: (f32, f32),
+    /// Moved far enough to be a drag rather than a click.
+    active: bool,
+}
+
+/// Where a dragged Module would land: a slot and a place in it, or the tray (`slot: None`).
+#[derive(Debug, PartialEq)]
+struct Drop {
+    slot: Option<String>,
+    index: usize,
+}
+
+fn inside(r: [f32; 4], p: (f32, f32), slack: f32) -> bool {
+    p.0 >= r[0] - slack && p.0 <= r[0] + r[2] + slack && p.1 >= r[1] - slack && p.1 <= r[1] + r[3] + slack
+}
+
+/// Whether a param's `module = "gauge:cpu,graph:gpu*"` names Module `id`; a bare name (`gauge`) is every item of it.
+fn names_module(list: &str, id: &str) -> bool {
+    list.split(',').map(str::trim).any(|p| p == id || id.split(':').next() == Some(p) || p.strip_suffix('*').is_some_and(|x| id.starts_with(x)))
+}
+
+impl UiState {
+    /// The preview of Instance `cfg`'s widget as a card on a dim backdrop, and what it placed.
+    fn preview(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, images: &mut Vec<String>) -> (Node, Option<Arrangement>) {
+        let id = &cfg.id;
+        let backdrop = |child: Node| Node::new(format!("ip/{id}/pv")).col().align(taffy::AlignItems::CENTER).pad(16.0).radius(14.0).fill(Color([0.0, 0.0, 0.0, 0.22])).clip().child(child);
+        let note = |s: &str| backdrop(k.txt(format!("ip/{id}/pvn"), s, 12.5, k.c("text-dim")).wrap_text());
+        let Some(Ok(w)) = ctx.reg.get(&cfg.widget) else { return (note("No preview: the definition failed to load."), None) };
+        let meta = w.meta();
+        let unmet = meta.unmet(|n| ctx.sources.iter().any(|s| s == n));
+        if !unmet.is_empty() {
+            return (note(&format!("No preview: {}", crate::widgets::needs_message(&unmet))), None);
+        }
+        let forced = self.tier_tab.as_deref().and_then(|t| meta.tiers.iter().find(|x| x.name == t));
+        let size = forced.map_or((cfg.w.min(560.0), cfg.h), |t| t.size);
+        let theme = ctx.ws.theme_for(ctx.lib, cfg);
+        let params = meta.effective_params(&cfg.params_map());
+        let scx = crate::data::SourceCx { cfg, params: &params, tm: crate::data::now_local(), icon_pack: &cfg.theme.resolve(&ctx.ws.theme).icon_pack };
+        let read = |n: &str| ctx.data.value(n, &scx);
+        let (state, key) = (std::collections::BTreeMap::new(), format!("pv/{id}"));
+        let arrange = crate::modules::Arrange { layout: &cfg.layout, tier: forced.map(|t| t.name.as_str()), preview: true };
+        let inp = crate::widgets::Inputs { params: &params, state: &state, card_size: size, key_prefix: &key, read_source: &read, arrange: Some(arrange) };
+        match w.build(&inp, &theme, &|_| None) {
+            Ok(b) => {
+                images.extend(b.image_ids.iter().cloned());
+                (backdrop(b.root), b.arrangement)
+            }
+            Err(e) => (note(&format!("No preview: {e}")), None),
+        }
+    }
+
+    /// Tier tabs, the preview, the tray of hidden Modules and the reset buttons.
+    fn preview_block(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, images: &mut Vec<String>) -> Node {
+        let id = &cfg.id;
+        let (pv, arr) = self.preview(k, ctx, cfg, images);
+        *self.tray_key.borrow_mut() = format!("ip/{id}/tray");
+        *self.preview_arr.borrow_mut() = arr.clone();
+        let mut b = Node::new(format!("ip/{id}/pvb")).col().gap(8.0).pad_xy(0.0, 4.0);
+        let Some(meta) = self.def_of(ctx, &cfg.widget) else { return b.child(pv) };
+        if let Some(a) = &arr {
+            let mut tabs = Node::new(format!("ip/{id}/tabs")).row().wrap().align(taffy::AlignItems::CENTER).gap(6.0);
+            for t in &meta.tiers {
+                let on = t.name == a.tier;
+                tabs = tabs.child(
+                    Node::new(format!("ip/{id}/tab/{}", t.name))
+                        .h(28.0)
+                        .pad_xy(12.0, 0.0)
+                        .center()
+                        .radius(14.0)
+                        .fill(if on { k.c("accent").with_alpha(0.22) } else { Color([1.0, 1.0, 1.0, 0.07]) })
+                        .border(if on { 1.0 } else { 0.0 }, k.c("accent").with_alpha(0.6))
+                        .hover_fill(Color([1.0, 1.0, 1.0, 0.14]))
+                        .ease(120)
+                        .on(format!("tier:{}", t.name))
+                        .child(k.bold(format!("ip/{id}/tab/{}/t", t.name), &t.label, 12.5, if on { k.c("text") } else { k.c("text-dim") })),
+                );
+            }
+            tabs = tabs.child(Node::new(format!("ip/{id}/tabs/sp")).grow(1.0));
+            if cfg.layout.contains_key(&a.tier) {
+                tabs = tabs.child(k.button(&format!("ip/{id}/lr"), "Reset this size", format!("layreset:{id}|{}", a.tier), false));
+            }
+            if cfg.layout.len() > 1 || (cfg.layout.len() == 1 && !cfg.layout.contains_key(&a.tier)) {
+                tabs = tabs.child(k.button(&format!("ip/{id}/lra"), "Reset all sizes", format!("layresetall:{id}"), false));
+            }
+            b = b.child(tabs).child(pv);
+            let mut tray = Node::new(format!("ip/{id}/tray")).row().wrap().align(taffy::AlignItems::CENTER).gap(6.0).pad_xy(10.0, 8.0).min_h(44.0).radius(10.0).fill(Color([1.0, 1.0, 1.0, 0.04])).border(1.0, k.c("border").mul_alpha(0.6));
+            tray = tray.child(k.bold(format!("ip/{id}/tray/h"), "Hidden", 11.5, k.c("text-dim")));
+            if a.hidden.is_empty() {
+                tray = tray.child(k.txt(format!("ip/{id}/tray/e"), "Drag a module here to hide it.", 12.0, k.c("text-dim")));
+            }
+            for m in &a.hidden {
+                tray = tray.child(
+                    Node::new(format!("ip/{id}/tray/{}", m.id))
+                        .h(28.0)
+                        .pad_xy(11.0, 0.0)
+                        .center()
+                        .radius(14.0)
+                        .fill(Color([1.0, 1.0, 1.0, 0.08]))
+                        .hover_fill(Color([1.0, 1.0, 1.0, 0.16]))
+                        .ease(120)
+                        .on(format!("mod:{}", m.id))
+                        .child(k.txt(format!("ip/{id}/tray/{}/t", m.id), &m.label, 12.0, k.c("text"))),
+                );
+            }
+            b = b.child(tray);
+            let cut: Vec<String> = a.slots.iter().flat_map(|s| s.cut.iter().map(|m| m.label.clone())).collect();
+            if !cut.is_empty() {
+                b = b.child(k.txt(format!("ip/{id}/cut"), &format!("No room at this size, left out: {}.", cut.join(", ")), 11.5, k.c("text-dim")).wrap_text());
+            }
+            b = b.child(k.txt(format!("ip/{id}/hint"), "Drag modules to rearrange them for this size. Click one to change its options.", 11.5, k.c("text-dim")).wrap_text());
+        } else {
+            b = b.child(pv);
+        }
+        b
+    }
+
+    /// Widget-wide options, then the selected Module's own.
+    fn module_options(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, meta: &WidgetMeta, images: &mut Vec<String>) -> Node {
+        let id = &cfg.id;
+        let mut c = Node::new(format!("ip/{id}/mo")).col().gap(4.0);
+        let mut section = |c: Node, key: String, title: &str, params: Vec<ParamDef>| {
+            let mut c = c;
+            for (i, (group, ps)) in ParamDef::grouped(&params).into_iter().enumerate() {
+                c = c.child(k.section(&format!("{key}/{i}"), &match group {
+                    Some(g) => format!("{title}: {g}"),
+                    None => title.to_string(),
+                }));
+                for pd in ps {
+                    c = c.child(self.param_row(k, ctx, cfg, pd, images));
+                }
+            }
+            c
+        };
+        let wide: Vec<ParamDef> = meta.params.iter().filter(|p| p.module.is_none()).cloned().collect();
+        c = section(c, format!("ip/{id}/wo"), "Widget options", wide);
+        let arr = self.preview_arr.borrow();
+        let picked = self.sel_module.as_deref().and_then(|s| {
+            let all = arr.iter().flat_map(|a| a.slots.iter().flat_map(|s| s.modules.iter().chain(&s.cut)).chain(&a.hidden));
+            all.into_iter().find(|m| m.id == s).map(|m| (m.id.clone(), m.label.clone()))
+        });
+        match picked {
+            Some((mid, label)) => {
+                let own: Vec<ParamDef> = meta.params.iter().filter(|p| p.module.as_deref().is_some_and(|l| names_module(l, &mid))).cloned().collect();
+                if own.is_empty() {
+                    c = c.child(k.section(&format!("ip/{id}/mo/t"), &label));
+                    c = c.child(k.txt(format!("ip/{id}/mo/n"), "This module has no options of its own.", 12.0, k.c("text-dim")));
+                } else {
+                    c = section(c, format!("ip/{id}/mo/o"), &label, own);
+                }
+            }
+            None => {}
+        }
+        c
+    }
+
+    /// The tab a Module drag starts from, or a click selects.
+    fn mod_press(&mut self, id: &str, pos: (f32, f32)) {
+        let label = self.preview_arr.borrow().iter().flat_map(|a| a.slots.iter().flat_map(|s| s.modules.iter().chain(&s.cut)).chain(&a.hidden)).find(|m| m.id == id).map(|m| m.label.clone()).unwrap_or_else(|| id.to_string());
+        self.mdrag = Some(ModDrag { id: id.into(), label, pos, start: pos, active: false });
+    }
+
+    /// True while a drag is in progress, so the window redraws with the marker.
+    fn mod_move(&mut self, pos: (f32, f32)) -> bool {
+        let Some(d) = self.mdrag.as_mut() else { return false };
+        d.pos = pos;
+        if !d.active && ((pos.0 - d.start.0).powi(2) + (pos.1 - d.start.1).powi(2)).sqrt() > 5.0 {
+            d.active = true;
+        }
+        true
+    }
+
+    /// Where the drag would land at `pos`, from the rects of the last frame.
+    fn drop_at(&self, ctx: &Ctx, pos: (f32, f32)) -> Option<Drop> {
+        let d = self.mdrag.as_ref()?;
+        let arr = self.preview_arr.borrow();
+        let arr = arr.as_ref()?;
+        let cfg = self.selected_cfg(ctx)?;
+        let meta = self.def_of(ctx, &cfg.widget)?;
+        let module = arr.slots.iter().flat_map(|s| s.modules.iter().chain(&s.cut)).chain(&arr.hidden).find(|m| m.id == d.id)?.module.clone();
+        let allowed = meta.modules.iter().find(|m| m.name == module).map(|m| m.slots.clone()).unwrap_or_default();
+        for s in &arr.slots {
+            let Some(r) = self.preview_rects.get(&format!("slot:{}", s.name)).copied() else { continue };
+            if !inside(r, pos, 6.0) || !(allowed.is_empty() || allowed.iter().any(|a| *a == s.name)) {
+                continue;
+            }
+            let rest: Vec<[f32; 4]> = s.modules.iter().filter(|m| m.id != d.id).filter_map(|m| self.preview_rects.get(&format!("mod:{}", m.id)).copied()).collect();
+            // in reading order, a Module is before the pointer when it is on an earlier row, or left of it on the same one
+            let before = rest.iter().filter(|m| m[1] + m[3] <= pos.1 || (pos.1 >= m[1] && m[0] + m[2] / 2.0 < pos.0)).count();
+            return Some(Drop { slot: Some(s.name.clone()), index: before });
+        }
+        let tray = self.preview_rects.get("tray").copied()?;
+        inside(tray, pos, 0.0).then_some(Drop { slot: None, index: 0 })
+    }
+
+    /// A click selects the Module; a drag moves it to where it was let go.
+    fn mod_release(&mut self, pos: (f32, f32), ctx: &Ctx) -> Vec<Cmd> {
+        let Some(d) = self.mdrag.as_ref() else { return vec![] };
+        let (id, active) = (d.id.clone(), d.active);
+        let target = if active { self.drop_at(ctx, pos) } else { None };
+        self.mdrag = None;
+        if !active {
+            self.sel_module = Some(id);
+            return vec![];
+        }
+        let (Some(t), Some(arr), Some(cfg)) = (target, self.preview_arr.borrow().clone(), self.selected_cfg(ctx)) else { return vec![] };
+        let mut layout = arr.as_layout();
+        for v in layout.values_mut() {
+            v.retain(|m| *m != id);
+        }
+        if let Some(slot) = t.slot {
+            let v = layout.entry(slot).or_default();
+            let at = t.index.min(v.len());
+            v.insert(at, id.clone());
+        }
+        self.sel_module = Some(id);
+        vec![Cmd::Layout(cfg.id.clone(), arr.tier, Some(layout))]
+    }
+
+    /// Rects of the preview's Modules, slots and the tray, for the next frame's drop marker.
+    pub fn record_preview(&mut self, frame: &Frame) {
+        self.preview_rects.clear();
+        for h in &frame.hits {
+            if let Some(id) = h.action.as_deref().and_then(|a| a.strip_prefix("mod:")) {
+                self.preview_rects.insert(format!("mod:{id}"), h.rect);
+            }
+        }
+        if let Some(a) = self.preview_arr.borrow().as_ref() {
+            for s in &a.slots {
+                if let Some(r) = frame.rect_of(&s.key) {
+                    self.preview_rects.insert(format!("slot:{}", s.name), r);
+                }
+            }
+        }
+        let tray = frame.rect_of(&self.tray_key.borrow());
+        if let Some(r) = tray {
+            self.preview_rects.insert("tray".into(), r);
+        }
+    }
+
+    /// Outline of the selected Module, and while dragging the valid drop slots, an insertion bar and a ghost.
+    fn module_overlay(&self, k: &Kit, ctx: &Ctx) -> Option<Node> {
+        if self.page != Page::Widgets {
+            return None;
+        }
+        let mut o = Node::new("s/mo").abs_fill().overlay();
+        let mut any = false;
+        if let Some(r) = self.sel_module.as_ref().and_then(|s| self.preview_rects.get(&format!("mod:{s}"))) {
+            o = o.child(Node::new("s/mo/sel").abs(Some(r[0] - 2.0), Some(r[1] - 2.0), None, None).wh(r[2] + 4.0, r[3] + 4.0).radius(8.0).border(2.0, k.c("accent")));
+            any = true;
+        }
+        if let Some(d) = self.mdrag.as_ref().filter(|d| d.active) {
+            let drop = self.drop_at(ctx, d.pos);
+            let arr = self.preview_arr.borrow();
+            if let Some(a) = arr.as_ref() {
+                let cfg = self.selected_cfg(ctx);
+                let module = a.slots.iter().flat_map(|s| s.modules.iter().chain(&s.cut)).chain(&a.hidden).find(|m| m.id == d.id).map(|m| m.module.clone());
+                let allowed = cfg.and_then(|c| self.def_of(ctx, &c.widget)).and_then(|m| m.modules.iter().find(|x| Some(&x.name) == module.as_ref())).map(|m| m.slots.clone()).unwrap_or_default();
+                for s in &a.slots {
+                    let Some(r) = self.preview_rects.get(&format!("slot:{}", s.name)) else { continue };
+                    if !(allowed.is_empty() || allowed.iter().any(|x| *x == s.name)) {
+                        continue;
+                    }
+                    let hot = drop.as_ref().is_some_and(|t| t.slot.as_deref() == Some(s.name.as_str()));
+                    o = o.child(Node::new(format!("s/mo/slot/{}", s.name)).abs(Some(r[0]), Some(r[1]), None, None).wh(r[2], r[3]).radius(8.0).fill(k.c("accent").with_alpha(if hot { 0.14 } else { 0.05 })).border(1.0, k.c("accent").with_alpha(if hot { 0.9 } else { 0.4 })));
+                }
+                if let Some(Drop { slot: Some(slot), index }) = &drop {
+                    if let Some(s) = a.slots.iter().find(|s| s.name == *slot) {
+                        let rest: Vec<[f32; 4]> = s.modules.iter().filter(|m| m.id != d.id).filter_map(|m| self.preview_rects.get(&format!("mod:{}", m.id)).copied()).collect();
+                        let column = rest.len() > 1 && (rest[1][1] - rest[0][1]).abs() > (rest[1][0] - rest[0][0]).abs();
+                        let bar = if let Some(m) = rest.get(*index) {
+                            if column { Some((m[0], m[1] - 3.0, m[2], 3.0)) } else { Some((m[0] - 4.0, m[1], 3.0, m[3])) }
+                        } else if let Some(m) = rest.last() {
+                            if column { Some((m[0], m[1] + m[3] + 1.0, m[2], 3.0)) } else { Some((m[0] + m[2] + 1.0, m[1], 3.0, m[3])) }
+                        } else {
+                            self.preview_rects.get(&format!("slot:{slot}")).map(|r| (r[0] + 4.0, r[1] + 4.0, 3.0, (r[3] - 8.0).max(8.0)))
+                        };
+                        if let Some((x, y, w, h)) = bar {
+                            o = o.child(Node::new("s/mo/bar").abs(Some(x), Some(y), None, None).wh(w, h).radius(1.5).fill(k.c("accent")));
+                        }
+                    }
+                }
+                if drop.as_ref().is_some_and(|t| t.slot.is_none()) {
+                    if let Some(r) = self.preview_rects.get("tray") {
+                        o = o.child(Node::new("s/mo/tray").abs(Some(r[0]), Some(r[1]), None, None).wh(r[2], r[3]).radius(10.0).border(2.0, k.c("accent")));
+                    }
+                }
+            }
+            o = o.child(
+                Node::new("s/mo/ghost")
+                    .abs(Some(d.pos.0 + 12.0), Some(d.pos.1 + 10.0), None, None)
+                    .h(26.0)
+                    .pad_xy(11.0, 0.0)
+                    .center()
+                    .radius(13.0)
+                    .fill(Color([0.06, 0.07, 0.11, 0.95]))
+                    .border(1.0, k.c("accent"))
+                    .child(k.txt("s/mo/ghost/t".into(), &d.label, 12.0, k.c("text"))),
+            );
+            any = true;
+        }
+        any.then_some(o)
+    }
+}
+
 pub struct SettingsWin {
     pub window: Arc<Window>,
     pub target: Target,
@@ -1686,11 +2058,10 @@ impl SettingsWin {
         });
         let mut attrs = WindowAttributes::default()
             .with_title("Wayfinder Settings")
-            .with_decorations(false)
-            .with_transparent(true)
-            .with_resizable(false)
+            .with_resizable(true)
             .with_visible(false)
             .with_inner_size(LogicalSize::new(WIN.0 as f64, WIN.1 as f64))
+            .with_min_inner_size(LogicalSize::new(MIN_WIN.0 as f64, MIN_WIN.1 as f64))
             .with_no_redirection_bitmap(true);
         if let Some(p) = pos {
             attrs = attrs.with_position(p);
@@ -1740,6 +2111,10 @@ impl SettingsWin {
                 self.drag = Some(action.split(':').next().unwrap_or("").to_string());
                 self.ui.act(action, ctx, self.hwnd())
             }
+            "mod" => {
+                self.ui.mod_press(action.strip_prefix("mod:").unwrap_or(""), self.mouse);
+                vec![]
+            }
             "in" => {
                 let key = action.strip_prefix("in:").unwrap_or("");
                 let caret = self.frame.as_ref().and_then(|f| f.rect_of(&format!("{key}/t"))).map(|r| text.byte_at(&format!("{key}/t"), self.mouse.0 - r[0]));
@@ -1787,6 +2162,7 @@ impl SettingsWin {
                     });
                 }
                 if self.down {
+                    self.ui.mod_move(self.mouse);
                     match self.drag.clone().as_deref() {
                         Some(a) if a.starts_with("sl:") => cmds.extend(self.slide_now(a, ctx)),
                         Some("cpsv" | "cph") => {
@@ -1811,6 +2187,8 @@ impl SettingsWin {
             WindowEvent::MouseInput { state: ElementState::Released, button: MouseButton::Left, .. } => {
                 self.down = false;
                 self.drag = None;
+                cmds.extend(self.ui.mod_release(self.mouse, ctx));
+                self.redraw = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -1866,6 +2244,7 @@ impl SettingsWin {
         }
         self.animating = frame.animating;
         self.ui.record_anchors(&frame);
+        self.ui.record_preview(&frame);
         // an open popup needs its anchor rect to position itself; one more frame settles it
         self.redraw = self.ui.has_popup() && !self.ui.popup_anchor_rects.contains_key(&self.ui.anchor_key());
         self.frame = Some(frame);
@@ -1906,6 +2285,7 @@ mod tests {
         hidden: Vec<(String, Hidden)>,
         plugins: Vec<PluginRow>,
         sources: Vec<String>,
+        data: crate::data::DataSources,
     }
 
     fn world() -> World {
@@ -1920,11 +2300,11 @@ mod tests {
             PluginRow { id: "sunset".into(), name: "Sunset".into(), version: "1.2.0".into(), author: "Ada".into(), description: "Warm colours".into(), summary: "1 widget · 1 palette".into(), enabled: true, notes: vec!["Restyles Analog Clock".into()], problems: vec![], sole_widgets: vec!["weather".into()], code: "Runs code as `weather` · can reach api.open-meteo.com".into(), code_sources: vec!["weather".into()], status: "Running".into() },
             PluginRow { id: "broken".into(), name: "broken".into(), summary: "nothing yet".into(), enabled: false, problems: vec!["no plugin.toml".into()], ..Default::default() },
         ];
-        World { ws, reg: Registry::load(Path::new("no-such-dir")), lib, theme, hidden: vec![], plugins, sources: crate::data::DataSources::builtin().names() }
+        World { ws, reg: Registry::load(Path::new("no-such-dir")), lib, theme, hidden: vec![], plugins, sources: crate::data::DataSources::builtin().names(), data: crate::data::DataSources::builtin() }
     }
 
     fn ctx(w: &World) -> Ctx<'_> {
-        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me }
+        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me, data: &w.data }
     }
 
     #[test]
@@ -1964,18 +2344,90 @@ mod tests {
         let c = ctx(&w);
         let mut ui = UiState::default();
         ui.selected = Some("system_monitor-1".into());
-        let (root, _) = ui.build(&c, WIN);
+        ui.advanced = true; // Placement and Style sit under "Advanced"
+        let (root, _) = ui.build(&c, MIN_WIN);
         let (mut text, mut anim) = (TextEngine::new(), Anim::default());
         let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale: 1.0 };
-        let f = ui::layout(&root, WIN, &mut env);
+        let f = ui::layout(&root, MIN_WIN, &mut env);
         let [x, _, bw, _] = f.rect_of("ip/system_monitor-1/del").unwrap();
-        assert!(x + bw <= WIN.0, "Remove ends at {} in a {} px window", x + bw, WIN.0);
+        assert!(x + bw <= MIN_WIN.0, "Remove ends at {} in a {} px window", x + bw, MIN_WIN.0);
         let [_, _, _, dh] = f.rect_of("ip/system_monitor-1/hs").unwrap();
         assert!(dh > 20.0, "the description wraps onto more lines ({dh} px tall)");
         for (k, [x, _, w, _]) in f.rects.iter().filter(|(k, _)| k.starts_with("sr/system_monitor-1/") || k.starts_with("ip/system_monitor-1/tp")) {
-            assert!(x + w <= WIN.0, "`{k}` ends at {} in a {} px window", x + w, WIN.0);
+            assert!(x + w <= MIN_WIN.0, "`{k}` ends at {} in a {} px window", x + w, MIN_WIN.0);
         }
         assert!(f.rect_of("sr/system_monitor-1/anim-speed").is_some(), "the Style section is on the widget's panel");
+    }
+
+    /// The Settings frame of a system monitor Instance, laid out at `size`.
+    fn monitor_frame(ui: &mut UiState, w: &World, size: (f32, f32)) -> Frame {
+        let (root, _) = ui.build(&ctx(w), size);
+        let (mut text, mut anim) = (TextEngine::new(), Anim::default());
+        let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale: 1.0 };
+        let f = ui::layout(&root, size, &mut env);
+        ui.record_preview(&f);
+        f
+    }
+
+    #[test]
+    fn dragging_a_module_in_the_preview_saves_a_layout_and_a_click_selects_it() {
+        let mut w = world();
+        w.ws.instances.push(InstanceCfg { id: "system_monitor-1".into(), widget: "system_monitor".into(), w: 340.0, h: 190.0, ..Default::default() });
+        let mut ui = UiState::default();
+        ui.selected = Some("system_monitor-1".into());
+        let big = (1200.0, 900.0);
+        monitor_frame(&mut ui, &w, big);
+        let f = monitor_frame(&mut ui, &w, big); // the second build knows where the first drew
+        let rect = |id: &str| ui.preview_rects.get(&format!("mod:{id}")).copied().unwrap_or_else(|| panic!("no rect for {id}: {:?}", ui.preview_rects.keys().collect::<Vec<_>>()));
+        let (cpu, ram) = (rect("gauge:cpu"), rect("gauge:ram"));
+        let centre = |r: [f32; 4]| (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0);
+
+        // a click selects
+        ui.mod_press("gauge:cpu", centre(cpu));
+        assert!(ui.mod_release(centre(cpu), &ctx(&w)).is_empty());
+        assert_eq!(ui.sel_module.as_deref(), Some("gauge:cpu"));
+
+        // dragging CPU past RAM puts it after RAM
+        ui.mod_press("gauge:cpu", centre(cpu));
+        ui.mod_move((ram[0] + ram[2] - 2.0, ram[1] + ram[3] / 2.0));
+        let cmds = ui.mod_release((ram[0] + ram[2] - 2.0, ram[1] + ram[3] / 2.0), &ctx(&w));
+        let [Cmd::Layout(id, tier, Some(layout))] = cmds.as_slice() else { panic!("{cmds:?}") };
+        assert_eq!((id.as_str(), tier.as_str()), ("system_monitor-1", "normal"));
+        assert_eq!(&layout["gauges"][..2], ["gauge:ram", "gauge:cpu"]);
+        let _ = f;
+
+        // dropping on the tray hides it
+        ui.mod_press("gauge:cpu", centre(cpu));
+        let tray = ui.preview_rects["tray"];
+        let cmds = ui.mod_release((tray[0] + 20.0, tray[1] + tray[3] / 2.0), &ctx(&w)); // not moved yet: only a click
+        assert!(cmds.is_empty());
+        ui.mod_press("gauge:cpu", centre(cpu));
+        ui.mod_move((tray[0] + 20.0, tray[1] + tray[3] / 2.0));
+        let cmds = ui.mod_release((tray[0] + 20.0, tray[1] + tray[3] / 2.0), &ctx(&w));
+        let [Cmd::Layout(_, _, Some(layout))] = cmds.as_slice() else { panic!("{cmds:?}") };
+        assert!(layout.values().all(|v| !v.iter().any(|m| m == "gauge:cpu")), "{layout:?}");
+    }
+
+    #[test]
+    fn advanced_settings_start_collapsed_and_tier_tabs_pick_the_preview() {
+        let mut w = world();
+        w.ws.instances.push(InstanceCfg { id: "system_monitor-1".into(), widget: "system_monitor".into(), ..Default::default() });
+        let c = ctx(&w);
+        let mut ui = UiState::default();
+        ui.selected = Some("system_monitor-1".into());
+        let f = monitor_frame(&mut ui, &w, WIN);
+        assert!(f.rect_of("z:system_monitor-1").is_none(), "Layer is under Advanced");
+        assert!(ui.act("adv:toggle", &c, None).is_empty() && ui.advanced);
+        assert!(ui.act("tier:large", &c, None).is_empty());
+        monitor_frame(&mut ui, &w, WIN);
+        assert_eq!(ui.preview_arr.borrow().as_ref().map(|a| a.tier.clone()).as_deref(), Some("large"));
+        assert_eq!(ui.act("layreset:system_monitor-1|large", &c, None), vec![Cmd::Layout("system_monitor-1".into(), "large".into(), None)]);
+    }
+
+    #[test]
+    fn general_offers_a_restart_for_the_adapter_choice() {
+        let w = world();
+        assert_eq!(UiState::default().act("restart", &ctx(&w), None), vec![Cmd::Restart]);
     }
 
     #[test]

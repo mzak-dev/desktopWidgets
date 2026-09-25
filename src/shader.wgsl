@@ -151,6 +151,7 @@ struct ImgIn {
     @location(4) tint: vec4f,
     @location(5) clip: vec4f,
     @location(6) uv: vec4f,
+    @location(7) feather: f32,
 }
 
 struct ImgOut {
@@ -159,7 +160,7 @@ struct ImgOut {
     @location(1) pos: vec2f,
     @location(2) @interpolate(flat) center: vec2f,
     @location(3) @interpolate(flat) half: vec2f,
-    @location(4) @interpolate(flat) params: vec2f,
+    @location(4) @interpolate(flat) params: vec3f,
     @location(5) @interpolate(flat) tint: vec4f,
     @location(6) @interpolate(flat) clip: vec4f,
 }
@@ -177,7 +178,7 @@ fn vs_img(@builtin(vertex_index) vi: u32, in: ImgIn) -> ImgOut {
     o.pos = p;
     o.center = in.center;
     o.half = in.half;
-    o.params = vec2f(in.radius, in.alpha);
+    o.params = vec3f(in.radius, in.alpha, in.feather);
     o.tint = in.tint;
     o.clip = in.clip;
     return o;
@@ -189,8 +190,14 @@ fn fs_img(in: ImgOut) -> @location(0) vec4f {
         discard;
     }
     var cov = 1.0;
-    if (in.params.x > 0.5) {
-        cov = clamp(0.5 - sd_round_box(in.pos - in.center, in.half, in.params.x), 0.0, 1.0);
+    if (in.params.x > 0.5 || in.params.z > 0.5) {
+        let d = sd_round_box(in.pos - in.center, in.half, in.params.x);
+        cov = clamp(0.5 - d, 0.0, 1.0);
+        if (in.params.z > 0.5) {
+            // fade from opaque `feather` px inside the edge to clear at the edge, smoothly
+            let t = clamp(-d / in.params.z, 0.0, 1.0);
+            cov = cov * t * t * (3.0 - 2.0 * t);
+        }
     }
     let c = textureSample(tex, samp, in.uv);
     let a = c.a * in.tint.a * in.params.y * cov;

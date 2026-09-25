@@ -37,7 +37,7 @@ fn main() {
         .collect();
     let mut ws = Workspace::default();
     let mon = MonitorRef { name: "\\\\.\\DISPLAY1".into(), width: 1920, height: 1080 };
-    for (id, w, sz) in [("clock-1", "clock", (260.0, 260.0)), ("digital_clock-1", "digital_clock", (340.0, 172.0)), ("icon_list-1", "icon_list", (280.0, 360.0)), ("icon_folder-1", "icon_folder", (132.0, 152.0))] {
+    for (id, w, sz) in [("clock-1", "clock", (260.0, 260.0)), ("digital_clock-1", "digital_clock", (340.0, 172.0)), ("icon_list-1", "icon_list", (280.0, 360.0)), ("icon_folder-1", "icon_folder", (132.0, 152.0)), ("system_monitor-1", "system_monitor", (340.0, 190.0))] {
         let mut c = InstanceCfg { id: id.into(), widget: w.into(), monitor: mon.clone(), w: sz.0, h: sz.1, ..Default::default() };
         if w.starts_with("icon_") {
             c.set_items(&items);
@@ -60,11 +60,13 @@ fn main() {
         PluginRow { id: "neon-icons".into(), name: "Neon Icons".into(), version: "0.3".into(), author: "Lin".into(), summary: "1 icon pack".into(), enabled: false, ..Default::default() },
     ];
     let log: Vec<String> = ["monitor \\\\.\\DISPLAY1: 1920x1080 @ 1.00x", "gpu: AMD Radeon(TM) Graphics / Dx12 / IntegratedGpu", "ready: 4 instance(s), theme Midnight / System / Fluent", "edit mode on"].iter().map(|s| s.to_string()).collect();
-    let ctx = Ctx { ws: &ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "AMD Radeon(TM) Graphics / Dx12 / IntegratedGpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &wayfinder::data::DataSources::builtin().names(), plugin_files: &wayfinder::platform::win32::FileOwner::Me };
+    let ctx = Ctx { ws: &ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "AMD Radeon(TM) Graphics / Dx12 / IntegratedGpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &wayfinder::data::DataSources::builtin().names(), plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &wayfinder::data::DataSources::builtin() };
 
     let size = (960.0f32, 680.0f32);
     let states: Vec<(&str, Vec<&str>)> = vec![
         ("widgets_folder", vec!["nav:widgets", "sel:icon_folder-1"]),
+        ("widgets_monitor", vec!["nav:widgets", "sel:system_monitor-1"]),
+        ("widgets_monitor_large", vec!["nav:widgets", "sel:system_monitor-1", "tier:large"]),
         ("widgets_clock_dropdown", vec!["nav:widgets", "sel:clock-1", "dd:z:clock-1"]),
         ("appearance_picker", vec!["nav:appearance", "cp:sy:*:accent"]),
         ("widgets_clock_style", vec!["nav:widgets", "sel:clock-1"]),
