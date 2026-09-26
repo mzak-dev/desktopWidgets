@@ -3,7 +3,7 @@
 
 mod audio;
 mod clock;
-mod media;
+pub(crate) mod media;
 mod shortcuts;
 mod sys;
 

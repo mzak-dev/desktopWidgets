@@ -1,5 +1,7 @@
 name = "System Monitor"
-description = "Live CPU, GPU, memory, drives and battery, as bars, gauges and a minute of graphs. Arrange it per size in Settings."
+description = "CPU, memory and GPU load, updated live."
+category = "System"
+icon = "pulse"
 size = [340, 190]
 min_size = [150, 64]
 max_size = [760, 520]

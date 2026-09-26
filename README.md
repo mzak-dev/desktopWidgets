@@ -95,7 +95,7 @@ Wayfinder can render on the CPU (the "Microsoft Basic Render Driver"). It is slo
 
 ### Edit layout
 
-Press **`Ctrl` + `Alt` + `E`** (or use the tray menu) to enter Edit Mode. Every widget gets an outline and eight handles.
+Press **`Ctrl` + `Shift` + `E`** (or use the tray menu) to enter Edit Mode. Every widget gets an outline and eight handles.
 
 | | |
 |---|---|
@@ -188,6 +188,8 @@ To share one, zip its folder and rename the zip to `.wfplugin`. Double-click the
 
 ```toml
 name = "My Clock"
+category = "Time"               # groups it in Settings > Add a widget
+icon = "clock"                  # a glyph set's glyph-* name, shown beside it
 size = [240, 120]
 min_size = [160, 80]            # Edit Mode resizes within these;
 max_size = [480, 240]           # a widget's "Size limit" switch lifts the max
@@ -222,10 +224,10 @@ justify = "center"
 | Layout (flexbox) | `direction` `wrap` `align` `justify` `gap` `padding` `margin` `width` `height` `min_*` `max_*` `grow` `shrink` `basis` `aspect` `position` `inset` |
 | Look | `fill` (or `[top, bottom]` gradient) `border` `border_color` `radius` `shadow` `opacity` `clip` |
 | Text | `text` `size` `color` `font` `weight` `text_align` `text_wrap` `line_height` |
-| Image | `src` (PNG, JPEG, WebP, GIF, BMP; `./` is next to the widget file, or a full path like `{item.target}`) `tint` `fit` (`contain` · `cover`) `feather` (fade the edge over that many px, inside `radius`; a large `radius` on a square image is a circle) `max` (`max = 256`: a small copy, made off the UI thread and kept in `.cache/thumbs`; use it for photo grids) `anim` (`false` stops a GIF, WebP or APNG) `frame` (show one frame) |
-| Behaviour | `on_click` (`launch <path>` · `toggle <state>` · `set <state> <value>`, where numbers and `true`/`false` keep their type and `'quotes'` keep text) `on_drop` (a dropped file's path follows the action; `on_drop = "param folder"` saves it as the widget's `folder` setting) · `param <name> <value>` in `on_click` saves a setting too `hover` `transition` `enter` `scroll` `scroll_x` (sideways; the wheel over it writes `state.scroll_x`, Shift+wheel too) `when` |
+| Image | `src` (PNG, JPEG, WebP, GIF, BMP; `./` is next to the widget file, or a full path like `{item.target}`) `tint` `fit` (`contain` · `cover`) `feather` (fade the edge over that many px, inside `radius`; a large `radius` on a square image is a circle) `max` (`max = 256`: a small copy, made off the UI thread and kept in `.cache/thumbs`; use it for photo grids) `anim` (`false` stops a GIF, WebP or APNG) `frame` (show one frame) `fade` (`fade = 400`: when `src` changes, the new picture crossfades in over the old one for that many ms; the old one stays until the new one has loaded) |
+| Behaviour | `on_click` (`launch <path>` · `toggle <state>` · `set <state> <value>`, where numbers and `true`/`false` keep their type and `'quotes'` keep text) `on_drop` (a dropped file's path follows the action; `on_drop = "param folder"` saves it as the widget's `folder` setting) `on_slide` (a bar to drag across: while dragging, `state.slide` is 0-1 and `state.sliding` is true; letting go runs the action with the fraction after it, `media.seek 0.42`; empty turns it off, `on_slide = "{media.can_seek ? 'media.seek' : ''}"`) · `param <name> <value>` in `on_click` saves a setting too `hover` `transition` `enter` `scroll` `scroll_x` (sideways; the wheel over it writes `state.scroll_x`, Shift+wheel too) `when` |
 
-**Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `graphs`, `gpus` (one per adapter: `label` `value` `history`), `gpu_count`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `media.*` (what any app plays through the system media controls: `title` `artist` `album` `source` `playing` `art` `position` `duration` `progress` `clock` `length` `active`; `on_click = "media.play_pause"`, `media.next`, `media.prev`) · `audio.*` (what the speakers play, for visualizers: `bands` `peaks` `level` `bass` `active`, shaped by the widget's `bands` `fmin` `fmax` `gain` `attack` `release` `peak_fall` params) · `param.*` · `state.*` · `self.w` / `self.h`.
+**Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `graphs`, `gpus` (one per adapter: `label` `value` `history`), `gpu_count`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `media.*` (what any app plays through the system media controls: `title` `artist` `album` `source` `playing` `can_seek` `art` `position` `duration` `progress` `clock` `length` `active`; `on_click = "media.play_pause"`, `media.next`, `media.prev`, and `media.seek <0-1>` from an `on_slide` bar) · `audio.*` (what the speakers play, for visualizers: `bands` `peaks` `level` `bass` `active`, shaped by the widget's `bands` `fmin` `fmax` `gain` `attack` `release` `peak_fall` params) · `param.*` · `state.*` · `self.w` / `self.h`.
 
 **Size tiers** are plain `when` conditions on `self.w` and `self.h`: show more when there is room. The engine animates the change.
 
@@ -258,7 +260,7 @@ max = "{floor((self.w - 28) / 50)}"   # optional: how many fit; the rest are lef
 
 A `[params.x]` with `module = "gauge:cpu,graph:cpu"` shows in Settings only while one of those modules is selected; without it, it is an option of the whole widget. `legacy = { "gauge:cpu" = "show_cpu" }` on a module turns an old saved `show_cpu = false` into a layout without it. Files without `[modules]` work as before.
 
-**Expressions** are total: arithmetic, comparison, `&&` `||` `!`, `? :`, strings and the functions `min` `max` `abs` `round` `floor` `ceil` `clamp` `len` `upper` `lower` `pad` `at`. `at(list, i)` picks by a computed position (negative counts from the end, past the end is nothing) or key, and takes a field after it: `at(gallery.items, state.selected).url`. There are no loops and no side effects, so evaluating one can never hang a redraw. Interpolate with `{expr}` or format with `{expr|02}` / `{expr|.1}`.
+**Expressions** are total: arithmetic, comparison, `&&` `||` `!`, `? :`, strings and the functions `min` `max` `abs` `round` `floor` `ceil` `clamp` `len` `upper` `lower` `pad` `at` `clock`. `clock(secs)` reads seconds as a player shows them, `3:07` or `1:02:03`: `{clock(state.slide * media.duration)}` under a seek bar. `at(list, i)` picks by a computed position (negative counts from the end, past the end is nothing) or key, and takes a field after it: `at(gallery.items, state.selected).url`. There are no loops and no side effects, so evaluating one can never hang a redraw. Interpolate with `{expr}` or format with `{expr|02}` / `{expr|.1}`.
 
 Unknown attributes are rejected with a suggestion, for example ``unknown attribute `colour` on `text` (did you mean `color`?)``.
 

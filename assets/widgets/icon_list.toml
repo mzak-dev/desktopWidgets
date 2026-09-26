@@ -1,5 +1,7 @@
 name = "Icon List"
-description = "A list of app shortcuts. Narrow: icons only. Wide: a grid of tiles with names. Scrolls when it overflows."
+description = "A column of app shortcuts on the wallpaper."
+category = "Launchers"
+icon = "list"
 size = [240, 320]
 min_size = [140, 96]
 max_size = [480, 900]

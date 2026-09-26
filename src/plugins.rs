@@ -445,7 +445,7 @@ fn check_in(src: &Path, data: &Path) -> Report {
     let row = rows(&list, &BTreeSet::new(), &cat, &builtin.union(&needed).cloned().collect()).into_iter().find(|x| x.id == m.id).unwrap_or_default();
     r.problems.extend(row.problems);
     r.notes.extend(row.notes);
-    r.notes.extend(row.code.lines().map(String::from));
+    r.notes.extend(row.code.iter().map(CodeRow::line));
     for code in &m.code {
         use crate::code::runtime::{Compiled, Env, Limits as CodeLimits, Runtime};
         let limits = CodeLimits::default();
@@ -659,13 +659,36 @@ pub struct PluginRow {
     pub problems: Vec<String>,
     /// Widget ids nothing else provides: removing the Plugin removes their Instances.
     pub sole_widgets: Vec<String>,
-    /// "Runs code as `weather` · can reach api.open-meteo.com", a line per Code Source;
-    /// empty without code.
-    pub code: String,
-    /// Its Code Sources' names while they run, to match the live status to the row.
-    pub code_sources: Vec<String>,
-    /// How the code is doing, kept current by the app.
+    /// What it adds, by kind.
+    pub contents: Contents,
+    /// Its Code Sources; empty without code.
+    pub code: Vec<CodeRow>,
+}
+
+/// One Code Source of a Plugin, as its card on the Plugins page shows it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CodeRow {
+    pub source: String,
+    /// Hosts it may reach; none = no network.
+    pub net: Vec<String>,
+    /// What it may read, in words.
+    pub reads: Vec<String>,
+    /// What its widgets may open besides web links.
+    pub opens: Vec<String>,
+    /// The Plugin is on and no other Plugin's source of the same name wins.
+    pub runs: bool,
+    /// How it is doing while it runs, kept current by the app.
     pub status: String,
+}
+
+impl CodeRow {
+    /// "Runs code as `weather` · can reach api.open-meteo.com"
+    pub fn line(&self) -> String {
+        let reach = if self.net.is_empty() { "no network".to_string() } else { format!("can reach {}", self.net.join(", ")) };
+        let reads = if self.reads.is_empty() { String::new() } else { format!(" · reads {}", self.reads.join(", ")) };
+        let opens = if self.opens.is_empty() { String::new() } else { format!(" · opens {}", self.opens.join(", ")) };
+        format!("Runs code as `{}` · {reach}{reads}{opens}", self.source)
+    }
 }
 
 impl PluginRow {
@@ -740,18 +763,18 @@ pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog, native:
                     problems.push(format!("Its data source `{}` is hidden: {} has one too, and wins", c.source, named(&Origin::Plugin(winner.clone()))));
                 }
             }
-            let code_line = code
+            let runs = |c: &Code| !disabled.contains(&p.id) && !code_lost.contains_key(&(p.id.clone(), c.source.clone()));
+            let code_rows = code
                 .iter()
-                .map(|c| {
-                    let reach = if c.net.is_empty() { "no network".to_string() } else { format!("can reach {}", c.net.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(", ")) };
-                    let reads = c.reads();
-                    let reads = if reads.is_empty() { String::new() } else { format!(" · reads {}", reads.join(", ")) };
-                    let opens = if c.launch.is_empty() { String::new() } else { format!(" · opens {}", c.launch.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ")) };
-                    format!("Runs code as `{}` · {reach}{reads}{opens}", c.source)
+                .map(|c| CodeRow {
+                    source: c.source.clone(),
+                    net: c.net.iter().map(|h| h.to_string()).collect(),
+                    reads: c.reads(),
+                    opens: c.launch.iter().map(|l| l.to_string()).collect(),
+                    runs: runs(c),
+                    status: String::new(),
                 })
-                .collect::<Vec<_>>()
-                .join("\n");
-            let runs = |c: &&Code| !disabled.contains(&p.id) && !code_lost.contains_key(&(p.id.clone(), c.source.clone()));
+                .collect();
             PluginRow {
                 id: p.id.clone(),
                 name: p.name().to_string(),
@@ -763,9 +786,8 @@ pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog, native:
                 notes,
                 problems,
                 sole_widgets,
-                code: code_line,
-                code_sources: code.iter().filter(runs).map(|c| c.source.clone()).collect(),
-                status: String::new(),
+                contents: p.contents.clone(),
+                code: code_rows,
             }
         })
         .collect()
@@ -937,7 +959,7 @@ mod tests {
         put(&data, "plugins/agents/plugin.toml", &src.replace("sunset", "agents"));
         let list = PluginStore::new(&data).list();
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
-        assert_eq!(rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new())[0].code, "Runs code as `agents` · no network · reads ~/.claude, ~/.copilot, folders you pick for its widgets");
+        assert_eq!(rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new())[0].code[0].line(), "Runs code as `agents` · no network · reads ~/.claude, ~/.copilot, folders you pick for its widgets");
         let spec = &code_specs(&list, &BTreeSet::new()).0[0].1;
         assert_eq!((spec.fs_read.len(), spec.fs_read_params.as_slice()), (2, &["folder".to_string()][..]));
         std::fs::remove_dir_all(&data).ok();
@@ -999,7 +1021,8 @@ mod tests {
         assert!(specs.iter().all(|(_, s)| s.plugin == "sunset"), "one plugin, one saved store");
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
         let row = &rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new())[0];
-        assert_eq!((row.code.lines().count(), row.code_sources.clone()), (2, vec!["agents".to_string(), "gallery".to_string()]));
+        assert_eq!(row.code.iter().filter(|c| c.runs).map(|c| c.source.as_str()).collect::<Vec<_>>(), ["agents", "gallery"]);
+        assert_eq!((row.code[1].net.as_slice(), row.code[1].reads.as_slice()), (&["api.example.com".to_string()][..], &["folders you pick for its widgets".to_string()][..]));
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -1060,8 +1083,8 @@ mod tests {
         let list = PluginStore::new(&data).list();
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
         let r = rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new());
-        assert_eq!(r[1].code, "Runs code as `weather` · can reach api.open-meteo.com");
-        assert_eq!((r[0].code_sources.as_slice(), r[1].code_sources.as_slice()), (&[][..], &["weather".to_string()][..]));
+        assert_eq!(r[1].code[0].line(), "Runs code as `weather` · can reach api.open-meteo.com");
+        assert_eq!((r[0].code[0].runs, r[1].code[0].runs), (false, true), "beta's weather wins");
         assert!(r[0].problems.iter().any(|p| p.contains("data source `weather` is hidden") && p.contains("wins")), "{:?}", r[0].problems);
         std::fs::remove_dir_all(&data).ok();
     }

@@ -43,6 +43,7 @@ Unknown keys are refused, so a typo shows up at once.
 - **Fonts:** put `.ttf` / `.otf` files in `fonts/` and name the family (as it is inside the font) in a font set.
 - **Allowed files:** `toml png jpg jpeg gif webp bmp ttf otf ttc otc md txt wasm`, plus `LICENSE`, `README` and `NOTICE`. Anything else stops the install.
 - A widget's `launch` can never open a file inside `plugins/`.
+- **Category and icon:** `category = "Media"` groups a widget in Settings > Add a widget, and `icon = "play"` names the glyph (a `glyph-*` token of the glyph set) shown beside it.
 - **Needs:** a widget that reads a data source another plugin or a Wayfinder build provides can say so with `needs = ["media"]` at its top. When it is missing, the widget, Settings and the Plugins page name it.
 
 ## Modules
@@ -62,6 +63,8 @@ net = ["api.open-meteo.com"]          # the only hosts it may reach, over HTTPS
 [code.initial]                        # shown until the first answer, with {weather.loading}
 temp = 0
 ```
+
+A widget sends the source an action with `on_click = "weather.refresh"`, or with `on_slide = "weather.volume"` on a bar the user drags across: while dragging, `state.slide` (0-1) and `state.sliding` follow the pointer, and letting go sends the fraction, `weather.volume 0.42`. `on_drop` sends a dropped file's path the same way.
 
 To read files, list the folders under your home folder it may read, and any params that hold a folder the user picks:
 

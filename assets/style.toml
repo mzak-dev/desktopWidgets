@@ -5,7 +5,7 @@
 [params.accent]
 type = "color"
 label = "Accent colour"
-help = "Selection, gauges and highlights. Empty uses the palette's."
+help = "Selection, gauges and highlights"
 
 [params.radius-lg]
 type = "number"
@@ -13,25 +13,26 @@ default = 22
 min = 0
 max = 40
 step = 1
-label = "Corner roundness"
-help = "With blur on, Windows only draws square, small or standard corners, so this snaps to the nearest."
+label = "Corner roundness (px)"
+help = "With blur on, Windows rounds to square, small or standard."
 
 [params.outlines]
 type = "bool"
 default = true
 label = "Outlines"
-help = "A thin border around widgets and their parts."
+help = "A thin border around widgets and their parts"
 
 [params.blur]
 type = "bool"
 default = false
 label = "Blur behind"
-help = "Blurs the desktop behind the widget. Drops the shadow."
+help = "Blurs the desktop behind widgets; drops the shadow"
 
 [params.transparent]
 type = "bool"
 default = false
 label = "Transparent background"
+help = "Lets the wallpaper show through"
 
 [params.bg-opacity]
 type = "number"

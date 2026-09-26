@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use taffy::prelude::*;
 
-use crate::anim::{Anim, Ease};
+use crate::anim::{Anim, Ease, Pic};
 use crate::color::Color;
 use crate::draw::*;
 use crate::elements::{Shape, ShapeCx, rgba_with_opacity};
@@ -42,6 +42,10 @@ pub struct ImageSpec {
     pub fit: Fit,
     /// Logical px over which the edge fades to transparent, inside the rounded shape.
     pub feather: f32,
+    /// Ms over which a new `id` fades in over the old one; 0 swaps at once.
+    pub fade: u32,
+    /// The picture has loaded; until then a fade keeps showing the old one.
+    pub ready: bool,
 }
 
 /// How an image fills a box of another shape.
@@ -148,6 +152,9 @@ pub struct Node {
     pub scroll_offset_x: Option<f32>,
     /// A file dropped on it runs this action with the file's path after it.
     pub on_drop: Option<String>,
+    /// Dragging across it sets `state.slide` (0-1) and `state.sliding`; letting go runs this
+    /// action with the fraction after it.
+    pub on_slide: Option<String>,
     pub clip: bool,
     pub overlay: bool,
     pub hit_testable: bool,
@@ -169,6 +176,7 @@ impl Node {
             scroll_offset: None,
             scroll_offset_x: None,
             on_drop: None,
+            on_slide: None,
             clip: false,
             overlay: false,
             hit_testable: false,
@@ -315,6 +323,10 @@ impl Node {
         self.overlay = true;
         self
     }
+    pub fn max_w(mut self, v: f32) -> Self {
+        self.style.max_size.width = length(v);
+        self
+    }
     pub fn max_h(mut self, v: f32) -> Self {
         self.style.max_size.height = length(v);
         self
@@ -352,6 +364,7 @@ pub struct Hit {
     pub key: String,
     pub action: Option<String>,
     pub on_drop: Option<String>,
+    pub on_slide: Option<String>,
 }
 
 impl Hit {
@@ -617,31 +630,36 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                 }
             }
             Kind::Image(im) => {
-                let ((fw, fh), uv) = im.fit.place((im.w, im.h), w, h);
-                let (dw, dh) = (fw / 2.0 * s, fh / 2.0 * s);
-                list.images.push(ImgDraw {
-                    tex: im.id.clone(),
-                    inst: ImgInst {
-                        center: [cx, cy],
-                        half: [dw, dh],
-                        radius: r.min(dw).min(dh),
-                        feather: im.feather * s,
-                        alpha: op,
-                        tint: im.tint.map_or([1.0; 4], |t| t.0),
-                        clip,
-                        uv,
-                        ..Default::default()
-                    },
-                    play: im.play,
-                    frame: im.frame,
-                });
+                let target = Pic { id: im.id.clone(), size: (im.w, im.h) };
+                let (under, over) = if im.fade > 0 { env.anim.crossfade(key, target, im.ready, im.fade, now) } else { (target, None) };
+                // the old picture underneath at full opacity, the new one over it; each fits by its own size
+                for (pic, alpha) in std::iter::once((under, op)).chain(over.map(|(p, t)| (p, op * t))) {
+                    let ((fw, fh), uv) = im.fit.place(pic.size, w, h);
+                    let (dw, dh) = (fw / 2.0 * s, fh / 2.0 * s);
+                    list.images.push(ImgDraw {
+                        tex: pic.id,
+                        inst: ImgInst {
+                            center: [cx, cy],
+                            half: [dw, dh],
+                            radius: r.min(dw).min(dh),
+                            feather: im.feather * s,
+                            alpha,
+                            tint: im.tint.map_or([1.0; 4], |t| t.0),
+                            clip,
+                            uv,
+                            ..Default::default()
+                        },
+                        play: im.play,
+                        frame: im.frame,
+                    });
+                }
             }
             Kind::Shape(shape) => shape.emit(&ShapeCx { center_px: [cx, cy], logical_size: (w, h), scale: s, inherited_opacity: op, clip_px: clip }, &mut list.shapes),
         }
     }
 
-    if n.hit_testable || n.action.is_some() || n.on_drop.is_some() || n.hover.any() {
-        let h = Hit { rect, clip: [clip[0] / s, clip[1] / s, clip[2] / s, clip[3] / s], key: key.to_string(), action: n.action.clone(), on_drop: n.on_drop.clone() };
+    if n.hit_testable || n.action.is_some() || n.on_drop.is_some() || n.on_slide.is_some() || n.hover.any() {
+        let h = Hit { rect, clip: [clip[0] / s, clip[1] / s, clip[2] / s, clip[3] / s], key: key.to_string(), action: n.action.clone(), on_drop: n.on_drop.clone(), on_slide: n.on_slide.clone() };
         if layer == 1 { out.overlay_hits.push(h) } else { out.hits.push(h) }
     }
     out.rects.push((key.to_string(), rect));
