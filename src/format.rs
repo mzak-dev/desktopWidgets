@@ -15,7 +15,8 @@ use crate::modules::{Arrange, Arrangement, Each, Inst, ModuleDef, ModuleSet, Pla
 use crate::theme::Theme;
 use crate::ui::*;
 use crate::value::Value;
-use crate::widgets::{Built, Choice, ExpandInfo, Inputs, ModuleMeta, ParamDef, ParamType, Seed, TierMeta, WidgetMeta};
+use crate::meta::{ModuleMeta, TierMeta, WidgetMeta, parse_params};
+use crate::widgets::{Built, ExpandInfo, Inputs};
 
 
 #[derive(Clone, Debug)]
@@ -157,66 +158,6 @@ fn pair(v: Option<&toml::Value>, default: (f32, f32), what: &str) -> Result<(f32
     let a = v.as_array().filter(|a| a.len() == 2).ok_or_else(|| format!("{what}: expected [width, height]"))?;
     let n = |x: &toml::Value| x.as_float().or_else(|| x.as_integer().map(|i| i as f64)).map(|f| f as f32);
     Ok((n(&a[0]).ok_or_else(|| format!("{what}: width is not a number"))?, n(&a[1]).ok_or_else(|| format!("{what}: height is not a number"))?))
-}
-
-/// A `[params]` table, in file order. Also parses the style schema (`assets/style.toml`).
-/// `"fast"`, or `{ value = "fast", label = "Fast (30 fps)" }`.
-fn choice(param: &str, c: &toml::Value) -> Result<Choice, String> {
-    let bad = || format!("params.{param}.choices: each is a string or {{ value = \"...\", label = \"...\" }}");
-    match c {
-        toml::Value::String(s) => Ok(Choice { value: s.clone(), label: s.clone() }),
-        toml::Value::Table(t) => {
-            let value = t.get("value").and_then(|v| v.as_str()).ok_or_else(bad)?.to_string();
-            let label = t.get("label").and_then(|v| v.as_str()).map_or_else(|| value.clone(), String::from);
-            Ok(Choice { value, label })
-        }
-        _ => Err(bad()),
-    }
-}
-
-pub fn parse_params(pt: &toml::Table) -> Result<Vec<ParamDef>, String> {
-    let mut params = Vec::new();
-    for (name, v) in pt {
-        let p = v.as_table().ok_or_else(|| format!("params.{name}: expected a table"))?;
-        let ty = p.get("type").and_then(|v| v.as_str()).ok_or_else(|| format!("params.{name}: missing `type`"))?;
-        let ty = ParamType::parse(ty).ok_or_else(|| format!("params.{name}: unknown param type `{ty}`"))?;
-        let f = |k: &str| p.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
-        let seed = match p.get("seed") {
-            None => None,
-            Some(v) => {
-                let s = v.as_str().ok_or_else(|| format!("params.{name}.seed: expected a string"))?;
-                let ids: Vec<&str> = Seed::ALL.iter().map(|x| x.id()).collect();
-                let seed = Seed::parse(s).ok_or_else(|| format!("params.{name}: unknown seed `{s}`{}", suggest(s, &[&ids])))?;
-                if seed.param_type() != ty {
-                    return Err(format!("params.{name}: seed `{s}` needs type = \"{}\"", seed.param_type().id()));
-                }
-                Some(seed)
-            }
-        };
-        params.push(ParamDef {
-            name: name.clone(),
-            ty,
-            default: p.get("default").map(Value::from).unwrap_or(match ty {
-                ParamType::Bool => Value::Bool(false),
-                ParamType::Number | ParamType::Duration => Value::Num(0.0),
-                ParamType::Shortcuts => Value::List(vec![]),
-                _ => Value::Str(String::new()),
-            }),
-            label: p.get("label").and_then(|v| v.as_str()).unwrap_or(name).to_string(),
-            help: p.get("help").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            min: f("min"),
-            max: f("max"),
-            step: f("step"),
-            choices: match p.get("choices") {
-                None => vec![],
-                Some(v) => v.as_array().ok_or_else(|| format!("params.{name}.choices: expected a list"))?.iter().map(|c| choice(name, c)).collect::<Result<_, _>>()?,
-            },
-            seed,
-            group: p.get("group").and_then(|v| v.as_str()).map(str::trim).filter(|g| !g.is_empty()).map(String::from),
-            module: p.get("module").and_then(|v| v.as_str()).map(String::from),
-        });
-    }
-    Ok(params)
 }
 
 fn table_of<'a>(v: &'a toml::Value, what: &str) -> Result<&'a toml::Table, String> {
@@ -1047,6 +988,7 @@ impl<'a> TreeBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::meta::{Choice, ParamDef, ParamType, Seed};
     use crate::theme::{Library, Selection};
     use std::path::Path;
 

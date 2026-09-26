@@ -12,7 +12,7 @@ use crate::theme::{Library, Selection, Theme, ThemePick};
 use crate::value::Value;
 
 /// Per tier, per slot, the Module ids an Instance's user arranged; a tier with no entry uses the Widget's default.
-pub type Layout = BTreeMap<String, BTreeMap<String, Vec<String>>>;
+pub use crate::meta::Layout;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(default)]

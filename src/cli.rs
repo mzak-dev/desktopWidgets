@@ -248,7 +248,7 @@ fn render(r: &Render) -> Result<bool, String> {
     let size = card.window_size(card_size);
     let mut cfg = InstanceCfg { id: format!("{id}-1"), widget: id.clone(), w: size.0, h: size.1, ..Default::default() };
     if let Some(m) = &meta {
-        m.seed_params(&mut cfg);
+        crate::widgets::seed_params(m, &mut cfg);
     }
     for (k, v) in &r.params {
         cfg.params.insert(k.clone(), v.clone());

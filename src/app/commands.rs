@@ -57,7 +57,7 @@ impl App {
         for cfg in &mut self.ws.instances {
             if let Some(Ok(w)) = self.reg.get(&cfg.widget) {
                 let before = cfg.clone();
-                w.meta().migrate(cfg);
+                crate::widgets::migrate(w.meta(), cfg);
                 changed |= *cfg != before;
             }
         }

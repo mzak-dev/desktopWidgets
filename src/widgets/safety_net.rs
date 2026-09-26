@@ -221,7 +221,7 @@ fn safety_net_widgets() {
         let all_on: BTreeMap<String, Value> = meta.params.iter().filter(|p| p.ty == ParamType::Bool).map(|p| (p.name.clone(), Value::Bool(true))).collect();
         for (variant, extra) in [("defaults", BTreeMap::new()), ("every switch on", all_on)] {
             let mut cfg = InstanceCfg { id: format!("{id}-1"), widget: id.clone(), ..Default::default() };
-            meta.seed_params(&mut cfg);
+            super::seed_params(meta, &mut cfg);
             if cfg.items().is_empty() {
                 cfg.set_items(&sample_items());
             }

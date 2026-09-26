@@ -28,7 +28,8 @@ use crate::value::Value;
 use crate::workspace::InstanceCfg;
 
 pub use drawer::Drawer;
-pub use meta::{Choice, ModuleMeta, ParamDef, ParamType, Seed, TierMeta, WidgetMeta, needs_message};
+pub use crate::meta::{Choice, ModuleMeta, ParamDef, ParamType, Seed, TierMeta, WidgetMeta, needs_message};
+pub use meta::{apply_seed, migrate, seed_params};
 pub use registry::{Def, Registry, widget_files};
 pub use toml_widget::TomlWidget;
 
@@ -66,7 +67,7 @@ pub struct ActionCx<'a> {
 }
 
 pub fn set_up_instance(w: &dyn Widget, cfg: &mut InstanceCfg, host: &mut dyn Host) {
-    w.meta().seed_params(cfg);
+    seed_params(w.meta(), cfg);
     w.on_instance_added(cfg, host);
 }
 
