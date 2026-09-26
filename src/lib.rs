@@ -30,5 +30,8 @@ pub mod value;
 pub mod widgets;
 pub mod workspace;
 
+#[cfg(test)]
+mod module_graph;
+
 pub use app::{Options, run};
 pub use data::{DataSource, Notifier, SourceCx};
