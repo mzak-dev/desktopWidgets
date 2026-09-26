@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use crate::expr::Template;
-use crate::format::Elem;
+use super::Elem;
 use crate::value::Value;
 use crate::meta::Layout;
 

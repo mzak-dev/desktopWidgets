@@ -11,12 +11,37 @@ use crate::color::{Color, MAGENTA};
 use crate::elements::{self, AttrSource, Attrs};
 use crate::expr::{Scope, Template};
 use crate::suggest::suggest;
-use crate::modules::{Arrange, Arrangement, Each, Inst, ModuleDef, ModuleSet, Placed, PlacedSlot, SlotDef, TierDef, place};
+mod modules;
+pub use modules::{Arrange, Arrangement, Each, Inst, ModuleDef, ModuleSet, Placed, PlacedSlot, SlotDef, TierDef, place};
 use crate::theme::Theme;
 use crate::ui::*;
 use crate::value::Value;
 use crate::meta::{ModuleMeta, TierMeta, WidgetMeta, parse_params};
-use crate::widgets::{Built, Inputs};
+
+
+/// What a build is given.
+pub struct Inputs<'a> {
+    pub params: &'a BTreeMap<String, Value>,
+    pub state: &'a BTreeMap<String, Value>,
+    /// Logical px.
+    pub card_size: (f32, f32),
+    /// Unique per Instance, so text, hover and animation state never collide.
+    pub key_prefix: &'a str,
+    pub read_source: &'a dyn Fn(&str) -> Option<Value>,
+    /// The Instance's arranged Modules; `None` uses each Widget's defaults.
+    pub arrange: Option<Arrange<'a>>,
+}
+
+#[derive(Debug)]
+pub struct Built {
+    pub root: Node,
+    pub deps: BTreeSet<String>,
+    pub image_ids: BTreeSet<String>,
+    pub warnings: Vec<String>,
+    pub expand: Option<ExpandInfo>,
+    /// What the Module slots held, for Widgets that declare them.
+    pub arrangement: Option<Arrangement>,
+}
 
 
 #[derive(Clone, Debug)]

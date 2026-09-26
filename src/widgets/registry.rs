@@ -109,7 +109,7 @@ mod tests {
         let arcs = |layout: crate::workspace::Layout| {
             let (params, st) = (BTreeMap::new(), BTreeMap::new());
             let read = |n: &str| (n == "sys").then(|| sys.sample());
-            let arrange = Some(crate::modules::Arrange { layout: &layout, tier: None, preview: false });
+            let arrange = Some(crate::format::Arrange { layout: &layout, tier: None, preview: false });
             let inp = Inputs { params: &params, state: &st, card_size: (700.0, 200.0), key_prefix: "t", read_source: &read, arrange };
             let b = w.build(&inp, &theme, &|_| None).unwrap();
             assert!(b.warnings.is_empty(), "{:?}", b.warnings);

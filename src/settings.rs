@@ -23,7 +23,7 @@ use crate::draw::{Inst, KIND_ARC, KIND_CAPSULE, KIND_RECT};
 use crate::elements::{Shape, ShapeCx, rgba_with_opacity};
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
-use crate::modules::Arrangement;
+use crate::format::Arrangement;
 use crate::plugins::PluginRow;
 use crate::text::TextEngine;
 use crate::theme::{Axis, Library, Selection, Theme, style_schema};
@@ -2911,7 +2911,7 @@ impl UiState {
         let scx = crate::data::SourceCx { cfg, params: &params, tm: crate::data::now_local(), icon_pack: &cfg.theme.resolve(&ctx.ws.theme).icon_pack };
         let read = |n: &str| ctx.data.value(n, &scx);
         let state = std::collections::BTreeMap::new();
-        let arrange = crate::modules::Arrange { layout, tier, preview: true };
+        let arrange = crate::format::Arrange { layout, tier, preview: true };
         let inp = crate::widgets::Inputs { params: &params, state: &state, card_size: size, key_prefix: key, read_source: &read, arrange: Some(arrange) };
         w.build(&inp, &theme, &|_| None)
     }
@@ -2920,7 +2920,7 @@ impl UiState {
     /// first slot of this tier that takes it, and `m`'s node lifted out. With its kind (`Graph`)
     /// when its label alone does not say it, as a gauge and a graph of one GPU share a label.
     // ponytail: a build per hidden Module per frame; cache them per layout and tier if the Widgets page ever drags
-    fn module_thumb(&self, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, a: &Arrangement, m: &crate::modules::Placed, prefix: &str, images: &mut Vec<String>) -> Option<(Node, Option<String>)> {
+    fn module_thumb(&self, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, a: &Arrangement, m: &crate::format::Placed, prefix: &str, images: &mut Vec<String>) -> Option<(Node, Option<String>)> {
         let meta = self.def_of(ctx, &cfg.widget)?;
         let def = meta.modules.iter().find(|d| d.name == m.module)?;
         let slot = a.slots.iter().find(|s| def.slots.is_empty() || def.slots.contains(&s.name))?;

@@ -21,7 +21,7 @@ use std::time::Instant;
 use super::{Inputs, ParamType, Registry, WidgetMeta};
 use crate::anim::Anim;
 use crate::data::{Cadence, Clock, DataSource, DataSources, Shortcut, Shortcuts, SourceCx, Tm};
-use crate::modules::Arrange;
+use crate::format::Arrange;
 use crate::text::TextEngine;
 use crate::theme::{Library, Selection, Theme};
 use crate::ui::{self, Env, Frame, Kind, Node};

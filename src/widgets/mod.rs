@@ -17,16 +17,16 @@ use std::time::Instant;
 use crate::anim::Anim;
 use crate::card::Card;
 use crate::data::{DataSources, SourceCx, Tm};
-use crate::format;
+use crate::format::{self, Arrange};
 use crate::gfx::Gpu;
 use crate::icons::IconService;
-use crate::modules::{Arrange, Arrangement};
 use crate::text::TextEngine;
 use crate::theme::Theme;
-use crate::ui::{self, Env, Frame, Node};
+use crate::ui::{self, Env, Frame};
 use crate::value::Value;
 use crate::workspace::InstanceCfg;
 
+pub use crate::format::{Built, Inputs};
 pub use crate::ui::ExpandInfo;
 pub use drawer::Drawer;
 pub use crate::meta::{Choice, ModuleMeta, ParamDef, ParamType, Seed, TierMeta, WidgetMeta, needs_message};
@@ -71,30 +71,6 @@ pub fn set_up_instance(w: &dyn Widget, cfg: &mut InstanceCfg, host: &mut dyn Hos
     seed_params(w.meta(), cfg);
     w.on_instance_added(cfg, host);
 }
-
-pub struct Inputs<'a> {
-    pub params: &'a BTreeMap<String, Value>,
-    pub state: &'a BTreeMap<String, Value>,
-    /// Logical px.
-    pub card_size: (f32, f32),
-    /// Unique per Instance, so text, hover and animation state never collide.
-    pub key_prefix: &'a str,
-    pub read_source: &'a dyn Fn(&str) -> Option<Value>,
-    /// The Instance's arranged Modules; `None` uses each Widget's defaults.
-    pub arrange: Option<Arrange<'a>>,
-}
-
-#[derive(Debug)]
-pub struct Built {
-    pub root: Node,
-    pub deps: BTreeSet<String>,
-    pub image_ids: BTreeSet<String>,
-    pub warnings: Vec<String>,
-    pub expand: Option<ExpandInfo>,
-    /// What the Module slots held, for Widgets that declare them.
-    pub arrangement: Option<Arrangement>,
-}
-
 
 pub struct Prepared {
     pub frame: Frame,
@@ -186,6 +162,7 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
 mod tests {
     use super::*;
     use crate::color::Color;
+    use crate::ui::Node;
     use crate::expr::Scope;
     use crate::theme::{Library, Selection};
     use std::sync::Arc;
