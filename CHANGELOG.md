@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to Wayfinder are documented here.
+## v0.5.0 - 2026-09-26
+
+
+### Features
+
+- Settings redesign, seek bars and crossfades
 ## v0.4.0 - 2026-09-25
 
 
