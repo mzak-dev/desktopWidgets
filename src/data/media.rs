@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use super::{Cadence, DataSource, Notifier, SourceCx};
-use crate::value::Value;
+use crate::value::{Value, clock_text};
 
 /// Album art files kept in the cache folder; older ones go.
 const ART_KEPT: usize = 32;
@@ -68,8 +68,8 @@ impl Track {
         m.insert("position".into(), Value::Num(position.floor()));
         m.insert("duration".into(), Value::Num(self.duration.round()));
         m.insert("progress".into(), Value::Num(progress));
-        m.insert("clock".into(), Value::Str(clock(position)));
-        m.insert("length".into(), Value::Str(if self.duration > 0.0 { clock(self.duration) } else { String::new() }));
+        m.insert("clock".into(), Value::Str(clock_text(position)));
+        m.insert("length".into(), Value::Str(if self.duration > 0.0 { clock_text(self.duration) } else { String::new() }));
         Value::Obj(m)
     }
 
@@ -109,13 +109,6 @@ fn next_wait(plan: &mut Vec<Instant>, now: Instant) -> Option<Duration> {
         plan.remove(0);
     }
     plan.first().map(|d| d.saturating_duration_since(now))
-}
-
-/// `3:07`, or `1:02:03` past an hour.
-pub fn clock(secs: f64) -> String {
-    let s = secs.max(0.0).floor() as u64;
-    let (h, m, s) = (s / 3600, s / 60 % 60, s % 60);
-    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
 }
 
 /// A readable app name from its AppUserModelID: `Spotify.exe` is Spotify,
@@ -436,7 +429,7 @@ mod tests {
 
     #[test]
     fn times_and_app_names_read_well() {
-        assert_eq!((clock(0.0), clock(7.9), clock(187.0), clock(3723.0)), ("0:00".into(), "0:07".into(), "3:07".into(), "1:02:03".into()));
+        assert_eq!((clock_text(0.0), clock_text(7.9), clock_text(187.0), clock_text(3723.0)), ("0:00".into(), "0:07".into(), "3:07".into(), "1:02:03".into()));
         assert_eq!(app_name("Spotify.exe"), "Spotify");
         assert_eq!(app_name("Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic"), "ZuneMusic");
         assert_eq!(app_name("chrome"), "Chrome");

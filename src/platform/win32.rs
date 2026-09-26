@@ -218,7 +218,7 @@ pub fn create_shortcut(dir: &std::path::Path, target: &std::path::Path) -> Optio
 }
 
 /// Physical px.
-pub fn monitors(el: &winit::event_loop::ActiveEventLoop) -> Vec<crate::workspace::MonitorInfo> {
+pub fn monitors(el: &winit::event_loop::ActiveEventLoop) -> Vec<crate::monitor::MonitorInfo> {
     use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO, MONITORINFOEXW};
     use winit::platform::windows::MonitorHandleExtWindows;
     el.available_monitors()
@@ -234,7 +234,7 @@ pub fn monitors(el: &winit::event_loop::ActiveEventLoop) -> Vec<crate::workspace
                 (p.x, p.y, s.width, s.height)
             };
             let name = m.name().unwrap_or_default();
-            crate::workspace::MonitorInfo { name, x: p.x, y: p.y, w: s.width, h: s.height, scale: m.scale_factor(), work }
+            crate::monitor::MonitorInfo { name, x: p.x, y: p.y, w: s.width, h: s.height, scale: m.scale_factor(), work }
         })
         .collect()
 }

@@ -82,7 +82,7 @@ const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "media", "audio
 fn parse_code(t: &toml::Table) -> Result<Code, String> {
     for k in t.keys() {
         if !CODE_KEYS.contains(&k.as_str()) {
-            return Err(format!("unknown key `code.{k}`{}", crate::format::suggest(k, &[CODE_KEYS])));
+            return Err(format!("unknown key `code.{k}`{}", crate::suggest::suggest(k, &[CODE_KEYS])));
         }
     }
     let text = |k: &str| t.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| format!("missing `code.{k}`"));
@@ -145,7 +145,7 @@ impl Manifest {
         let t: toml::Table = src.parse().map_err(|e| format!("{e}"))?;
         for k in t.keys() {
             if !KEYS.contains(&k.as_str()) {
-                return Err(format!("unknown key `{k}`{}", crate::format::suggest(k, &[KEYS])));
+                return Err(format!("unknown key `{k}`{}", crate::suggest::suggest(k, &[KEYS])));
             }
         }
         let code = match t.get("code") {

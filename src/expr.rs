@@ -461,7 +461,7 @@ fn call(name: &str, a: &[Value]) -> Result<Value, String> {
             _ => 0,
         } as f64),
         // `clock(state.slide * media.duration)`: seconds as a player shows them, 3:07 or 1:02:03
-        "clock" => Value::Str(crate::data::media::clock(n(0)?)),
+        "clock" => Value::Str(crate::value::clock_text(n(0)?)),
         "upper" => Value::Str(a.first().map(|v| v.to_string()).unwrap_or_default().to_uppercase()),
         "lower" => Value::Str(a.first().map(|v| v.to_string()).unwrap_or_default().to_lowercase()),
         _ => return Err(format!("unknown function `{name}`")),

@@ -19,7 +19,8 @@ use crate::workspace::InstanceCfg;
 pub use audio::Audio;
 pub use clock::{Clock, Tm, clock_value, now_local};
 pub use media::Media;
-pub use shortcuts::{ID_SEP, Shortcut, Shortcuts, file_stem, folder_items, icon_id, shortcuts_value, starter_apps};
+pub use crate::shortcut::{ID_SEP, Shortcut, file_stem, icon_id};
+pub use shortcuts::{Shortcuts, folder_items, shortcuts_value, starter_apps};
 pub use sys::Sys;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -11,15 +11,15 @@ use std::path::{Path, PathBuf};
 /// The strongly connected component of the module graph at the time of writing
 /// (research/07-cycle-breaking.md). Shrink it as the cycle is broken; empty is the goal.
 const CYCLE: &[&str] = &[
-    "card", "code", "data", "edit", "elements", "expr", "format", "icons", "modules", "theme", "ui", "widgets",
+    "card", "code", "data", "edit", "elements", "format", "modules", "theme", "ui", "widgets",
     "workspace",
 ];
 
 /// Target layers (research/07-cycle-breaking.md): a module may import only modules on a
 /// lower or equal layer. `modules` is absorbed into `format` (layer 5) by the plan.
 const LAYERS: &[(&str, u8)] = &[
-    ("anim", 0), ("color", 0), ("dialog", 0), ("draw", 0), ("images", 0), ("net", 0), ("value", 0),
-    ("expr", 1), ("platform", 1), ("text", 1), ("thumbs", 1),
+    ("anim", 0), ("color", 0), ("dialog", 0), ("draw", 0), ("images", 0), ("monitor", 0), ("net", 0), ("suggest", 0), ("value", 0),
+    ("expr", 1), ("platform", 1), ("shortcut", 1), ("text", 1), ("thumbs", 1),
     ("data", 2), ("gfx", 2), ("theme", 2),
     ("code", 3), ("elements", 3), ("icons", 3), ("workspace", 3),
     ("ui", 4),
@@ -40,9 +40,7 @@ const LAYER_VIOLATIONS: &[(&str, &str)] = &[
     ("data", "workspace"),
     ("elements", "format"),
     ("elements", "ui"),
-    ("expr", "data"),
     ("format", "widgets"),
-    ("platform", "workspace"),
     ("theme", "format"),
     ("theme", "widgets"),
 ];

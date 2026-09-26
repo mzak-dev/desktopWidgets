@@ -6,17 +6,10 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::data::Shortcut;
+pub use crate::monitor::{MonitorInfo, MonitorRef};
+use crate::shortcut::Shortcut;
 use crate::theme::{Library, Selection, Theme, ThemePick};
 use crate::value::Value;
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default)]
-pub struct MonitorRef {
-    pub name: String,
-    pub width: u32,
-    pub height: u32,
-}
 
 /// Per tier, per slot, the Module ids an Instance's user arranged; a tier with no entry uses the Widget's default.
 pub type Layout = BTreeMap<String, BTreeMap<String, Vec<String>>>;
@@ -288,25 +281,6 @@ impl Workspace {
     }
 }
 
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct MonitorInfo {
-    pub name: String,
-    /// Physical px.
-    pub x: i32,
-    pub y: i32,
-    pub w: u32,
-    pub h: u32,
-    pub scale: f64,
-    /// Work area (excludes the taskbar), physical px: x, y, w, h.
-    pub work: (i32, i32, u32, u32),
-}
-
-impl MonitorInfo {
-    pub fn reference(&self) -> MonitorRef {
-        MonitorRef { name: self.name.clone(), width: self.w, height: self.h }
-    }
-}
 
 /// Physical top-left, or `None` when the monitor is absent (park it).
 pub fn resolve(cfg: &InstanceCfg, monitors: &[MonitorInfo]) -> Option<(i32, i32)> {

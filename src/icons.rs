@@ -11,7 +11,7 @@ use windows::Win32::UI::Shell::{SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGFI_
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
 use windows::core::HSTRING;
 
-use crate::data::ID_SEP;
+use crate::shortcut::ID_SEP;
 use crate::gfx::Gpu;
 
 pub const GENERIC: &str = "icon:generic";
@@ -169,7 +169,7 @@ unsafe fn hicon_to_rgba(hicon: HICON) -> Option<Rgba> {
 /// Icon Pack lookup: `<pack>/<name>.png` where name is the target's file
 /// stem, lowercased (`Chrome.lnk` -> `chrome.png`), or its full file name.
 fn from_pack(pack_dir: &Path, target: &str) -> Option<Rgba> {
-    let stem = crate::data::file_stem(target).to_lowercase();
+    let stem = crate::shortcut::file_stem(target).to_lowercase();
     let file = Path::new(target).file_name()?.to_string_lossy().to_lowercase();
     [format!("{stem}.png"), format!("{file}.png")].iter().find_map(|n| load_image(&pack_dir.join(n)))
 }
