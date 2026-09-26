@@ -280,6 +280,17 @@ impl App {
                 }
             }
             Cmd::ClaimPluginFiles => self.claim_plugin_files(true),
+            Cmd::OpenData(rel) => {
+                let p = self.opts.dir.join(rel);
+                if p.extension().is_none() {
+                    let _ = std::fs::create_dir_all(&p);
+                }
+                win32::open(&p.to_string_lossy());
+            }
+            Cmd::Onboarded => {
+                self.ws.onboarded = true;
+                self.mark_save();
+            }
             Cmd::OpenPluginsFolder => {
                 let store = PluginStore::new(&self.opts.dir);
                 let _ = std::fs::create_dir_all(store.dir());

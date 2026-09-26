@@ -122,6 +122,10 @@ pub struct Workspace {
     /// Plugins switched off; every other installed Plugin loads.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
     pub disabled_plugins: BTreeSet<String>,
+    /// The first-run setup was finished or skipped. A file saved before it existed
+    /// reads as done, so only a fresh install sees the setup.
+    #[serde(default = "yes")]
+    pub onboarded: bool,
     /// Version 1 fields, folded into `style` by `migrate`; read, never written.
     #[serde(skip_serializing)]
     overrides: BTreeMap<String, String>,
@@ -143,11 +147,16 @@ impl Default for Workspace {
             header_drag: false,
             instances: Vec::new(),
             disabled_plugins: BTreeSet::new(),
+            onboarded: false,
             overrides: BTreeMap::new(),
             blur: None,
             outlines: None,
         }
     }
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// Adding one: a variant, its `Workspace` field and a `settings::flag_row`.
@@ -177,7 +186,7 @@ impl Flag {
 
     pub fn help(self) -> &'static str {
         match self {
-            Flag::HeaderDrag => "Drag the top strip of any widget to move it, without Edit layout",
+            Flag::HeaderDrag => "Drag a widget's top strip to move it without Edit layout.",
         }
     }
 }
@@ -444,5 +453,14 @@ mod tests {
         c.theme.palette = Some("Daylight".into());
         let t = w.theme_for(&lib, &c);
         assert_eq!((t.color("accent").to_hex(), t.color("text").to_hex()), ("#222222".to_string(), "#141a2a".to_string()));
+    }
+
+    #[test]
+    fn only_a_fresh_install_needs_the_first_run_setup() {
+        assert!(!Workspace::default().onboarded);
+        let old: Workspace = serde_json::from_str(r#"{"version": 2, "instances": []}"#).unwrap();
+        assert!(old.onboarded, "a file from before the setup existed is done");
+        let fresh: Workspace = serde_json::from_str(&serde_json::to_string(&Workspace::default()).unwrap()).unwrap();
+        assert!(!fresh.onboarded, "quitting mid-setup shows it again");
     }
 }

@@ -1,5 +1,7 @@
 name = "Drawer"
-description = "A collapsible drawer of app shortcuts. Drop files on it to add them; x removes one."
+description = "A pull-out tray of apps, folders and files."
+category = "Launchers"
+icon = "drawer"
 size = [260, 220]
 min_size = [120, 60]
 max_size = [900, 720]

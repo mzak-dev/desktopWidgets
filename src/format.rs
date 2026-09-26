@@ -47,7 +47,7 @@ fn parse_attr(v: &toml::Value, path: &str) -> Result<Attr, String> {
 const COMMON_ATTRS: &[&str] = &[
     "id", "width", "height", "min_width", "min_height", "max_width", "max_height", "grow", "shrink", "basis", "direction", "wrap", "align",
     "justify", "align_self", "gap", "padding", "margin", "position", "inset", "left", "top", "right", "bottom", "aspect", "fill", "fill_alpha", "border",
-    "border_color", "radius", "opacity", "shadow", "clip", "on_click", "on_drop", "hover", "transition", "enter", "scroll", "scroll_x", "overlay", "hit",
+    "border_color", "radius", "opacity", "shadow", "clip", "on_click", "on_drop", "on_slide", "hover", "transition", "enter", "scroll", "scroll_x", "overlay", "hit",
 ];
 /// `repeat` is structural, not an element kind.
 const REPEAT_ATTRS: &[&str] = &["for", "as", "index"];
@@ -172,7 +172,7 @@ impl Base {
     }
 }
 
-const TOP: &[&str] = &["name", "description", "size", "min_size", "max_size", "needs", "params", "state", "expand", "tiers", "slots", "modules", "root"];
+const TOP: &[&str] = &["name", "description", "category", "icon", "size", "min_size", "max_size", "needs", "params", "state", "expand", "tiers", "slots", "modules", "root"];
 
 fn pair(v: Option<&toml::Value>, default: (f32, f32), what: &str) -> Result<(f32, f32), String> {
     let Some(v) = v else { return Ok(default) };
@@ -396,6 +396,8 @@ impl WidgetDef {
             id: id.to_string(),
             name: if text("name").is_empty() { id.to_string() } else { text("name") },
             description: text("description"),
+            category: text("category"),
+            icon: text("icon"),
             default_card_size: pair(t.get("size"), (200.0, 120.0), "size")?,
             min_card_size,
             max_card_size,
@@ -549,10 +551,11 @@ impl<'a> Attrs<'_, 'a> {
         }
     }
 
-    /// 32x32 until the image is uploaded.
-    pub fn request_image(&mut self, id: &str) -> (f32, f32) {
+    /// Its size, 32x32 until the image is uploaded, and whether it has been.
+    pub fn request_image(&mut self, id: &str) -> ((f32, f32), bool) {
         self.b.images.insert(id.to_string());
-        (self.b.image_size)(id).unwrap_or((32.0, 32.0))
+        let size = (self.b.image_size)(id);
+        (size.unwrap_or((32.0, 32.0)), size.is_some())
     }
 }
 
@@ -954,6 +957,8 @@ impl<'a> TreeBuilder<'a> {
     fn interact(&mut self, e: &Elem, n: &mut Node, path: &str) -> Result<(), String> {
         n.action = self.text(e, "on_click", path)?.filter(|s| !s.is_empty());
         n.on_drop = self.text(e, "on_drop", path)?.filter(|s| !s.is_empty());
+        // empty turns it off: `on_slide = "{media.can_seek ? 'media.seek' : ''}"`
+        n.on_slide = self.text(e, "on_slide", path)?.filter(|s| !s.is_empty());
         if let Some(Attr::Table(t)) = e.attrs.get("hover") {
             for (k, a) in t {
                 let ctx = format!("{path}.hover.{k}");
@@ -994,6 +999,7 @@ impl<'a> TreeBuilder<'a> {
             // Settings shows the widget, it must not act on it
             n.action = None;
             n.on_drop = None;
+            n.on_slide = None;
             n.hit_testable = false;
         }
         Ok(())
@@ -1135,6 +1141,36 @@ mod tests {
         };
         assert_eq!((fit(""), fit("fit = 'cover'"), fit("fit = 'contain'")), (Ok(crate::ui::Fit::Contain), Ok(crate::ui::Fit::Cover), Ok(crate::ui::Fit::Contain)));
         assert!(fit("fit = 'fill'").unwrap_err().contains("contain or cover"));
+    }
+
+    #[test]
+    fn on_slide_is_read_and_an_empty_one_is_off() {
+        let src = "[params.seek]\ntype = 'bool'\ndefault = true\n[root]\non_slide = \"{param.seek ? 'media.seek' : ''}\"\n[[root.children]]\non_slide = ''";
+        let def = WidgetDef::parse("t", src).unwrap();
+        let slide = |seek: bool| {
+            let (p, st) = (BTreeMap::from([("seek".to_string(), Value::Bool(seek))]), BTreeMap::new());
+            let inp = Inputs { params: &p, state: &st, card_size: (100.0, 60.0), key_prefix: "t", read_source: &|_| None, arrange: None };
+            let b = build(&def, &inp, &theme(), &|_| None).unwrap();
+            (b.root.on_slide, b.root.children[0].on_slide.clone())
+        };
+        assert_eq!(slide(true), (Some("media.seek".to_string()), None));
+        assert_eq!(slide(false), (None, None), "a player that cannot seek has no bar to drag");
+    }
+
+    #[test]
+    fn fade_is_read_and_an_image_says_whether_it_has_loaded() {
+        let def = WidgetDef::parse("t", "[root]\ntype = 'image'\nsrc = 'icon:x'\nfade = 400").unwrap();
+        let spec = |loaded: bool| {
+            let (p, st) = (BTreeMap::new(), BTreeMap::new());
+            let inp = Inputs { params: &p, state: &st, card_size: (100.0, 60.0), key_prefix: "t", read_source: &|_| None, arrange: None };
+            let size = move |_: &str| loaded.then_some((64.0, 48.0));
+            match build(&def, &inp, &theme(), &size).unwrap().root.kind {
+                crate::ui::Kind::Image(im) => (im.fade, im.ready, (im.w, im.h)),
+                _ => panic!("not an image"),
+            }
+        };
+        assert_eq!(spec(false), (400, false, (32.0, 32.0)), "a stand-in until it loads");
+        assert_eq!(spec(true), (400, true, (64.0, 48.0)));
     }
 
     #[test]

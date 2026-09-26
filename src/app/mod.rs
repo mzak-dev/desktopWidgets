@@ -58,7 +58,7 @@ pub use self::explorer::install_from_explorer;
 use self::edit_mode::UndoEntry;
 use self::first_run::{default_instances, write_missing_guides};
 use self::host::AppHost;
-use self::instance::{Drag, EXPAND_SECS, GLIDE_SECS, Instance, VerbOutcome, SizeTween, base_size_after_edit, engine_action, expand_target, click_param, on_drop, scrolled_offset, snap_offset, wheel_target, OnDrop};
+use self::instance::{Drag, EXPAND_SECS, GLIDE_SECS, Instance, Slide, VerbOutcome, slide_frac, SizeTween, base_size_after_edit, engine_action, expand_target, click_param, on_drop, scrolled_offset, snap_offset, wheel_target, OnDrop};
 use self::selftest::SelfTest;
 
 #[derive(Debug)]
@@ -186,7 +186,7 @@ pub struct App {
     _hotkeys: Option<GlobalHotKeyManager>,
     watchers: Vec<RecommendedWatcher>,
     watched_paths: Vec<(String, PathBuf)>,
-    log: Vec<String>,
+    log: Vec<settings::LogLine>,
     save_at: Option<Instant>,
     reload_at: Option<Instant>,
     show_desktop_checks: Vec<Instant>,
@@ -324,9 +324,18 @@ impl App {
             use std::io::Write;
             let _ = writeln!(f, "[{:>7.2}s] {s}", self.started.elapsed().as_secs_f32());
         }
-        self.log.push(s);
+        self.log.push(settings::LogLine::new(data::now_local(), &s));
         if self.log.len() > 300 {
             self.log.drain(..100);
+        }
+    }
+
+    /// Names the adapter, and warns when widgets draw on the CPU without being asked to.
+    fn log_gpu(&mut self, info: String) {
+        if info.contains("/ Cpu") && self.power() != Power::Software {
+            self.log(format!("gpu: using the software adapter ({info}); the integrated GPU is recommended"));
+        } else {
+            self.log(format!("gpu: {info}"));
         }
     }
 
@@ -432,7 +441,7 @@ impl App {
                 let (g, t) = Gpu::new(&window, self.power())?;
                 let info = g.info.clone();
                 self.gpu = Some(g);
-                self.log(format!("gpu: {info}"));
+                self.log_gpu(info);
                 t
             }
         };
@@ -506,7 +515,7 @@ impl App {
         let _ = el;
         if let Some(g) = &self.gpu {
             let info = g.info.clone();
-            self.log(format!("gpu: {info}"));
+            self.log_gpu(info);
         }
     }
 
@@ -604,13 +613,11 @@ impl App {
         }
     }
 
-    /// Copies each Code Source's status onto its Plugins page row; a Plugin with several
-    /// names each one.
+    /// Copies each running Code Source's status onto its Plugins page row.
     fn refresh_code_status(&mut self) {
         let status: BTreeMap<String, String> = self.sources.code_status().into_iter().map(|(n, s)| (n, s.line())).collect();
-        for row in &mut self.plugin_rows {
-            let lines: Vec<String> = row.code_sources.iter().filter_map(|n| Some((n, status.get(n)?))).map(|(n, s)| if row.code_sources.len() > 1 { format!("`{n}`: {s}") } else { s.clone() }).collect();
-            row.status = lines.join(" · ");
+        for c in self.plugin_rows.iter_mut().flat_map(|r| &mut r.code).filter(|c| c.runs) {
+            c.status = status.get(&c.source).cloned().unwrap_or_default();
         }
     }
 
@@ -640,7 +647,7 @@ impl App {
         }
         if status {
             self.refresh_code_status();
-            let failing: Vec<String> = self.plugin_rows.iter().filter(|r| r.status.contains("Error") || r.status.contains("Cannot")).map(|r| format!("plugin {}: {}", r.id, r.status)).collect();
+            let failing: Vec<String> = self.plugin_rows.iter().flat_map(|r| r.code.iter().map(move |c| (r, c))).filter(|(_, c)| c.status.contains("Error") || c.status.contains("Cannot")).map(|(r, c)| format!("plugin {}: {}: {}", r.id, c.source, c.status)).collect();
             for l in failing {
                 self.log(l);
             }
@@ -785,6 +792,9 @@ impl ApplicationHandler<UserEvent> for App {
         if self.start_edit {
             self.set_edit(true);
         }
+        if !self.ws.onboarded && !self.opts.selftest && self.start_page.is_none() {
+            self.start_page = Some("widgets".into()); // the settings window shows the first-run setup
+        }
         if let Some(page) = self.start_page.take() {
             self.open_settings(el);
             if let Some(s) = &mut self.settings {
@@ -805,11 +815,7 @@ impl ApplicationHandler<UserEvent> for App {
                 "quit" => el.exit(),
                 _ => {}
             },
-            UserEvent::Hotkey => {
-                if win32::deliberate_ctrl_alt() {
-                    self.set_edit(!self.edit);
-                }
-            }
+            UserEvent::Hotkey => self.set_edit(!self.edit),
             UserEvent::TrayClick => self.open_settings(el),
             UserEvent::FilesChanged => self.reload_at = Some(Instant::now() + Duration::from_millis(250)),
             UserEvent::WatchedChanged(paths) => {

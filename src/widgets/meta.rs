@@ -9,6 +9,10 @@ pub struct WidgetMeta {
     pub id: String,
     pub name: String,
     pub description: String,
+    /// Groups it in Settings' Add a widget (`Time`, `Launchers`); empty = Other.
+    pub category: String,
+    /// A glyph token's name (`clock` = `glyph-clock`) that stands for it in Settings.
+    pub icon: String,
     /// Logical px, like every size here.
     pub default_card_size: (f32, f32),
     pub min_card_size: (f32, f32),

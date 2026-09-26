@@ -19,6 +19,18 @@ pub(super) struct SizeTween {
     pub(super) secs: f32,
 }
 
+/// A bar being dragged across (`on_slide`): its action, and the rect the pointer is measured against.
+pub(super) struct Slide {
+    pub(super) action: String,
+    pub(super) rect: [f32; 4],
+}
+
+/// Where `x` falls across `rect`, 0 at its left edge to 1 at its right; a pointer dragged
+/// past either edge keeps arriving while the button is held, and stops at the end.
+pub(super) fn slide_frac(x: f32, rect: [f32; 4]) -> f32 {
+    if rect[2] <= 0.0 { 0.0 } else { ((x - rect[0]) / rect[2]).clamp(0.0, 1.0) }
+}
+
 /// Seconds, before `anim-speed`.
 pub(super) const EXPAND_SECS: f32 = 0.20;
 pub(super) const GLIDE_SECS: f32 = 0.12;
@@ -64,6 +76,7 @@ pub(super) struct Instance {
     pub(super) animating: bool,
     pub(super) last_render: Instant,
     pub(super) drag: Option<Drag>,
+    pub(super) slide: Option<Slide>,
     pub(super) grab: Option<Handle>,
     pub(super) mouse: (f32, f32),
     pub(super) tween: Option<SizeTween>,
@@ -92,6 +105,7 @@ impl Instance {
             animating: false,
             last_render: Instant::now(),
             drag: None,
+            slide: None,
             grab: None,
             mouse: (-1.0, -1.0),
             tween: None,
@@ -247,6 +261,14 @@ mod tests {
         assert!(!tw.finished_at(t0 + Duration::from_millis(90)));
         assert_eq!(tw.rect_at(t0 + Duration::from_millis(100)), Rect::new(100, 0, 100, 100));
         assert!(tw.finished_at(t0 + Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn a_slide_is_the_fraction_across_its_bar_and_stops_at_the_ends() {
+        let bar = [20.0, 0.0, 200.0, 6.0];
+        assert_eq!((slide_frac(20.0, bar), slide_frac(70.0, bar), slide_frac(220.0, bar)), (0.0, 0.25, 1.0));
+        assert_eq!((slide_frac(-40.0, bar), slide_frac(900.0, bar)), (0.0, 1.0), "dragged past the widget's edge");
+        assert_eq!(slide_frac(50.0, [0.0, 0.0, 0.0, 6.0]), 0.0, "a bar with no width");
     }
 
     #[test]

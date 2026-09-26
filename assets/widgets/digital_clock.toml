@@ -1,5 +1,7 @@
 name = "Digital Clock"
-description = "Large time with the date underneath. Make it tall and it shows the time in other cities too."
+description = "Big, readable time and date."
+category = "Time"
+icon = "display"
 size = [300, 132]
 min_size = [120, 56]
 max_size = [720, 400]

@@ -47,7 +47,7 @@ impl App {
     pub(super) fn init_tray(&mut self) {
         let menu = Menu::new();
         let items = [
-            MenuItem::with_id("edit", "Edit layout   Ctrl+Alt+E", true, None),
+            MenuItem::with_id("edit", format!("Edit layout   {}", settings::EDIT_KEYS.join("+")), true, None),
             MenuItem::with_id("settings", "Settings...", true, None),
             MenuItem::with_id("reload", "Reload widgets and themes", true, None),
             MenuItem::with_id("folder", "Open widgets folder", true, None),
@@ -76,9 +76,10 @@ impl App {
     pub(super) fn init_hotkey(&mut self) {
         match GlobalHotKeyManager::new() {
             Ok(m) => {
-                let hk = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyE);
+                // settings::EDIT_KEYS names it; not Ctrl+Alt, which AltGr sends too, so it would eat "ę"
+                let hk = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyE);
                 if let Err(e) = m.register(hk) {
-                    self.log(format!("hotkey Ctrl+Alt+E unavailable ({e}); use the tray menu for Edit Mode"));
+                    self.log(format!("hotkey {} unavailable ({e}); use the tray menu for Edit Mode", settings::EDIT_KEYS.join("+")));
                 }
                 let p = self.proxy.clone();
                 GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {

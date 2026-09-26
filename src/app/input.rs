@@ -12,6 +12,10 @@ impl App {
             self.drag_update(i, win32::cursor_pos());
             return;
         }
+        if let Some(rect) = self.wins[i].slide.as_ref().map(|s| s.rect) {
+            self.set_slide(i, slide_frac(x, rect));
+            return;
+        }
         if self.edit {
             if self.wins[i].drag.is_some() {
                 self.drag_update(i, win32::cursor_pos());
@@ -34,7 +38,7 @@ impl App {
             }
             return;
         }
-        let hit = self.wins[i].frame.as_ref().and_then(|f| f.hit_at(x, y)).map(|h| (h.key.clone(), h.action.is_some()));
+        let hit = self.wins[i].frame.as_ref().and_then(|f| f.hit_at(x, y)).map(|h| (h.key.clone(), h.action.is_some() || h.on_slide.is_some()));
         let (key, clickable) = match hit {
             Some((k, c)) => (Some(k), c),
             None => (None, false),
@@ -85,11 +89,25 @@ impl App {
             }
             return;
         }
+        let (x, y) = self.wins[i].mouse;
         if state != ElementState::Pressed {
+            if let Some(s) = self.wins[i].slide.take() {
+                let frac = slide_frac(x, s.rect);
+                self.wins[i].state.insert("sliding".into(), Value::Bool(false));
+                self.wins[i].redraw = true;
+                return self.run_action(i, &format!("{} {frac:.4}", s.action));
+            }
             return self.end_drag(i);
         }
-        let (x, y) = self.wins[i].mouse;
-        let action = self.wins[i].frame.as_ref().and_then(|f| f.hit_at(x, y)).and_then(|h| h.action.clone());
+        let hit = self.wins[i].frame.as_ref().and_then(|f| f.hit_at(x, y));
+        // a bar you drag across takes the press: no click, no header drag
+        if let Some(s) = hit.and_then(|h| Some(Slide { action: h.on_slide.clone()?, rect: h.rect })) {
+            let frac = slide_frac(x, s.rect);
+            self.wins[i].slide = Some(s);
+            self.wins[i].state.insert("sliding".into(), Value::Bool(true));
+            return self.set_slide(i, frac);
+        }
+        let action = hit.and_then(|h| h.action.clone());
         if let Some(a) = action {
             self.run_action(i, &a);
         } else if self.ws.header_drag {
@@ -98,6 +116,12 @@ impl App {
                 self.begin_drag(i, Handle::Move, win32::cursor_pos());
             }
         }
+    }
+
+    /// Where the pointer is across the bar being dragged, for the widget as `state.slide`.
+    fn set_slide(&mut self, i: usize, frac: f32) {
+        self.wins[i].state.insert("slide".into(), Value::Num(frac as f64));
+        self.wins[i].redraw = true;
     }
 
     pub(super) fn on_wheel(&mut self, i: usize, delta: MouseScrollDelta) {

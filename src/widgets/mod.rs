@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn a_rust_widget_builds_through_the_same_seam_and_gets_a_window() {
-        let meta = WidgetMeta { id: "badge".into(), name: "Badge".into(), description: String::new(), default_card_size: (100.0, 40.0), min_card_size: (48.0, 48.0), max_card_size: None, params: vec![], initial_state: BTreeMap::new(), needs: vec![], tiers: vec![], slots: vec![], modules: vec![] };
+        let meta = WidgetMeta { id: "badge".into(), name: "Badge".into(), description: String::new(), category: String::new(), icon: String::new(), default_card_size: (100.0, 40.0), min_card_size: (48.0, 48.0), max_card_size: None, params: vec![], initial_state: BTreeMap::new(), needs: vec![], tiers: vec![], slots: vec![], modules: vec![] };
         let def: Def = Ok(Arc::new(Badge(meta)));
         let t = theme();
         let src = |n: &str| (n == "clock").then(|| Value::obj([("minute", 7.into())]));

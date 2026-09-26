@@ -82,8 +82,66 @@ pub fn duration_factor(speed: &str) -> f32 {
     }
 }
 
+/// A picture an `image` draws: its id, and its own size for its own fit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pic {
+    pub id: String,
+    pub size: (f32, f32),
+}
+
+/// What a crossfading `image` draws: the picture underneath at full opacity, and while a new
+/// one comes in, that one on top at this much of it. An opaque cover never dims halfway.
+pub type FadeDraw = (Pic, Option<(Pic, f32)>);
+
+/// A crossfading `image`: the picture it settled on, and the one coming in with when its fade
+/// began (`None` while it is still loading on another thread).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Crossfade {
+    under: Pic,
+    over: Option<(Pic, Option<Instant>)>,
+    ms: f32,
+}
+
+impl Crossfade {
+    /// Steps `state` toward `target`, which has loaded when `ready`, at `now`: the old picture
+    /// stays until the new one is ready, then the new one fades in over `ms`; 0 swaps at once.
+    pub fn step(state: &mut Option<Crossfade>, target: Pic, ready: bool, ms: f32, now: Instant) -> FadeDraw {
+        let c = match state {
+            Some(c) if ms > 0.0 => c,
+            _ => {
+                *state = Some(Crossfade { under: target.clone(), over: None, ms });
+                return (target, None);
+            }
+        };
+        c.ms = ms;
+        if c.under.id == target.id {
+            // back to the settled picture (or its size arrived): nothing fades
+            c.under = target;
+            c.over = None;
+            return (c.under.clone(), None);
+        }
+        let began = c.over.as_ref().filter(|(p, _)| p.id == target.id).and_then(|(_, b)| *b);
+        let start = began.or(ready.then_some(now));
+        c.over = Some((target.clone(), start));
+        let Some(t0) = start else { return (c.under.clone(), None) };
+        let t = now.saturating_duration_since(t0).as_secs_f32() * 1000.0 / ms;
+        if t >= 1.0 {
+            c.under = target;
+            c.over = None;
+            return (c.under.clone(), None);
+        }
+        (c.under.clone(), Some((target, t.max(0.0))))
+    }
+
+    fn fading(&self, now: Instant) -> bool {
+        self.over.as_ref().and_then(|(_, b)| *b).is_some_and(|t0| now.saturating_duration_since(t0).as_secs_f32() * 1000.0 < self.ms)
+    }
+}
+
 pub struct Anim {
     map: HashMap<(String, &'static str), (Tween, u64)>,
+    /// Crossfading images by node key, and the frame each was last drawn.
+    fades: HashMap<String, (Option<Crossfade>, u64)>,
     frame: u64,
     /// Scales every duration and delay (`duration_factor` of `anim-speed`); 0 jumps to the target.
     pub duration_factor: f32,
@@ -91,7 +149,7 @@ pub struct Anim {
 
 impl Default for Anim {
     fn default() -> Self {
-        Self { map: HashMap::new(), frame: 0, duration_factor: 1.0 }
+        Self { map: HashMap::new(), fades: HashMap::new(), frame: 0, duration_factor: 1.0 }
     }
 }
 
@@ -105,6 +163,17 @@ impl Anim {
     pub fn end_frame(&mut self) {
         let f = self.frame;
         self.map.retain(|_, (_, seen)| *seen == f);
+        self.fades.retain(|_, (_, seen)| *seen == f);
+    }
+
+    /// What the `image` at `key` draws this frame: `target`, faded in over `ms` (times the
+    /// duration factor) from the picture it showed before.
+    pub fn crossfade(&mut self, key: &str, target: Pic, ready: bool, ms: u32, now: Instant) -> FadeDraw {
+        let ms = ms as f32 * self.duration_factor;
+        let frame = self.frame;
+        let e = self.fades.entry(key.to_string()).or_insert((None, frame));
+        e.1 = frame;
+        Crossfade::step(&mut e.0, target, ready, ms, now)
     }
 
     /// Current animated value of `(key, prop)` heading to `target`. With
@@ -168,7 +237,7 @@ impl Anim {
     }
 
     pub fn animating(&self, now: Instant) -> bool {
-        self.map.values().any(|(t, _)| !t.done(now))
+        self.map.values().any(|(t, _)| !t.done(now)) || self.fades.values().any(|(c, _)| c.as_ref().is_some_and(|c| c.fading(now)))
     }
 }
 
@@ -216,6 +285,40 @@ mod tests {
         off.begin_frame();
         assert_eq!(off.value("k", "x", [1.0; 4], 100, Ease::Linear, 0, Some([0.0; 4]), t0), [1.0; 4]);
         assert!(!off.animating(t0));
+    }
+
+    #[test]
+    fn a_crossfade_waits_for_the_new_picture_then_fades_it_in_over_the_old() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let pic = |id: &str| Pic { id: id.into(), size: (64.0, 64.0) };
+        let mut c = None;
+        assert_eq!(Crossfade::step(&mut c, pic("a"), true, 300.0, t0), (pic("a"), None), "the first picture just shows");
+        assert_eq!(Crossfade::step(&mut c, pic("b"), false, 300.0, t0), (pic("a"), None), "switch: the old one stays while the new one loads");
+        assert_eq!(Crossfade::step(&mut c, pic("b"), true, 300.0, t0 + ms(50)), (pic("a"), Some((pic("b"), 0.0))), "loaded: the fade starts");
+        let (under, over) = Crossfade::step(&mut c, pic("b"), true, 300.0, t0 + ms(200));
+        assert_eq!((under, over.as_ref().map(|o| &o.0)), (pic("a"), Some(&pic("b"))), "fading: the new one over the old");
+        assert!((over.unwrap().1 - 0.5).abs() < 1e-3);
+        assert_eq!(Crossfade::step(&mut c, pic("b"), true, 300.0, t0 + ms(400)), (pic("b"), None), "done: the old one goes");
+        assert_eq!(Crossfade::step(&mut c, pic("c"), false, 0.0, t0 + ms(400)), (pic("c"), None), "no fade: it swaps at once");
+    }
+
+    #[test]
+    fn a_crossfade_keeps_frames_coming_and_respects_the_animation_speed() {
+        let t0 = Instant::now();
+        let pic = |id: &str| Pic { id: id.into(), size: (64.0, 64.0) };
+        let mut a = Anim::default();
+        a.begin_frame();
+        a.crossfade("cover", pic("a"), true, 300, t0);
+        a.crossfade("cover", pic("b"), true, 300, t0);
+        assert!(a.animating(t0), "a fade needs frames");
+        a.begin_frame();
+        a.end_frame();
+        assert!(!a.animating(t0), "a cover no longer drawn is forgotten");
+        let mut off = Anim { duration_factor: 0.0, ..Default::default() };
+        off.begin_frame();
+        off.crossfade("cover", pic("a"), true, 300, t0);
+        assert_eq!(off.crossfade("cover", pic("b"), true, 300, t0), (pic("b"), None), "animations off: instant");
     }
 
     #[test]

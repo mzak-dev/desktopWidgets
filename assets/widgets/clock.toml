@@ -1,5 +1,7 @@
 name = "Analog Clock"
 description = "A round clock face. Make it wide or tall and it shows the time in other cities too."
+category = "Time"
+icon = "clock"
 size = [220, 220]
 min_size = [96, 96]
 max_size = [760, 560]
