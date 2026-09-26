@@ -27,6 +27,7 @@ use crate::ui::{self, Env, Frame, Node};
 use crate::value::Value;
 use crate::workspace::InstanceCfg;
 
+pub use crate::ui::ExpandInfo;
 pub use drawer::Drawer;
 pub use crate::meta::{Choice, ModuleMeta, ParamDef, ParamType, Seed, TierMeta, WidgetMeta, needs_message};
 pub use meta::{apply_seed, migrate, seed_params};
@@ -94,13 +95,6 @@ pub struct Built {
     pub arrangement: Option<Arrangement>,
 }
 
-/// In card units from a Widget, window units after `Card::expand_in_window_units`.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ExpandInfo {
-    pub active: bool,
-    pub width: Option<f32>,
-    pub height: Option<f32>,
-}
 
 pub struct Prepared {
     pub frame: Frame,

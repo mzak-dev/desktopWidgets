@@ -1,8 +1,6 @@
-use super::{ElementKind, Shape, ShapeCx, rgba_with_opacity};
+use super::{Attrs, ElementKind, Kind, Shape, ShapeCx, rgba_with_opacity};
 use crate::color::Color;
 use crate::draw::{Inst, KIND_CAPSULE, KIND_RECT};
-use crate::format::Attrs;
-use crate::ui::Kind;
 use crate::value::Value;
 
 /// A line through `values`, newest on the right, scaled so `max` touches the top. With

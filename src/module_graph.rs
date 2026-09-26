@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 /// The strongly connected component of the module graph at the time of writing
 /// (research/07-cycle-breaking.md). Shrink it as the cycle is broken; empty is the goal.
 const CYCLE: &[&str] = &[
-    "card", "code", "data", "edit", "elements", "format", "modules", "ui", "widgets",
+    "code", "data", "format", "modules", "widgets",
 ];
 
 /// Target layers (research/07-cycle-breaking.md): a module may import only modules on a
@@ -34,11 +34,8 @@ const LAYERS: &[(&str, u8)] = &[
 /// Edges (from, to) that point up the layer table today. Loose on purpose: it starts as
 /// the current state and shrinks to empty.
 const LAYER_VIOLATIONS: &[(&str, &str)] = &[
-    ("card", "widgets"),
     ("data", "code"),
     ("data", "workspace"),
-    ("elements", "format"),
-    ("elements", "ui"),
     ("format", "widgets"),
 ];
 

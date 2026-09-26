@@ -5,7 +5,7 @@ use crate::color::Color;
 use crate::edit::Rect;
 use crate::theme::Theme;
 use crate::ui::{Kind, Node};
-use crate::widgets::ExpandInfo;
+use crate::ui::ExpandInfo;
 
 const MAX_FILL_ALPHA_OVER_BLUR: f32 = 0.6;
 

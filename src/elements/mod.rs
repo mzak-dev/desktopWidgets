@@ -5,6 +5,7 @@ mod arc;
 mod graph;
 mod hand;
 mod image;
+mod kind;
 mod text;
 mod ticks;
 
@@ -12,13 +13,69 @@ use std::fmt::Debug;
 
 use crate::color::Color;
 use crate::draw::Inst;
-use crate::format::Attrs;
-use crate::ui::Kind;
+use crate::theme::Theme;
+use crate::value::Value;
 
 pub use self::arc::ArcSpec;
 pub use self::graph::GraphSpec;
 pub use self::hand::HandSpec;
 pub use self::ticks::TicksSpec;
+
+pub use self::kind::{Fit, ImageSpec, Kind};
+
+/// What `Attrs` needs from whoever builds the tree; `format::TreeBuilder` implements it.
+pub trait AttrSource<'a> {
+    fn theme(&self) -> &'a Theme;
+    fn get(&mut self, k: &str) -> Result<Option<Value>, String>;
+    fn color(&mut self, k: &str) -> Result<Option<Color>, String>;
+    fn image_id(&mut self, src: &str) -> String;
+    fn request_image(&mut self, id: &str) -> ((f32, f32), bool);
+}
+
+/// Resolves tokens and bindings; bad values become warnings, not errors.
+pub struct Attrs<'r, 'a> {
+    src: &'r mut dyn AttrSource<'a>,
+}
+
+impl<'r, 'a> Attrs<'r, 'a> {
+    pub fn new(src: &'r mut dyn AttrSource<'a>) -> Self {
+        Self { src }
+    }
+
+    pub fn theme(&self) -> &'a Theme {
+        self.src.theme()
+    }
+
+    pub fn value(&mut self, k: &str) -> Result<Option<Value>, String> {
+        self.src.get(k)
+    }
+
+    pub fn num(&mut self, k: &str) -> Result<Option<f32>, String> {
+        Ok(self.value(k)?.and_then(|v| v.as_f64()).map(|x| x as f32))
+    }
+
+    pub fn flag(&mut self, k: &str) -> Result<Option<bool>, String> {
+        Ok(self.value(k)?.map(|v| v.truthy()))
+    }
+
+    pub fn text(&mut self, k: &str) -> Result<Option<String>, String> {
+        Ok(self.value(k)?.map(|v| v.to_string()))
+    }
+
+    pub fn color(&mut self, k: &str) -> Result<Option<Color>, String> {
+        self.src.color(k)
+    }
+
+    /// An image `src`: `./x.png` is a file next to the definition, inside its content root.
+    pub fn image_id(&mut self, src: &str) -> String {
+        self.src.image_id(src)
+    }
+
+    /// Its size, 32x32 until the image is uploaded, and whether it has been.
+    pub fn request_image(&mut self, id: &str) -> ((f32, f32), bool) {
+        self.src.request_image(id)
+    }
+}
 
 pub struct ShapeCx {
     pub center_px: [f32; 2],

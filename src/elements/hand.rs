@@ -1,8 +1,6 @@
-use super::{ElementKind, Shape, ShapeCx, rgba_with_opacity};
+use super::{Attrs, ElementKind, Kind, Shape, ShapeCx, rgba_with_opacity};
 use crate::color::Color;
 use crate::draw::{Inst, KIND_CAPSULE};
-use crate::format::Attrs;
-use crate::ui::Kind;
 
 pub const KIND: ElementKind = ElementKind { name: "hand", own_attrs: &["angle", "length", "tail", "stroke", "color"], fills_parent_when_unsized: true, build };
 

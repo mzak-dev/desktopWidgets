@@ -8,7 +8,7 @@ use taffy::prelude::*;
 
 use crate::anim::Ease;
 use crate::color::{Color, MAGENTA};
-use crate::elements;
+use crate::elements::{self, AttrSource, Attrs};
 use crate::expr::{Scope, Template};
 use crate::suggest::suggest;
 use crate::modules::{Arrange, Arrangement, Each, Inst, ModuleDef, ModuleSet, Placed, PlacedSlot, SlotDef, TierDef, place};
@@ -16,7 +16,7 @@ use crate::theme::Theme;
 use crate::ui::*;
 use crate::value::Value;
 use crate::meta::{ModuleMeta, TierMeta, WidgetMeta, parse_params};
-use crate::widgets::{Built, ExpandInfo, Inputs};
+use crate::widgets::{Built, Inputs};
 
 
 #[derive(Clone, Debug)]
@@ -416,40 +416,27 @@ pub fn error_card(msg: &str, size: (f32, f32), theme: &Theme) -> Node {
     card
 }
 
-/// Resolves tokens and bindings; bad values become warnings, not errors.
-pub struct Attrs<'r, 'a> {
+/// One element's view of the builder: `elements::Attrs` reads through it.
+struct ElemAttrs<'r, 'a> {
     b: &'r mut TreeBuilder<'a>,
     e: &'r Elem,
     path: &'r str,
 }
 
-impl<'a> Attrs<'_, 'a> {
-    pub fn theme(&self) -> &'a Theme {
+impl<'a> AttrSource<'a> for ElemAttrs<'_, 'a> {
+    fn theme(&self) -> &'a Theme {
         self.b.theme
     }
 
-    pub fn value(&mut self, k: &str) -> Result<Option<Value>, String> {
+    fn get(&mut self, k: &str) -> Result<Option<Value>, String> {
         self.b.get(self.e, k, self.path)
     }
 
-    pub fn num(&mut self, k: &str) -> Result<Option<f32>, String> {
-        self.b.num(self.e, k, self.path)
-    }
-
-    pub fn flag(&mut self, k: &str) -> Result<Option<bool>, String> {
-        self.b.flag(self.e, k, self.path)
-    }
-
-    pub fn text(&mut self, k: &str) -> Result<Option<String>, String> {
-        self.b.text(self.e, k, self.path)
-    }
-
-    pub fn color(&mut self, k: &str) -> Result<Option<Color>, String> {
+    fn color(&mut self, k: &str) -> Result<Option<Color>, String> {
         self.b.color(self.e, k, self.path)
     }
 
-    /// An image `src`: `./x.png` is a file next to the definition, inside its content root.
-    pub fn image_id(&mut self, src: &str) -> String {
+    fn image_id(&mut self, src: &str) -> String {
         // a full path, as a folder listing gives it (`src = "{item.path}"`)
         if Path::new(src).is_absolute() {
             return format!("file:{src}");
@@ -470,8 +457,7 @@ impl<'a> Attrs<'_, 'a> {
         }
     }
 
-    /// Its size, 32x32 until the image is uploaded, and whether it has been.
-    pub fn request_image(&mut self, id: &str) -> ((f32, f32), bool) {
+    fn request_image(&mut self, id: &str) -> ((f32, f32), bool) {
         self.b.images.insert(id.to_string());
         let size = (self.b.image_size)(id);
         (size.unwrap_or((32.0, 32.0)), size.is_some())
@@ -947,7 +933,7 @@ impl<'a> TreeBuilder<'a> {
         self.interact(e, &mut n, &path)?;
 
         let kind = elements::find(&e.ty).ok_or_else(|| format!("{path}: unknown type `{}`", e.ty))?;
-        n.kind = (kind.build)(&mut Attrs { b: self, e, path: &path })?;
+        n.kind = (kind.build)(&mut Attrs::new(&mut ElemAttrs { b: self, e, path: &path }))?;
         for (i, c) in e.children.iter().enumerate() {
             let kids = self.build_elem(c, &format!("{key}/{i}"))?;
             n.children.extend(kids);
