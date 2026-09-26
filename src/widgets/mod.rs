@@ -6,6 +6,8 @@ mod drawer;
 mod fits;
 mod meta;
 mod registry;
+#[cfg(test)]
+pub(crate) mod safety_net;
 mod toml_widget;
 
 use std::collections::{BTreeMap, BTreeSet};

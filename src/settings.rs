@@ -4053,4 +4053,47 @@ mod tests {
         assert_eq!(ui.slider_spec(&c, "sy:*:radius-lg"), Some((0.0, 40.0, 1.0, 22.0)));
         assert_eq!(UiState::slider_cmd("sy:*:radius-lg", 30.0), Some(Cmd::Style(Scope::Global, "radius-lg".into(), Some(Value::Num(30.0)))));
     }
+
+    /// The Settings frame rect list of every page, for the local refactor safety net
+    /// (`widgets::safety_net`; `WF_NET=record|compare`, `--ignored`).
+    #[test]
+    #[ignore = "opt-in: WF_NET=record|compare, see widgets::safety_net"]
+    fn safety_net_settings_frames() {
+        use crate::widgets::safety_net as net;
+        let mut w = world();
+        w.data = net::scripted_sources();
+        w.ws.instances.push(InstanceCfg { id: "system_monitor-1".into(), widget: "system_monitor".into(), ..Default::default() });
+        let mut text = TextEngine::new();
+        let mut out = String::new();
+        let mut show = |case: &str, ui: &UiState, w: &World, out: &mut String| {
+            let (root, images) = ui.build(&ctx(w), WIN);
+            let mut part = String::new();
+            net::dump_case(case, &root, WIN, &mut text, &mut part);
+            // the Appearance preview reads the wall clock
+            part.lines().for_each(|l| out.push_str(&if l.contains("ap/pv/date |") || l.contains("ap/pv/time |") { format!("{} | volatile
+", l.split(" | ").next().unwrap()) } else { format!("{l}
+") }));
+            out.push_str(&format!("images {images:?}
+"));
+        };
+        for page in Page::ALL {
+            let mut ui = UiState::default();
+            ui.page = page;
+            show(&format!("page {}", page.id()), &ui, &w, &mut out);
+        }
+        for id in ["clock-1", "icon_folder-1", "system_monitor-1"] {
+            for advanced in [false, true] {
+                let mut ui = UiState::default();
+                ui.selected = Some(id.into());
+                ui.advanced = advanced;
+                show(&format!("widgets, {id} selected, advanced {advanced}"), &ui, &w, &mut out);
+            }
+        }
+        let mut ui = UiState::default();
+        ui.adding = true;
+        show("widgets, add a widget", &ui, &w, &mut out);
+        w.ws.onboarded = false;
+        show("first run, step 0", &UiState::default(), &w, &mut out);
+        net::record_or_compare("settings", &out);
+    }
 }
