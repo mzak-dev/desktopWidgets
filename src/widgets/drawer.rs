@@ -132,7 +132,7 @@ mod tests {
         let mut cfg = InstanceCfg::default();
         cfg.set_param("folder", &Value::Str("D:\\drawer".into()));
         let mut host = FakeHost { pick: Some(PathBuf::from("C:\\Apps\\app.exe")), ..Default::default() };
-        let (mut state, sources) = (BTreeMap::new(), DataSources::builtin());
+        let (mut state, sources) = (BTreeMap::new(), DataSources::fixed());
         let mut cx = ActionCx { cfg: &cfg, state: &mut state, host: &mut host, sources: &sources, wants_redraw: false };
         assert!(w.handle_action("add_app", "", &mut cx));
         assert!(cx.wants_redraw);
@@ -151,7 +151,7 @@ mod tests {
         let mut cfg = InstanceCfg::default();
         cfg.set_param("folder", &Value::Str(dir.to_string_lossy().into_owned()));
         let mut host = FakeHost::default();
-        let (mut state, sources) = (BTreeMap::new(), DataSources::builtin());
+        let (mut state, sources) = (BTreeMap::new(), DataSources::fixed());
         let mut cx = ActionCx { cfg: &cfg, state: &mut state, host: &mut host, sources: &sources, wants_redraw: false };
         assert!(w.handle_action("drop", "C:/Apps/app.exe", &mut cx));
         assert!(w.handle_action("remove_app", &doc.to_string_lossy(), &mut cx));

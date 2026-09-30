@@ -5,7 +5,7 @@ impl App {
         let now = Instant::now();
         let theme = self.theme_of(i);
         let card = Card::new(&theme);
-        let App { gpu, text, images, theme: chrome, reg, sources, ws, wins, edit, remove_armed, .. } = self;
+        let App { gpu, text, images, theme: chrome, reg, sources, ws, wins, edit, remove_armed, ambient, .. } = self;
         let (Some(gpu), Some(iw)) = (gpu.as_mut(), wins.get_mut(i)) else { return };
         let (Some(window), Some(target)) = (iw.window.clone(), iw.target.as_mut()) else { return };
         let cfg = &ws.instances[i];
@@ -34,7 +34,7 @@ impl App {
         let size = (phys.width as f32 / scale, phys.height as f32 / scale);
         let missing: Def = Err(format!("unknown widget `{}`", cfg.widget));
         let def = reg.get(&cfg.widget).unwrap_or(&missing);
-        let tm = data::now_local();
+        let tm = ambient.calendar.now();
         let pack = cfg.theme.resolve(&ws.theme).icon_pack;
         iw.anim.duration_factor = anim::duration_factor(&theme.str("anim-speed"));
         let v = View { cfg, state: &iw.state, window_size: size, theme: &theme, icon_pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };

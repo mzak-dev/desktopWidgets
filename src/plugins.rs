@@ -436,7 +436,7 @@ fn check_in(src: &Path, data: &Path) -> Report {
     };
     r.contents = p.contents.clone();
     let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
-    let builtin = crate::data::DataSources::builtin().native_names();
+    let builtin = crate::data::DataSources::fixed().native_names();
     let needed: BTreeSet<String> = p.contents.widgets.iter().filter_map(|w| cat.registry.get(w)?.as_ref().ok()).flat_map(|d| d.meta().needs.clone()).collect();
     let own: Vec<&str> = m.code.iter().map(|c| c.source.as_str()).collect();
     for n in needed.iter().filter(|n| !builtin.contains(*n) && !own.contains(&n.as_str())) {
@@ -449,7 +449,7 @@ fn check_in(src: &Path, data: &Path) -> Report {
     for code in &m.code {
         use crate::code::runtime::{Compiled, Env, Limits as CodeLimits, Runtime};
         let limits = CodeLimits::default();
-        let loaded = std::fs::read(p.dir.join(&code.module)).map_err(|_| format!("code.module `{}` is missing", code.module)).and_then(|w| Compiled::load(&w)).and_then(|c| Runtime::new(&c, Env::new(None, None, &limits), &limits).map(drop).map_err(|f| f.to_string()));
+        let loaded = std::fs::read(p.dir.join(&code.module)).map_err(|_| format!("code.module `{}` is missing", code.module)).and_then(|w| Compiled::load(&w)).and_then(|c| Runtime::new(&c, Env::new(None, None, &limits, std::sync::Arc::new(crate::ambient::WinCalendar)), &limits).map(drop).map_err(|f| f.to_string()));
         if let Err(e) = loaded {
             r.problems.push(format!("its code for `{}` cannot run: {e}", code.source));
         }

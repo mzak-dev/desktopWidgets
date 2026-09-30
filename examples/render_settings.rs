@@ -80,7 +80,7 @@ fn main() {
         line("01:29:59", Level::Info, "plugins", "agents: starting (no network; reads ~/.claude, ~/.copilot, ~/.gemini)"),
         line("01:29:59", Level::Error, "plugins", "could not install broken.wfplugin: no plugin.toml at the top of the plugin"),
     ];
-    let sources = wayfinder::data::DataSources::builtin();
+    let sources = wayfinder::data::DataSources::fixed();
     let names = sources.names();
     let mut fresh = ws.clone();
     fresh.onboarded = false;
@@ -106,7 +106,7 @@ fn main() {
     for (name, acts, size) in states {
         let ws = if name.starts_with("setup") { &fresh } else { &ws };
         let theme = ws.global_theme(&lib);
-        let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources };
+        let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources, calendar: &wayfinder::ambient::FixedCalendar::default() };
         let mut ui = UiState::default();
         for a in acts {
             let _ = ui.act(a, &ctx, None);

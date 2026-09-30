@@ -31,18 +31,18 @@ use crate::workspace::InstanceCfg;
 /// The instant every dump shows.
 pub(crate) const TM: Tm = Tm { year: 2026, month: 9, day: 23, dow: 3, hour: 23, minute: 58, second: 58, ms: 0 };
 
-/// The real clock, always at `TM`.
-struct FixedClock;
+/// The real clock over the real Windows calendar, always at `TM`.
+struct FixedClock(Clock);
 
 impl DataSource for FixedClock {
     fn name(&self) -> &str {
         "clock"
     }
     fn value(&self, cx: &SourceCx) -> Value {
-        Clock.value(&SourceCx::new(cx.instance(), cx.params(), TM, cx.icon_pack()))
+        self.0.value(&SourceCx::new(cx.instance(), cx.params(), TM, cx.icon_pack()))
     }
     fn cadence(&self, f: &str, cx: &SourceCx) -> Option<Cadence> {
-        Clock.cadence(f, cx)
+        self.0.cadence(f, cx)
     }
 }
 
@@ -92,7 +92,7 @@ impl DataSource for ScriptedSys {
 /// Every source the built-in Widgets read, with fixed values and no I/O. `media` and `audio`
 /// are absent: no built-in Widget reads them.
 pub(crate) fn scripted_sources() -> DataSources {
-    DataSources::new(vec![Box::new(FixedClock), Box::new(ScriptedSys), Box::new(Shortcuts::default())])
+    DataSources::new(vec![Box::new(FixedClock(Clock::new(std::sync::Arc::new(crate::ambient::WinCalendar)))), Box::new(ScriptedSys), Box::new(Shortcuts::default())])
 }
 
 pub(crate) fn sample_items() -> Vec<Shortcut> {

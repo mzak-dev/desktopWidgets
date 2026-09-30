@@ -381,7 +381,7 @@ mod tests {
         assert_eq!(uptime_text(3 * 86_400_000 + 4 * 3_600_000), "3d 4h");
         assert_eq!(uptime_text(5 * 60_000), "0h 5m");
         let (cfg, params) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
-        let cx = SourceCx::new(crate::data::InstanceRef::new("", &cfg), &params, crate::data::now_local(), "Default");
+        let cx = SourceCx::new(crate::data::InstanceRef::new("", &cfg), &params, crate::data::Tm::new(2026, 9, 21, 1, 12, 0, 0, 0), "Default");
         assert_eq!(Sys::default().cadence("gauges", &cx), Some(Cadence::Second));
     }
 

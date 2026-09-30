@@ -381,7 +381,7 @@ Each kind of extension is one file plus one line of registration:
 |---|---|---|
 | a built-in TOML widget | `assets/widgets/<id>.toml` | nothing: `build.rs` finds it |
 | a Rust widget | `src/widgets/<id>.rs` implementing `Widget` (the Drawer is the example) | `registry.rs` |
-| a data source | `src/data/<name>.rs` implementing `DataSource`, with the cadence of each field | `DataSources::builtin` |
+| a data source | `src/data/<name>.rs` implementing `DataSource`, with the cadence of each field | `DataSources::from` |
 | a data source in your own build | a `DataSource` in a crate that depends on `wayfinder` | `Options.extra_sources` before `wayfinder::run` |
 | an element kind | `src/elements/<name>.rs` with a `KIND` and, if it draws, a `Shape` | `elements::KINDS` |
 | a Workspace-wide style switch | a `Flag` variant and its `Workspace` field | a `flag_row` in Settings |

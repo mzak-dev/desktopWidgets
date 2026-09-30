@@ -475,7 +475,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         *m.worker.lock().unwrap() = Some(tx);
         let (cfg, params) = (BTreeMap::new(), BTreeMap::new());
-        let cx = SourceCx::new(super::super::InstanceRef::new("", &cfg), &params, super::super::now_local(), "Default");
+        let cx = SourceCx::new(super::super::InstanceRef::new("", &cfg), &params, crate::data::Tm::new(2026, 9, 21, 1, 12, 0, 0, 0), "Default");
         assert!(m.act("seek", "0.5", &cx));
         assert!(matches!(rx.try_recv(), Ok(Msg::Seek(f)) if f == 0.5));
         assert!(m.act("seek", "7", &cx) && matches!(rx.try_recv(), Ok(Msg::Seek(f)) if f == 1.0), "clamped to the end");
@@ -502,7 +502,7 @@ mod tests {
         let t0 = Instant::now();
         *m.track.lock().unwrap() = playing(60.0, t0);
         let (saved, params) = (BTreeMap::new(), BTreeMap::new());
-        let at = |now| m.value(&SourceCx::new(super::super::InstanceRef::new("", &saved), &params, super::super::now_local(), "Default").with_now(now)).get("position").cloned();
+        let at = |now| m.value(&SourceCx::new(super::super::InstanceRef::new("", &saved), &params, crate::data::Tm::new(2026, 9, 21, 1, 12, 0, 0, 0), "Default").with_now(now)).get("position").cloned();
         assert_eq!(at(t0), Some(Value::Num(60.0)));
         assert_eq!(at(t0 + Duration::from_secs(2)), Some(Value::Num(62.0)), "the injected now, not the wall clock");
     }
@@ -511,7 +511,7 @@ mod tests {
     fn it_ticks_only_while_playing() {
         let m = Media::new(std::env::temp_dir());
         let (cfg, params) = (BTreeMap::new(), BTreeMap::new());
-        let cx = SourceCx::new(super::super::InstanceRef::new("", &cfg), &params, super::super::now_local(), "Default");
+        let cx = SourceCx::new(super::super::InstanceRef::new("", &cfg), &params, crate::data::Tm::new(2026, 9, 21, 1, 12, 0, 0, 0), "Default");
         assert_eq!(m.cadence("position", &cx), None, "paused or nothing playing");
         *m.track.lock().unwrap() = playing(0.0, Instant::now());
         assert_eq!((m.cadence("progress", &cx), m.cadence("title", &cx)), (Some(Cadence::Second), None));

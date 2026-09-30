@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use crate::ambient::Calendar;
 use crate::data::{Cadence, DataSource, DataSources, News, SourceCx};
 use crate::net::{Fetch, HostPattern, Net};
 use crate::value::Value;
@@ -49,6 +50,8 @@ pub struct Deps {
     pub notify: Arc<dyn Fn() + Send + Sync>,
     pub limits: Limits,
     pub places: fs::Places,
+    /// The time `wf.now_ms` and each call's `local` report.
+    pub calendar: Arc<dyn Calendar>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -347,8 +350,8 @@ impl Worker {
 
     fn input(&self, instance: &str, extra: serde_json::Value) -> Vec<u8> {
         let params: serde_json::Value = self.schedule.params(instance).and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
-        let t = crate::data::now_local();
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        let t = self.deps.calendar.now();
+        let now_ms = self.deps.calendar.unix_ms();
         let mut v = serde_json::json!({
             "abi": ABI,
             "instance": instance,
@@ -365,7 +368,7 @@ impl Worker {
     /// Calls the module for `instance`, building a fresh module instance if the last one faulted.
     fn call(&mut self, instance: &str, entry: Entry, input: &[u8]) -> Result<Called, Fault> {
         if self.runtime.is_none() {
-            let env = Env::new(self.http.clone(), self.deps.store.clone(), &self.deps.limits);
+            let env = Env::new(self.http.clone(), self.deps.store.clone(), &self.deps.limits, self.deps.calendar.clone());
             let compiled = self.compiled.as_ref().expect("compiled before any job");
             match Runtime::new(compiled, env, &self.deps.limits) {
                 Ok(rt) => self.runtime = Some(rt),
@@ -498,7 +501,7 @@ pub(crate) mod tests {
         std::fs::write(&path, wat).unwrap();
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
-        let deps = Deps { fetch: None, store, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits, places: Default::default() };
+        let deps = Deps { fetch: None, store, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits, places: Default::default(), calendar: crate::ambient::Ambient::fixed().calendar };
         let initial = Value::obj([("temp", 0.into())]);
         let mut spec = CodeSpec { plugin: "p".into(), source: "weather".into(), module: path, hosts: vec![], fs_read: vec![], fs_read_params: vec![], launch: vec![], initial };
         edit(&mut spec);
@@ -662,7 +665,7 @@ pub(crate) mod tests {
 
     #[test]
     fn sync_keeps_an_unchanged_source_alive() {
-        let (mut data, mut code) = (DataSources::builtin(), CodeSources::default());
+        let (mut data, mut code) = (DataSources::fixed(), CodeSources::default());
         let started = std::cell::RefCell::new(Vec::new());
         let launch = |s: CodeSpec| {
             started.borrow_mut().push(s.source.clone());
@@ -679,7 +682,7 @@ pub(crate) mod tests {
 
     #[test]
     fn dropping_a_plugin_source_stops_its_worker() {
-        let (mut data, mut code) = (DataSources::builtin(), CodeSources::default());
+        let (mut data, mut code) = (DataSources::fixed(), CodeSources::default());
         let mut src = Some(start("sync-drop", &returning(r#"{"value":{}}"#), Limits::default(), None).0);
         code.sync(&mut data, vec![("weather#1".into(), spec("weather"))], |_| src.take().unwrap());
         let held = code.list[0].1.clone();
@@ -695,7 +698,7 @@ pub(crate) mod tests {
 
     #[test]
     fn code_sources_answer_status_file_params_and_launch_rules() {
-        let (mut data, mut code) = (DataSources::builtin(), CodeSources::default());
+        let (mut data, mut code) = (DataSources::fixed(), CodeSources::default());
         let deps = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<BTreeSet<String>>();
         assert!(code.launch_rules(&deps(&["weather.temp"])).is_empty(), "no Code Source yet");
         let mut src = Some(start_with("sync-answers", &returning(r#"{"value":{}}"#), Limits::default(), None, |s| s.fs_read_params = vec!["folder".into()]).0);
@@ -725,7 +728,7 @@ pub(crate) mod tests {
         }));
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
-        let deps = Deps { fetch: Some(Arc::new(fake)), store: None, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits: Limits::default(), places: Default::default() };
+        let deps = Deps { fetch: Some(Arc::new(fake)), store: None, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits: Limits::default(), places: Default::default(), calendar: crate::ambient::Ambient::fixed().calendar };
         let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/examples/weather/plugin");
         let manifest = crate::plugins::Manifest::parse(&std::fs::read_to_string(plugin.join("plugin.toml")).unwrap()).unwrap();
         let code = manifest.code.into_iter().next().expect("the example has code");

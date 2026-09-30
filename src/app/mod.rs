@@ -31,6 +31,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
+use crate::ambient::Ambient;
 use crate::anim::{self, Anim, Ease};
 use crate::card::Card;
 use crate::code::runtime::Limits;
@@ -171,6 +172,8 @@ pub struct App {
     theme: Theme,
     reg: Registry,
     sources: DataSources,
+    /// What the machine says: the calendar, for now.
+    ambient: Ambient,
     /// The Plugins' Code Sources, which `sources` also serves.
     code: CodeSources,
     gpu: Option<Gpu>,
@@ -222,7 +225,8 @@ impl App {
     pub fn new(proxy: EventLoopProxy<UserEvent>, mut opts: Options) -> App {
         let dir = opts.dir.clone();
         let extra_sources = std::mem::take(&mut opts.extra_sources);
-        let mut sources = DataSources::builtin_in(&opts.dir);
+        let ambient = Ambient::windows(&opts.dir);
+        let mut sources = DataSources::from(&ambient);
         let waker = Mutex::new(proxy.clone());
         sources.set_waker(Arc::new(move || {
             let _ = waker.lock().unwrap().send_event(UserEvent::SourceNews);
@@ -255,6 +259,7 @@ impl App {
             theme,
             reg: Registry::default(),
             sources,
+            ambient,
             code: CodeSources::default(),
             gpu: None,
             text,
@@ -327,7 +332,7 @@ impl App {
             use std::io::Write;
             let _ = writeln!(f, "[{:>7.2}s] {s}", self.started.elapsed().as_secs_f32());
         }
-        self.log.push(settings::LogLine::new(data::now_local(), &s));
+        self.log.push(settings::LogLine::new(self.ambient.calendar.now(), &s));
         if self.log.len() > 300 {
             self.log.drain(..100);
         }
@@ -530,7 +535,7 @@ impl App {
             _ => cfg.params_map(),
         };
         let icon_pack = cfg.theme.resolve(&self.ws.theme).icon_pack;
-        f(&data::SourceCx::new(cfg.instance(), &params, data::now_local(), &icon_pack))
+        f(&data::SourceCx::new(cfg.instance(), &params, self.ambient.calendar.now(), &icon_pack))
     }
 
     /// The folders content is read from, after the built-ins; later ones win.
@@ -583,7 +588,7 @@ impl App {
         let (fetch, stores) = (self.fetch.clone(), &self.stores);
         let places = crate::code::fs::Places { home: std::env::var_os("USERPROFILE").map(PathBuf::from), private: vec![self.opts.dir.clone()] };
         self.code.sync(&mut self.sources, specs, |spec| {
-            let deps = Deps { fetch: fetch.clone(), store: stores.get(&spec.plugin).cloned(), notify: notify.clone(), limits: Limits::default(), places: places.clone() };
+            let deps = Deps { fetch: fetch.clone(), store: stores.get(&spec.plugin).cloned(), notify: notify.clone(), limits: Limits::default(), places: places.clone(), calendar: self.ambient.calendar.clone() };
             WasmSource::start(spec, deps)
         });
         self.refresh_code_status();
@@ -841,11 +846,11 @@ impl ApplicationHandler<UserEvent> for App {
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
         if self.settings.as_ref().is_some_and(|s| s.window.id() == id) {
             let gpu_info = self.gpu.as_ref().map(|g| g.info.clone()).unwrap_or_else(|| "no GPU yet".into());
-            let App { ws, reg, lib, theme, log, edit, settings, text, images, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, .. } = self;
+            let App { ws, reg, lib, theme, log, edit, settings, text, images, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, ambient, .. } = self;
             let off = plugins::hidden_instances(ws, reg, installed);
             let hidden: Vec<(String, settings::Hidden)> = ws.instances.iter().zip(wins.iter()).filter(|(_, w)| w.window.is_none()).map(|(c, _)| (c.id.clone(), off.get(&c.id).map_or(settings::Hidden::Parked, |p| settings::Hidden::PluginOff(p.clone())))).collect();
             let source_names = sources.names();
-            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files, data: sources };
+            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files, data: sources, calendar: &*ambient.calendar };
             let s = settings.as_mut().unwrap();
             let cmds = s.event(&ev, &ctx, text);
             if matches!(ev, WindowEvent::RedrawRequested) {

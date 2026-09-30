@@ -12,10 +12,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use crate::ambient::Ambient;
 use crate::value::Value;
 
 pub use audio::Audio;
-pub use clock::{Clock, Tm, clock_value, now_local};
+pub use clock::{Clock, Tm, clock_value};
 pub use media::Media;
 pub use crate::shortcut::{ID_SEP, Shortcut, file_stem, icon_id};
 pub use shortcuts::{Shortcuts, folder_items, shortcuts_value, starter_apps};
@@ -227,21 +228,24 @@ pub struct DataSources {
 
 impl Default for DataSources {
     fn default() -> Self {
-        Self::builtin()
+        Self::fixed()
+    }
+}
+
+/// The built-in sources over `ambient`, caching under `<data>/.cache` (a dot-folder never
+/// reloads content). The app builds them over `Ambient::windows`.
+impl From<&Ambient> for DataSources {
+    fn from(ambient: &Ambient) -> Self {
+        let cache = ambient.data.join(".cache");
+        Self::new(vec![Box::new(Clock::new(ambient.calendar.clone())), Box::new(Sys::default()), Box::new(Shortcuts::default()), Box::new(Media::new(cache.join("media"))), Box::new(Audio::default())])
     }
 }
 
 impl DataSources {
-    /// The built-in sources, with their caches (album art) in the temp folder. The app uses
-    /// `builtin_in` with its data folder.
-    pub fn builtin() -> Self {
-        Self::builtin_in(&std::env::temp_dir().join("wayfinder"))
-    }
-
-    /// The built-in sources, caching under `<data>/.cache` (a dot-folder never reloads content).
-    pub fn builtin_in(data: &Path) -> Self {
-        let cache = data.join(".cache");
-        Self::new(vec![Box::new(Clock), Box::new(Sys::default()), Box::new(Shortcuts::default()), Box::new(Media::new(cache.join("media"))), Box::new(Audio::default())])
+    /// The built-in sources over `Ambient::fixed()`: the clock reads a fixed instant with
+    /// English names, with caches (album art) in the temp folder.
+    pub fn fixed() -> Self {
+        Self::from(&Ambient::fixed())
     }
 
     pub fn new(list: Vec<Box<dyn DataSource>>) -> Self {
@@ -391,7 +395,7 @@ mod tests {
 
     #[test]
     fn wakes_exactly_when_a_bound_value_can_change() {
-        let src = DataSources::builtin();
+        let src = DataSources::fixed();
         // no clock dependency: never wakes on time
         assert_eq!(wake(&src, &deps(&["param.x", "shortcuts.items"]), tm(1, 2, 3, 0)), None);
         // minute-level: next minute boundary (+2ms guard), not next second
@@ -419,7 +423,7 @@ mod tests {
                 Some(Cadence::Millis(83))
             }
         }
-        let mut src = DataSources::builtin();
+        let mut src = DataSources::fixed();
         src.register(Box::new(Gif)).unwrap();
         assert_eq!(wake(&src, &deps(&["gif.frame", "clock.minute"]), tm(1, 2, 3, 0)), Some(Duration::from_millis(83)), "12 fps, not every display frame");
         assert!(!every_frame(&src, &deps(&["gif.frame"])));
@@ -459,7 +463,7 @@ mod tests {
                 self.0.cadence(f, cx)
             }
         }
-        let mut src = DataSources::builtin();
+        let mut src = DataSources::fixed();
         src.register(Box::new(Shared(player.clone()))).unwrap();
         let bar = deps(&["player.position"]);
         assert_eq!(wake(&src, &bar, tm(1, 2, 3, 0)), None, "paused: the bar sleeps");
@@ -471,7 +475,7 @@ mod tests {
 
     #[test]
     fn cadence_is_asked_of_the_source_named_by_the_path() {
-        let src = DataSources::builtin();
+        let src = DataSources::fixed();
         assert_eq!(with_cx(|cx| src.cadence_of("sys.gauges", cx)), Some(Cadence::Second));
         assert_eq!(with_cx(|cx| src.cadence_of("clock", cx)), Some(Cadence::Frame), "a whole source changes as often as its fastest field");
         assert_eq!(with_cx(|cx| src.cadence_of("shortcuts.items", cx)), None);
@@ -492,7 +496,7 @@ mod tests {
                 None
             }
         }
-        let mut src = DataSources::builtin();
+        let mut src = DataSources::fixed();
         let made = std::cell::RefCell::new(Vec::new());
         let sync = |src: &mut DataSources, keys: &[&str]| {
             src.sync_plugins(keys.iter().map(|k| k.to_string()).collect(), |k| {
@@ -511,7 +515,7 @@ mod tests {
 
     #[test]
     fn builtin_state_survives_sync() {
-        let mut src = DataSources::builtin();
+        let mut src = DataSources::fixed();
         let before = src.get("sys").unwrap() as *const dyn DataSource as *const u8;
         src.sync_plugins(vec![], |_| unreachable!());
         assert!(std::ptr::eq(before, src.get("sys").unwrap() as *const dyn DataSource as *const u8), "Sys keeps its history");
@@ -555,7 +559,7 @@ mod tests {
 
     #[test]
     fn a_registered_source_is_read_acted_on_and_retained() {
-        let mut src = DataSources::builtin();
+        let mut src = DataSources::fixed();
         src.register(Box::new(Media::default())).unwrap();
         assert!(with_cx(|cx| src.value("player", cx)).is_some_and(|v| v.get("title").is_some()));
         assert!(with_cx(|cx| src.act("player", "play_pause", "", cx)), "on_click = \"player.play_pause\"");
@@ -582,7 +586,7 @@ mod tests {
 
     #[test]
     fn a_native_source_says_it_changed_from_another_thread() {
-        let mut src = DataSources::builtin();
+        let mut src = DataSources::fixed();
         let (tx, rx) = std::sync::mpsc::channel();
         let tx = Mutex::new(tx);
         src.set_waker(Arc::new(move || {

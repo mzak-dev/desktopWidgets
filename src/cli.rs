@@ -225,7 +225,8 @@ fn render(r: &Render) -> Result<bool, String> {
     let card = Card::new(&theme);
 
     // plugin code runs as in the app, without the user's saved data
-    let mut sources = DataSources::builtin_in(&r.data);
+    let ambient = crate::ambient::Ambient::windows(&r.data);
+    let mut sources = DataSources::from(&ambient);
     let (news_tx, news) = mpsc::channel();
     let news_tx = Mutex::new(news_tx);
     let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
@@ -239,7 +240,7 @@ fn render(r: &Render) -> Result<bool, String> {
     };
     let places = crate::code::fs::Places { home: std::env::var_os("USERPROFILE").map(PathBuf::from), private: vec![r.data.clone()] };
     let mut code = CodeSources::default();
-    code.sync(&mut sources, specs, |spec| WasmSource::start(spec, Deps { fetch: fetch.clone(), store: None, notify: notify.clone(), limits: Limits::default(), places: places.clone() }));
+    code.sync(&mut sources, specs, |spec| WasmSource::start(spec, Deps { fetch: fetch.clone(), store: None, notify: notify.clone(), limits: Limits::default(), places: places.clone(), calendar: ambient.calendar.clone() }));
 
     let meta = match &def {
         Ok(w) => Some(w.meta().clone()),
@@ -256,7 +257,7 @@ fn render(r: &Render) -> Result<bool, String> {
     }
     let mut state: BTreeMap<String, Value> = meta.as_ref().map(|m| m.initial_state.clone()).unwrap_or_default();
     state.extend(r.state.iter().map(|(k, v)| (k.clone(), Value::from(v))));
-    let now_tm = crate::data::now_local();
+    let now_tm = ambient.calendar.now();
     let tm = match r.time {
         Some((hour, minute)) => Tm { hour, minute, second: 0, ms: 0, ..now_tm },
         None => now_tm,

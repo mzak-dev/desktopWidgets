@@ -45,7 +45,7 @@ fn sizes_of(meta: &super::WidgetMeta) -> Vec<(String, (f32, f32))> {
 fn every_builtin_fits_every_size_it_allows() {
     let reg = Registry::load(Path::new("no-such-dir"));
     let theme = Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[]);
-    let sources = DataSources::builtin();
+    let sources = DataSources::fixed();
     // the widest realistic clock text
     let tm = Tm { year: 2026, month: 9, day: 23, dow: 3, hour: 23, minute: 58, second: 58, ms: 0 };
     let mut text = TextEngine::new();
@@ -112,7 +112,7 @@ fn texts_at(id: &str, size: (f32, f32)) -> Vec<String> {
     let mut cfg = InstanceCfg { id: format!("{id}-1"), widget: id.into(), ..Default::default() };
     super::seed_params(w.meta(), &mut cfg);
     let params = w.meta().effective_params(&cfg.params_map());
-    let sources = DataSources::builtin();
+    let sources = DataSources::fixed();
     let tm = Tm { year: 2026, month: 9, day: 23, dow: 3, hour: 12, minute: 0, second: 0, ms: 0 };
     let cx = SourceCx::new(cfg.instance(), &params, tm, "Default");
     let read = |n: &str| sources.value(n, &cx);

@@ -53,6 +53,8 @@ pub struct Ctx<'a> {
     pub plugin_files: &'a FileOwner,
     /// Live data for the widget preview.
     pub data: &'a crate::data::DataSources,
+    /// The time the previews show.
+    pub calendar: &'a dyn crate::ambient::Calendar,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1781,7 +1783,7 @@ impl UiState {
         };
         const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
         const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-        let now = crate::data::now_local();
+        let now = ctx.calendar.now();
         let date = format!("{}, {} {}", DAYS[now.dow as usize % 7], now.day, MONTHS[(now.month as usize).clamp(1, 12) - 1]);
         let clock = card("ap/pv/clock").child(tx("ap/pv/date", &date, 11.5, t.color("text-dim"), 400)).child(tx("ap/pv/time", &format!("{:02}:{:02}", now.hour, now.minute), 38.0, t.color("text"), 700));
         let gauge = |key: &str, label: &str, pct: f32| {
@@ -2909,7 +2911,7 @@ impl UiState {
         let theme = ctx.ws.theme_for(ctx.lib, cfg);
         let params = w.meta().effective_params(&cfg.params_map());
         let pack = cfg.theme.resolve(&ctx.ws.theme).icon_pack;
-        let scx = crate::data::SourceCx::new(cfg.instance(), &params, crate::data::now_local(), &pack);
+        let scx = crate::data::SourceCx::new(cfg.instance(), &params, ctx.calendar.now(), &pack);
         let read = |n: &str| ctx.data.value(n, &scx);
         let state = std::collections::BTreeMap::new();
         let arrange = crate::format::Arrange { layout, tier, preview: true };
@@ -3469,6 +3471,7 @@ mod tests {
         plugins: Vec<PluginRow>,
         sources: Vec<String>,
         data: crate::data::DataSources,
+        calendar: crate::ambient::FixedCalendar,
     }
 
     fn world() -> World {
@@ -3484,11 +3487,11 @@ mod tests {
             PluginRow { id: "sunset".into(), name: "Sunset".into(), version: "1.2.0".into(), author: "Ada".into(), description: "Warm colours".into(), summary: "1 widget · 1 palette".into(), enabled: true, notes: vec!["Restyles Analog Clock".into()], problems: vec![], sole_widgets: vec!["weather".into()], contents: crate::content::Contents { widgets: vec!["weather".into()], palettes: vec!["Midnight".into()], ..Default::default() }, code: vec![crate::plugins::CodeRow { source: "weather".into(), net: vec!["api.open-meteo.com".into()], runs: true, status: "Running".into(), ..Default::default() }] },
             PluginRow { id: "broken".into(), name: "broken".into(), summary: "nothing yet".into(), enabled: false, problems: vec!["no plugin.toml".into()], ..Default::default() },
         ];
-        World { ws, reg: Registry::load(Path::new("no-such-dir")), lib, theme, hidden: vec![], plugins, sources: crate::data::DataSources::builtin().names(), data: crate::data::DataSources::builtin() }
+        World { ws, reg: Registry::load(Path::new("no-such-dir")), lib, theme, hidden: vec![], plugins, sources: crate::data::DataSources::fixed().names(), data: crate::data::DataSources::fixed(), calendar: crate::ambient::FixedCalendar::default() }
     }
 
     fn ctx(w: &World) -> Ctx<'_> {
-        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me, data: &w.data }
+        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me, data: &w.data, calendar: &w.calendar }
     }
 
     #[test]
