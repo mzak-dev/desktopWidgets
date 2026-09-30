@@ -232,18 +232,16 @@ impl Default for DataSources {
     }
 }
 
-/// The built-in sources over `ambient`, caching under `<data>/.cache` (a dot-folder never
-/// reloads content). The app builds them over `Ambient::windows`.
+/// The built-in sources over `ambient`. The app builds them over `Ambient::windows`.
 impl From<&Ambient> for DataSources {
     fn from(ambient: &Ambient) -> Self {
-        let cache = ambient.data.join(".cache");
-        Self::new(vec![Box::new(Clock::new(ambient.calendar.clone())), Box::new(Sys::default()), Box::new(Shortcuts::default()), Box::new(Media::new(cache.join("media"))), Box::new(Audio::default())])
+        Self::new(vec![Box::new(Clock::new(ambient.calendar.clone())), Box::new(Sys::new(ambient.sys.clone())), Box::new(Shortcuts::default()), Box::new(Media::new(ambient.media.clone())), Box::new(Audio::default())])
     }
 }
 
 impl DataSources {
-    /// The built-in sources over `Ambient::fixed()`: the clock reads a fixed instant with
-    /// English names, with caches (album art) in the temp folder.
+    /// The built-in sources over `Ambient::fixed()`: a fixed instant with English names, the
+    /// demo desktop's readings and a paused track.
     pub fn fixed() -> Self {
         Self::from(&Ambient::fixed())
     }

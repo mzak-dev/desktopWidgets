@@ -1,15 +1,24 @@
 //! Everything the engine reads from the machine it runs on, behind traits, so a render can be
 //! repeated: the Windows Ambient reads the real machine, the Fixed one returns the same
-//! values every time (research/12). Calendar first; the other seams join the bundle later.
+//! values every time (research/12). Calendar, system probe and media session so far; the
+//! other seams join the bundle later.
 
 mod fixed;
+mod media;
+mod sys;
 mod win;
+mod win_media;
+mod win_sys;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
-pub use fixed::FixedCalendar;
+pub use fixed::{FixedCalendar, FixedMedia, ScriptedProbe};
+pub use media::{Control, MediaBackend, Notify, Track};
+pub use sys::{Battery, GpuLoad, Memory, Reading, SysProbe};
 pub use win::WinCalendar;
+pub use win_media::WinMedia;
+pub use win_sys::WinProbe;
 
 /// A calendar time: local wall time, or UTC where a method says so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,19 +118,21 @@ pub trait Calendar: Send + Sync {
 #[derive(Clone)]
 pub struct Ambient {
     pub calendar: Arc<dyn Calendar>,
-    /// The data folder built-ins cache under (album art); moves into the media seam later.
-    pub data: PathBuf,
+    pub sys: Arc<dyn SysProbe>,
+    pub media: Arc<dyn MediaBackend>,
 }
 
 impl Ambient {
-    /// The real machine, caching under `data`.
+    /// The real machine; album art is cached under `<data>/.cache/media` (a dot-folder never
+    /// reloads content). Nothing is read and no thread starts until a source is asked.
     pub fn windows(data: &Path) -> Ambient {
-        Ambient { calendar: Arc::new(WinCalendar), data: data.to_path_buf() }
+        Ambient { calendar: Arc::new(WinCalendar), sys: Arc::new(WinProbe::default()), media: Arc::new(WinMedia::new(data.join(".cache").join("media"))) }
     }
 
-    /// A fixed instant and English names, caching in the temp folder.
+    /// A fixed instant and English names, the demo desktop's readings and a paused track:
+    /// no machine reads, no files, no threads.
     pub fn fixed() -> Ambient {
-        Ambient { calendar: Arc::new(FixedCalendar::default()), data: std::env::temp_dir().join("wayfinder") }
+        Ambient { calendar: Arc::new(FixedCalendar::default()), sys: Arc::new(ScriptedProbe::demo()), media: Arc::new(FixedMedia::default()) }
     }
 }
 

@@ -1,7 +1,13 @@
 //! A calendar that never reads the machine: a fixed instant, English names and an embedded
 //! table of the zones the clock's city list names, with the US, EU, Australian and New
-//! Zealand daylight rules as they stand since 2008. Not valid for earlier years.
+//! Zealand daylight rules as they stand since 2008. Not valid for earlier years. Beside it,
+//! the system probe and media session that answer the same every time.
 
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+
+use super::media::{Control, MediaBackend, Notify, Track};
+use super::sys::{Reading, SysProbe};
 use super::{Calendar, DateStyle, Tm, civil_from_days, days_from_civil};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,6 +180,82 @@ impl Calendar for FixedCalendar {
     }
 }
 
+/// A probe that plays back readings: each `read` gives the next one and the last repeats,
+/// with its CPU counters moved on by `advance` after every repeat, so a steady load shows
+/// as a delta between samples.
+pub struct ScriptedProbe {
+    script: Mutex<VecDeque<Reading>>,
+    advance: (u64, u64),
+}
+
+impl ScriptedProbe {
+    /// The readings in order, then the last one for ever. Panics on an empty script.
+    pub fn new(script: impl IntoIterator<Item = Reading>) -> Self {
+        let script: VecDeque<Reading> = script.into_iter().collect();
+        assert!(!script.is_empty(), "a scripted probe needs a reading");
+        Self { script: Mutex::new(script), advance: (0, 0) }
+    }
+
+    /// Adds `(idle, total)` CPU ticks to the repeated reading on every read.
+    pub fn advancing(mut self, idle: u64, total: u64) -> Self {
+        self.advance = (idle, total);
+        self
+    }
+
+    /// `Reading::demo()` with the CPU at 37 % from the second sample on.
+    pub fn demo() -> Self {
+        Self::new([Reading::demo()]).advancing(6_300_000, 10_000_000)
+    }
+}
+
+impl SysProbe for ScriptedProbe {
+    fn read(&self) -> Reading {
+        let mut s = self.script.lock().unwrap_or_else(|e| e.into_inner());
+        if s.len() > 1 {
+            return s.pop_front().unwrap();
+        }
+        let out = s[0].clone();
+        s[0].cpu = (out.cpu.0 + self.advance.0, out.cpu.1 + self.advance.1);
+        out
+    }
+}
+
+/// A media session that never changes: by default a paused, seekable "Song" by "Artist". It
+/// asks nothing of the machine and records every `Control` it is sent.
+pub struct FixedMedia {
+    track: Track,
+    log: Mutex<Vec<Control>>,
+}
+
+impl FixedMedia {
+    pub fn new(track: Track) -> Self {
+        Self { track, log: Mutex::new(Vec::new()) }
+    }
+
+    /// Every control sent so far, oldest first.
+    pub fn controls(&self) -> Vec<Control> {
+        self.log.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+impl Default for FixedMedia {
+    fn default() -> Self {
+        Self::new(Track { active: true, title: "Song".into(), artist: "Artist".into(), album: "Album".into(), source: "Player".into(), can_seek: true, position: 60.0, duration: 200.0, ..Default::default() })
+    }
+}
+
+impl MediaBackend for FixedMedia {
+    fn track(&self) -> Track {
+        self.track.clone()
+    }
+
+    fn control(&self, control: Control) {
+        self.log.lock().unwrap_or_else(|e| e.into_inner()).push(control);
+    }
+
+    fn attach(&self, _notify: Arc<dyn Notify>) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +335,29 @@ mod tests {
         // the default calendar is UTC, with a Unix time to match
         let c = FixedCalendar::default();
         assert_eq!((c.now(), c.unix_ms()), (Tm::new(2026, 9, 21, 1, 12, 0, 0, 0), 1_789_992_000_000));
+    }
+
+    #[test]
+    fn a_scripted_probe_plays_its_readings_then_repeats_the_last() {
+        let (a, b) = (Reading { processes: 1, ..Reading::demo() }, Reading { processes: 2, ..Reading::demo() });
+        let p = ScriptedProbe::new([a, b]);
+        assert_eq!([p.read().processes, p.read().processes, p.read().processes], [1, 2, 2]);
+        let d = ScriptedProbe::demo();
+        let (first, second) = (d.read(), d.read());
+        assert_eq!(first, Reading::demo());
+        assert_eq!((second.cpu.0 - first.cpu.0, second.cpu.1 - first.cpu.1), (6_300_000, 10_000_000), "the counters move on");
+    }
+
+    #[test]
+    fn fixed_media_is_a_paused_seekable_track_that_remembers_its_controls() {
+        let m = FixedMedia::default();
+        let t = m.track();
+        assert_eq!((t.active, t.playing, t.can_seek, t.title.as_str(), t.at), (true, false, true, "Song", None));
+        assert!(m.controls().is_empty());
+        m.control(Control::PlayPause);
+        m.control(Control::Seek(0.5));
+        assert_eq!(m.controls(), [Control::PlayPause, Control::Seek(0.5)]);
+        assert_eq!(m.track(), t, "controls change nothing on the fixed track");
     }
 
     #[test]

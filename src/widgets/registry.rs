@@ -105,7 +105,7 @@ mod tests {
         let r = Registry::load(Path::new("no-such-dir"));
         let Some(Ok(w)) = r.get("system_monitor") else { panic!("system_monitor") };
         let theme = Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[]);
-        let sys = Sys::default();
+        let sys = Sys::new(std::sync::Arc::new(crate::ambient::ScriptedProbe::demo()));
         let arcs = |layout: crate::workspace::Layout| {
             let (params, st) = (BTreeMap::new(), BTreeMap::new());
             let read = |n: &str| (n == "sys").then(|| sys.sample(std::time::Instant::now()));
