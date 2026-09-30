@@ -108,7 +108,7 @@ mod tests {
         let sys = Sys::default();
         let arcs = |layout: crate::workspace::Layout| {
             let (params, st) = (BTreeMap::new(), BTreeMap::new());
-            let read = |n: &str| (n == "sys").then(|| sys.sample());
+            let read = |n: &str| (n == "sys").then(|| sys.sample(std::time::Instant::now()));
             let arrange = Some(crate::format::Arrange { layout: &layout, tier: None, preview: false });
             let inp = Inputs { params: &params, state: &st, card_size: (700.0, 200.0), key_prefix: "t", read_source: &read, arrange };
             let b = w.build(&inp, &theme, &|_| None).unwrap();

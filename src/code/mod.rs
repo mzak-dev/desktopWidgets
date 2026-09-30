@@ -138,7 +138,7 @@ impl WasmSource {
     /// The folders the user picked for this Instance in the params the plugin may read.
     /// Only the Instance's own settings count, never a widget's defaults.
     fn picked(&self, cx: &SourceCx) -> Vec<PathBuf> {
-        self.fs_read_params.iter().filter_map(|p| cx.cfg.params.get(p)?.as_str()).map(PathBuf::from).filter(|p| p.is_absolute()).collect()
+        self.fs_read_params.iter().filter_map(|p| cx.instance().saved().get(p)?.as_str()).map(PathBuf::from).filter(|p| p.is_absolute()).collect()
     }
 
     pub fn take_news(&self) -> News {
@@ -166,14 +166,14 @@ impl DataSource for WasmSource {
         if let Status::Broken(e) = &*self.shared.status.lock().unwrap() {
             return with_state(&self.initial, false, &format!("the plugin's code cannot run: {e}"));
         }
-        let params = params_json(cx.params);
+        let params = params_json(cx.params());
         let mut slots = self.shared.slots.lock().unwrap();
-        if let Some(s) = slots.get(&cx.cfg.id).filter(|s| s.params == params) {
+        if let Some(s) = slots.get(cx.instance().id()).filter(|s| s.params == params) {
             return s.value.clone();
         }
-        let shown = slots.get(&cx.cfg.id).map_or_else(|| self.initial.clone(), |s| with_state(&s.value, true, ""));
-        slots.insert(cx.cfg.id.clone(), Slot { params: params.clone(), value: shown.clone() });
-        let _ = self.tx.send(Msg::Need { instance: cx.cfg.id.clone(), params, picked: self.picked(cx) });
+        let shown = slots.get(cx.instance().id()).map_or_else(|| self.initial.clone(), |s| with_state(&s.value, true, ""));
+        slots.insert(cx.instance().id().to_string(), Slot { params: params.clone(), value: shown.clone() });
+        let _ = self.tx.send(Msg::Need { instance: cx.instance().id().to_string(), params, picked: self.picked(cx) });
         shown
     }
 
@@ -183,7 +183,7 @@ impl DataSource for WasmSource {
     }
 
     fn act(&self, verb: &str, arg: &str, cx: &SourceCx) -> bool {
-        let _ = self.tx.send(Msg::Act { instance: cx.cfg.id.clone(), params: params_json(cx.params), picked: self.picked(cx), verb: verb.into(), arg: arg.into() });
+        let _ = self.tx.send(Msg::Act { instance: cx.instance().id().to_string(), params: params_json(cx.params()), picked: self.picked(cx), verb: verb.into(), arg: arg.into() });
         true
     }
 
@@ -457,7 +457,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn read(src: &WasmSource, c: &InstanceCfg, params: &BTreeMap<String, Value>) -> Value {
-        src.value(&SourceCx { cfg: c, params, tm: crate::data::Tm { year: 2026, month: 9, day: 24, dow: 4, hour: 12, minute: 0, second: 0, ms: 0 }, icon_pack: "Default" })
+        src.value(&SourceCx::new(c.instance(), params, crate::data::Tm::new(2026, 9, 24, 4, 12, 0, 0, 0), "Default"))
     }
 
     /// Waits for news about `instance`.
@@ -551,7 +551,7 @@ pub(crate) mod tests {
         read(&src, &c, &p);
         wait_for(&src, &rx, "w-1");
         assert_eq!(num(&read(&src, &c, &p), "n"), 1.0);
-        src.act("refresh", "", &SourceCx { cfg: &c, params: &p, tm: crate::data::Tm { year: 2026, month: 9, day: 24, dow: 4, hour: 12, minute: 0, second: 0, ms: 0 }, icon_pack: "Default" });
+        src.act("refresh", "", &SourceCx::new(c.instance(), &p, crate::data::Tm::new(2026, 9, 24, 4, 12, 0, 0, 0), "Default"));
         wait_for(&src, &rx, "w-1");
         assert_eq!(num(&read(&src, &c, &p), "n"), 2.0, "the act resampled it");
     }
@@ -632,7 +632,7 @@ pub(crate) mod tests {
         wait_for(&src, &rx, "weather-1");
         let v = read(&src, &c, &params);
         assert_eq!((num(&v, "temp"), v.get("sky").map(|s| s.to_string())), (13.0, Some("Cloudy".into())), "{v:?}; {:?}", src.status());
-        let cx = SourceCx { cfg: &c, params: &params, tm: crate::data::Tm { year: 2026, month: 9, day: 24, dow: 4, hour: 12, minute: 0, second: 0, ms: 0 }, icon_pack: "Default" };
+        let cx = SourceCx::new(c.instance(), &params, crate::data::Tm::new(2026, 9, 24, 4, 12, 0, 0, 0), "Default");
         src.act("refresh", "", &cx);
         wait_for(&src, &rx, "weather-1");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "the click fetched again");

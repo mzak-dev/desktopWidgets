@@ -10,11 +10,10 @@ mod sys;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::code::{CodeSpec, Status, WasmSource};
 use crate::value::Value;
-use crate::workspace::InstanceCfg;
 
 pub use audio::Audio;
 pub use clock::{Clock, Tm, clock_value, now_local};
@@ -46,12 +45,83 @@ impl Cadence {
     }
 }
 
+/// The Instance a source is asked for: its id and the params saved in the workspace (no
+/// Widget defaults filled in), which is all a source may read of the Instance.
+#[derive(Clone, Copy, Debug)]
+pub struct InstanceRef<'a> {
+    id: &'a str,
+    saved: &'a BTreeMap<String, serde_json::Value>,
+}
+
+impl<'a> InstanceRef<'a> {
+    pub fn new(id: &'a str, saved: &'a BTreeMap<String, serde_json::Value>) -> Self {
+        Self { id, saved }
+    }
+
+    pub fn id(&self) -> &'a str {
+        self.id
+    }
+
+    /// The params as saved, without the Widget's defaults.
+    pub fn saved(&self) -> &'a BTreeMap<String, serde_json::Value> {
+        self.saved
+    }
+
+    /// The Instance's mirrored shortcut folder, "" when it has none.
+    pub fn folder(&self) -> String {
+        self.saved.get("folder").and_then(|v| v.as_str()).unwrap_or("").to_string()
+    }
+
+    /// The Instance's explicit shortcut list.
+    pub fn items(&self) -> Vec<Shortcut> {
+        match self.saved.get("items") {
+            Some(serde_json::Value::Array(a)) => a.iter().filter_map(|v| Shortcut::from_value(&Value::from(v))).collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// What a source sees when it is read: the Instance, its effective params, the local time,
+/// its icon pack and a monotonic `now`. `now` is the real clock unless `with_now` injects
+/// one, so a source that reads it (not `Instant::now()`) can be driven deterministically.
 pub struct SourceCx<'a> {
-    pub cfg: &'a InstanceCfg,
+    instance: InstanceRef<'a>,
     /// The Instance's params with its Widget's defaults filled in.
-    pub params: &'a std::collections::BTreeMap<String, Value>,
-    pub tm: Tm,
-    pub icon_pack: &'a str,
+    params: &'a BTreeMap<String, Value>,
+    tm: Tm,
+    icon_pack: &'a str,
+    now: Instant,
+}
+
+impl<'a> SourceCx<'a> {
+    pub fn new(instance: InstanceRef<'a>, params: &'a BTreeMap<String, Value>, tm: Tm, icon_pack: &'a str) -> Self {
+        Self { instance, params, tm, icon_pack, now: Instant::now() }
+    }
+
+    pub fn with_now(mut self, now: Instant) -> Self {
+        self.now = now;
+        self
+    }
+
+    pub fn instance(&self) -> InstanceRef<'a> {
+        self.instance
+    }
+
+    pub fn params(&self) -> &'a BTreeMap<String, Value> {
+        self.params
+    }
+
+    pub fn tm(&self) -> &Tm {
+        &self.tm
+    }
+
+    pub fn icon_pack(&self) -> &'a str {
+        self.icon_pack
+    }
+
+    pub fn now(&self) -> Instant {
+        self.now
+    }
 }
 
 /// A named producer of values Widgets bind to. Built-in, registered by an app that links
@@ -280,7 +350,7 @@ impl DataSources {
     /// How soon an Instance reading `deps` must redraw, asked after each of its redraws.
     pub fn next_wake(&self, deps: &BTreeSet<String>, cx: &SourceCx) -> Option<Duration> {
         let fastest = deps.iter().filter_map(|d| self.cadence_of(d, cx)).min_by_key(|c| c.period())?;
-        let tm = &cx.tm;
+        let tm = cx.tm();
         let into_sec = tm.ms as u64;
         let ms = match fastest {
             Cadence::Frame => 8,
@@ -330,8 +400,8 @@ mod tests {
     }
 
     fn wake(src: &DataSources, d: &BTreeSet<String>, t: Tm) -> Option<Duration> {
-        let (cfg, params) = (InstanceCfg::default(), BTreeMap::new());
-        src.next_wake(d, &SourceCx { cfg: &cfg, params: &params, tm: t, icon_pack: "Default" })
+        let (saved, params) = (BTreeMap::new(), BTreeMap::new());
+        src.next_wake(d, &SourceCx::new(InstanceRef::new("", &saved), &params, t, "Default"))
     }
 
     fn every_frame(src: &DataSources, d: &BTreeSet<String>) -> bool {
@@ -391,7 +461,7 @@ mod tests {
                 Value::Nil
             }
             fn cadence(&self, field: &str, cx: &SourceCx) -> Option<Cadence> {
-                let ticking = field == "position" && self.playing.load(Ordering::Relaxed) && cx.params.get("progress").is_none_or(Value::truthy);
+                let ticking = field == "position" && self.playing.load(Ordering::Relaxed) && cx.params().get("progress").is_none_or(Value::truthy);
                 ticking.then_some(Cadence::Second)
             }
         }
@@ -414,8 +484,8 @@ mod tests {
         assert_eq!(wake(&src, &bar, tm(1, 2, 3, 0)), None, "paused: the bar sleeps");
         player.playing.store(true, Ordering::Relaxed);
         assert_eq!(wake(&src, &bar, tm(1, 2, 3, 0)), Some(Duration::from_millis(1002)), "playing: once a second");
-        let (cfg, off) = (InstanceCfg::default(), BTreeMap::from([("progress".to_string(), Value::Bool(false))]));
-        assert_eq!(src.next_wake(&bar, &SourceCx { cfg: &cfg, params: &off, tm: tm(1, 2, 3, 0), icon_pack: "Default" }), None, "an Instance that hides the bar never ticks");
+        let (saved, off) = (BTreeMap::new(), BTreeMap::from([("progress".to_string(), Value::Bool(false))]));
+        assert_eq!(src.next_wake(&bar, &SourceCx::new(InstanceRef::new("", &saved), &off, tm(1, 2, 3, 0), "Default")), None, "an Instance that hides the bar never ticks");
     }
 
     #[test]
@@ -473,7 +543,7 @@ mod tests {
             None
         }
         fn act(&self, verb: &str, arg: &str, cx: &SourceCx) -> bool {
-            self.acts.lock().unwrap().push(format!("{verb} {arg} {}", cx.cfg.id));
+            self.acts.lock().unwrap().push(format!("{verb} {arg} {}", cx.instance().id()));
             verb == "play_pause"
         }
         fn retain(&self, live: &BTreeSet<String>) {
@@ -485,9 +555,9 @@ mod tests {
     }
 
     fn with_cx<R>(f: impl FnOnce(&SourceCx) -> R) -> R {
-        let cfg = InstanceCfg { id: "player-1".into(), ..Default::default() };
-        let params = cfg.params_map();
-        f(&SourceCx { cfg: &cfg, params: &params, tm: tm(1, 2, 3, 0), icon_pack: "Default" })
+        let saved = BTreeMap::new();
+        let params = BTreeMap::new();
+        f(&SourceCx::new(InstanceRef::new("player-1", &saved), &params, tm(1, 2, 3, 0), "Default"))
     }
 
     #[test]
@@ -575,9 +645,8 @@ mod tests {
             }
         }
         let src = DataSources::new(vec![Box::new(Weather)]);
-        let cfg = InstanceCfg::default();
-        let params = cfg.params_map();
-        let cx = SourceCx { cfg: &cfg, params: &params, tm: tm(1, 2, 3, 0), icon_pack: "Default" };
+        let (saved, params) = (BTreeMap::new(), BTreeMap::new());
+        let cx = SourceCx::new(InstanceRef::new("", &saved), &params, tm(1, 2, 3, 0), "Default");
         assert_eq!(src.value("weather", &cx).and_then(|v| v.get("temp").cloned()), Some(Value::Num(21.0)));
         assert_eq!(wake(&src, &deps(&["weather.temp"]), tm(12, 0, 0, 0)), Some(Duration::from_millis(60_002)));
     }

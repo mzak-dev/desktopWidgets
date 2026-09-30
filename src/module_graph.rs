@@ -35,7 +35,6 @@ const LAYERS: &[(&str, u8)] = &[
 /// the current state and shrinks to empty.
 const LAYER_VIOLATIONS: &[(&str, &str)] = &[
     ("data", "code"),
-    ("data", "workspace"),
 ];
 
 type Edges = BTreeMap<(String, String), Vec<String>>;

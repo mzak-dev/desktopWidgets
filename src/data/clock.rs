@@ -14,6 +14,12 @@ pub struct Tm {
     pub ms: u32,
 }
 
+impl Tm {
+    pub fn new(year: i32, month: u32, day: u32, dow: u32, hour: u32, minute: u32, second: u32, ms: u32) -> Self {
+        Self { year, month, day, dow, hour, minute, second, ms }
+    }
+}
+
 pub fn now_local() -> Tm {
     use windows::Win32::System::SystemInformation::GetLocalTime;
     let t = unsafe { GetLocalTime() };
@@ -211,25 +217,25 @@ impl DataSource for Clock {
     }
 
     fn value(&self, cx: &SourceCx) -> Value {
-        let mut v = clock_value(&cx.tm);
+        let mut v = clock_value(cx.tm());
         // world clocks for the Instance's `cities` param, if its Widget has one
-        let cities = cx.params.get("cities").map(|c| c.to_string()).unwrap_or_default();
+        let cities = cx.params().get("cities").map(|c| c.to_string()).unwrap_or_default();
         if let Value::Obj(m) = &mut v {
             // the instant the clock shows, so city times always agree with the face
             let local = windows::Win32::Foundation::SYSTEMTIME {
-                wYear: cx.tm.year as u16,
-                wMonth: cx.tm.month as u16,
-                wDay: cx.tm.day as u16,
-                wHour: cx.tm.hour as u16,
-                wMinute: cx.tm.minute as u16,
-                wSecond: cx.tm.second as u16,
+                wYear: cx.tm().year as u16,
+                wMonth: cx.tm().month as u16,
+                wDay: cx.tm().day as u16,
+                wHour: cx.tm().hour as u16,
+                wMinute: cx.tm().minute as u16,
+                wSecond: cx.tm().second as u16,
                 ..Default::default()
             };
             let mut utc = windows::Win32::Foundation::SYSTEMTIME::default();
             if unsafe { windows::Win32::System::Time::TzSpecificLocalTimeToSystemTimeEx(None, &local, &mut utc) }.is_err() {
                 utc = unsafe { windows::Win32::System::SystemInformation::GetSystemTime() };
             }
-            m.insert("zones".into(), Value::List(zone_times(&cities, &utc, &cx.tm)));
+            m.insert("zones".into(), Value::List(zone_times(&cities, &utc, cx.tm())));
         }
         v
     }
@@ -276,9 +282,9 @@ mod tests {
     #[test]
     fn world_clocks_follow_the_time_the_clock_shows_not_the_system_clock() {
         // a moment far from now: the zones must be relative to it, so offsets stay within a day
-        let cfg = crate::workspace::InstanceCfg::default();
+        let saved = std::collections::BTreeMap::new();
         let params = std::collections::BTreeMap::from([("cities".to_string(), Value::Str("Tokyo, New York".into()))]);
-        let cx = SourceCx { cfg: &cfg, params: &params, tm: tm(15, 42, 0, 0), icon_pack: "Default" };
+        let cx = SourceCx::new(crate::data::InstanceRef::new("", &saved), &params, tm(15, 42, 0, 0), "Default");
         let Some(Value::List(z)) = Clock.value(&cx).get("zones").cloned() else { panic!("no zones") };
         for zone in &z {
             let off = zone.get("offset").unwrap().to_string();

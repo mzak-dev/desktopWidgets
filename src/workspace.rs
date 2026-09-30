@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub use crate::monitor::{MonitorInfo, MonitorRef};
+use crate::data::InstanceRef;
 use crate::shortcut::Shortcut;
 use crate::theme::{Library, Selection, Theme, ThemePick};
 use crate::value::Value;
@@ -73,11 +74,13 @@ impl InstanceCfg {
         self.params.insert(name.to_string(), v.into());
     }
 
+    /// What a Data Source may see of this Instance.
+    pub fn instance(&self) -> InstanceRef<'_> {
+        InstanceRef::new(&self.id, &self.params)
+    }
+
     pub fn items(&self) -> Vec<Shortcut> {
-        match self.params.get("items") {
-            Some(serde_json::Value::Array(a)) => a.iter().filter_map(|v| Shortcut::from_value(&Value::from(v))).collect(),
-            _ => Vec::new(),
-        }
+        self.instance().items()
     }
 
     pub fn set_items(&mut self, items: &[Shortcut]) {
@@ -94,7 +97,7 @@ impl InstanceCfg {
     }
 
     pub fn folder(&self) -> String {
-        self.params.get("folder").and_then(|v| v.as_str()).unwrap_or("").to_string()
+        self.instance().folder()
     }
 }
 

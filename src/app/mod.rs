@@ -527,7 +527,7 @@ impl App {
             _ => cfg.params_map(),
         };
         let icon_pack = cfg.theme.resolve(&self.ws.theme).icon_pack;
-        f(&data::SourceCx { cfg, params: &params, tm: data::now_local(), icon_pack: &icon_pack })
+        f(&data::SourceCx::new(cfg.instance(), &params, data::now_local(), &icon_pack))
     }
 
     /// The folders content is read from, after the built-ins; later ones win.

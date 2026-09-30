@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use super::{Cadence, DataSource, SourceCx};
 use crate::shortcut::{Shortcut, file_stem, icon_id};
 use crate::value::Value;
-use crate::workspace::InstanceCfg;
+use super::InstanceRef;
 
 pub fn folder_items(dir: &str, cap: usize) -> Vec<Shortcut> {
     let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
@@ -52,10 +52,10 @@ pub struct Shortcuts {
 }
 
 impl Shortcuts {
-    pub fn items_of(&self, cfg: &InstanceCfg) -> Vec<Shortcut> {
-        let folder = cfg.folder();
+    pub fn items_of(&self, inst: InstanceRef) -> Vec<Shortcut> {
+        let folder = inst.folder();
         if folder.is_empty() {
-            return cfg.items();
+            return inst.items();
         }
         let mut cache = self.folder_listings.lock().unwrap_or_else(|e| e.into_inner());
         cache.entry(folder).or_insert_with_key(|f| folder_items(f, MAX_FOLDER_ENTRIES)).clone()
@@ -68,7 +68,7 @@ impl DataSource for Shortcuts {
     }
 
     fn value(&self, cx: &SourceCx) -> Value {
-        shortcuts_value(&self.items_of(cx.cfg), cx.icon_pack)
+        shortcuts_value(&self.items_of(cx.instance()), cx.icon_pack())
     }
 
     fn cadence(&self, _field: &str, _cx: &SourceCx) -> Option<Cadence> {
@@ -76,7 +76,7 @@ impl DataSource for Shortcuts {
     }
 
     fn watched_paths(&self, cx: &super::SourceCx) -> Vec<PathBuf> {
-        let folder = cx.cfg.folder();
+        let folder = cx.instance().folder();
         if folder.is_empty() { vec![] } else { vec![PathBuf::from(folder)] }
     }
 
@@ -103,22 +103,23 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("b.txt"), "").unwrap();
         let src = Shortcuts::default();
-        let mut cfg = InstanceCfg::default();
-        cfg.set_items(&starter_apps());
-        assert_eq!(src.items_of(&cfg).len(), 4, "no folder: the explicit list");
-        let watched = |cfg: &InstanceCfg| {
-            let params = cfg.params_map();
-            src.watched_paths(&SourceCx { cfg, params: &params, tm: crate::data::Tm { year: 2026, month: 1, day: 1, dow: 4, hour: 0, minute: 0, second: 0, ms: 0 }, icon_pack: "Default" })
+        let mut saved = std::collections::BTreeMap::new();
+        saved.insert("items".to_string(), serde_json::Value::Array(starter_apps().iter().map(|s| serde_json::Value::from(&s.to_value())).collect()));
+        let items = |saved: &std::collections::BTreeMap<String, serde_json::Value>| src.items_of(InstanceRef::new("", saved));
+        assert_eq!(items(&saved).len(), 4, "no folder: the explicit list");
+        let watched = |saved: &std::collections::BTreeMap<String, serde_json::Value>| {
+            let params = std::collections::BTreeMap::new();
+            src.watched_paths(&SourceCx::new(InstanceRef::new("", saved), &params, crate::data::Tm::new(2026, 1, 1, 4, 0, 0, 0, 0), "Default"))
         };
-        assert!(watched(&cfg).is_empty());
+        assert!(watched(&saved).is_empty());
 
-        cfg.params.insert("folder".into(), serde_json::Value::String(dir.to_string_lossy().into_owned()));
-        assert_eq!(src.items_of(&cfg).iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["b"]);
-        assert_eq!(watched(&cfg), vec![dir.clone()]);
+        saved.insert("folder".into(), serde_json::Value::String(dir.to_string_lossy().into_owned()));
+        assert_eq!(items(&saved).iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["b"]);
+        assert_eq!(watched(&saved), vec![dir.clone()]);
         std::fs::write(dir.join("a.txt"), "").unwrap();
-        assert_eq!(src.items_of(&cfg).len(), 1, "cached until the watcher says otherwise");
+        assert_eq!(items(&saved).len(), 1, "cached until the watcher says otherwise");
         src.invalidate();
-        assert_eq!(src.items_of(&cfg).iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(items(&saved).iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

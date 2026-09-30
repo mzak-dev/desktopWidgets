@@ -39,7 +39,7 @@ impl DataSource for FixedClock {
         "clock"
     }
     fn value(&self, cx: &SourceCx) -> Value {
-        Clock.value(&SourceCx { cfg: cx.cfg, params: cx.params, tm: TM, icon_pack: cx.icon_pack })
+        Clock.value(&SourceCx::new(cx.instance(), cx.params(), TM, cx.icon_pack()))
     }
     fn cadence(&self, f: &str, cx: &SourceCx) -> Option<Cadence> {
         Clock.cadence(f, cx)
@@ -227,7 +227,7 @@ fn safety_net_widgets() {
             }
             extra.iter().for_each(|(k, v)| cfg.set_param(k, v));
             let params = meta.effective_params(&cfg.params_map());
-            let cx = SourceCx { cfg: &cfg, params: &params, tm: TM, icon_pack: "Default" };
+            let cx = SourceCx::new(cfg.instance(), &params, TM, "Default");
             let read = |n: &str| sources.value(n, &cx);
             let state = BTreeMap::new();
             // the size grid (the tier the size falls in), then each tier at its own size

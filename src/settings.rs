@@ -2908,7 +2908,8 @@ impl UiState {
         let Some(Ok(w)) = ctx.reg.get(&cfg.widget) else { return Err("the definition failed to load".into()) };
         let theme = ctx.ws.theme_for(ctx.lib, cfg);
         let params = w.meta().effective_params(&cfg.params_map());
-        let scx = crate::data::SourceCx { cfg, params: &params, tm: crate::data::now_local(), icon_pack: &cfg.theme.resolve(&ctx.ws.theme).icon_pack };
+        let pack = cfg.theme.resolve(&ctx.ws.theme).icon_pack;
+        let scx = crate::data::SourceCx::new(cfg.instance(), &params, crate::data::now_local(), &pack);
         let read = |n: &str| ctx.data.value(n, &scx);
         let state = std::collections::BTreeMap::new();
         let arrange = crate::format::Arrange { layout, tier, preview: true };

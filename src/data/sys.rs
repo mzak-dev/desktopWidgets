@@ -38,15 +38,15 @@ pub struct Sys {
 }
 
 impl Sys {
-    pub fn sample(&self) -> Value {
+    pub fn sample(&self, now: Instant) -> Value {
         let mut g = self.last.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(s) = g.as_ref().filter(|s| s.at.elapsed() < Duration::from_millis(800)) {
+        if let Some(s) = g.as_ref().filter(|s| now.saturating_duration_since(s.at) < Duration::from_millis(800)) {
             return s.value.clone();
         }
         let prev = g.as_ref().map(|s| s.state.clone()).unwrap_or_default();
         let gpus = self.gpus.lock().unwrap_or_else(|e| e.into_inner()).sample();
-        let (state, value) = sample_sys(prev, gpus);
-        *g = Some(Sampled { at: Instant::now(), state, value: value.clone() });
+        let (state, value) = sample_sys(prev, gpus, now);
+        *g = Some(Sampled { at: now, state, value: value.clone() });
         value
     }
 }
@@ -56,8 +56,8 @@ impl DataSource for Sys {
         "sys"
     }
 
-    fn value(&self, _cx: &SourceCx) -> Value {
-        self.sample()
+    fn value(&self, cx: &SourceCx) -> Value {
+        self.sample(cx.now())
     }
 
     fn cadence(&self, _field: &str, _cx: &SourceCx) -> Option<Cadence> {
@@ -255,7 +255,7 @@ impl Gpus {
     }
 }
 
-fn sample_sys(mut st: State, gpus: Vec<Gpu>) -> (State, Value) {
+fn sample_sys(mut st: State, gpus: Vec<Gpu>, now: Instant) -> (State, Value) {
     use windows::Win32::System::Power::GetSystemPowerStatus;
     use windows::Win32::System::ProcessStatus::EnumProcesses;
     use windows::Win32::System::SystemInformation::{GetTickCount64, GlobalMemoryStatusEx, MEMORYSTATUSEX};
@@ -274,7 +274,7 @@ fn sample_sys(mut st: State, gpus: Vec<Gpu>) -> (State, Value) {
     let drives = drives();
     let (sys_label, disk_used, total) = drives.first().cloned().unwrap_or_else(|| ("C:".into(), 0, 0));
 
-    let (now, net) = (Instant::now(), net_bytes());
+    let net = net_bytes();
     let (down, up) = match (net, st.net) {
         (Some((i, o)), Some((pi, po, at))) => {
             let secs = now.saturating_duration_since(at).as_secs_f64().max(0.1);
@@ -371,7 +371,7 @@ mod tests {
 
     #[test]
     fn sys_gauges_are_percentages_and_uptime_reads_well() {
-        let v = Sys::default().sample();
+        let v = Sys::default().sample(Instant::now());
         let Some(Value::List(g)) = v.get("gauges") else { panic!("no gauges") };
         assert!(g.len() >= 3, "cpu, ram and disk are always there");
         for x in g {
@@ -380,14 +380,14 @@ mod tests {
         }
         assert_eq!(uptime_text(3 * 86_400_000 + 4 * 3_600_000), "3d 4h");
         assert_eq!(uptime_text(5 * 60_000), "0h 5m");
-        let (cfg, params) = (crate::workspace::InstanceCfg::default(), std::collections::BTreeMap::new());
-        let cx = SourceCx { cfg: &cfg, params: &params, tm: crate::data::now_local(), icon_pack: "Default" };
+        let (cfg, params) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new());
+        let cx = SourceCx::new(crate::data::InstanceRef::new("", &cfg), &params, crate::data::now_local(), "Default");
         assert_eq!(Sys::default().cadence("gauges", &cx), Some(Cadence::Second));
     }
 
     #[test]
     fn the_big_monitor_gets_every_drive_commit_network_and_history() {
-        let v = Sys::default().sample();
+        let v = Sys::default().sample(Instant::now());
         let Some(Value::List(all)) = v.get("gauges_all") else { panic!("no gauges_all") };
         let ids: Vec<String> = all.iter().map(|g| g.get("id").unwrap().to_string()).collect();
         let rest: Vec<_> = ids.iter().filter(|i| !i.contains("gpu")).cloned().collect(); // GPUs sit after RAM, however many
@@ -402,9 +402,9 @@ mod tests {
     #[test]
     fn gpu_adapters_are_percentages_with_history() {
         let sys = Sys::default();
-        sys.sample();
+        sys.sample(Instant::now());
         std::thread::sleep(Duration::from_millis(900)); // past the sample cache
-        let v = sys.sample(); // the counters need two samples
+        let v = sys.sample(Instant::now()); // the counters need two samples
         let n = v.get("gpu_count").and_then(|v| v.as_f64()).unwrap() as usize;
         let Some(Value::List(cards)) = v.get("gpus") else { panic!("no gpus") };
         assert_eq!(cards.len(), n);

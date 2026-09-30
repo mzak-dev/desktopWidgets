@@ -228,10 +228,10 @@ impl DataSource for Audio {
     }
 
     fn value(&self, cx: &SourceCx) -> Value {
-        let now = Instant::now();
-        self.reads.lock().unwrap().insert(cx.cfg.id.clone(), now);
+        let now = cx.now();
+        self.reads.lock().unwrap().insert(cx.instance().id().to_string(), now);
         self.ensure_capture();
-        let s = Settings::from_params(cx.params);
+        let s = Settings::from_params(cx.params());
         let (active, samples, rate) = {
             let r = self.ring.lock().unwrap();
             (r.active(now), r.samples.iter().copied().collect::<Vec<f32>>(), r.rate)
@@ -245,15 +245,15 @@ impl DataSource for Audio {
             (vec![0.0; s.bands], 0.0, 0.0)
         };
         let mut looks = self.looks.lock().unwrap();
-        let look = looks.entry(cx.cfg.id.clone()).or_insert_with(Look::new);
+        let look = looks.entry(cx.instance().id().to_string()).or_insert_with(Look::new);
         look.step(&target, level, bass, now, &s);
         look.value(active)
     }
 
     /// While sound plays, and until a widget's bars have fallen to rest after it stops.
     fn cadence(&self, _field: &str, cx: &SourceCx) -> Option<Cadence> {
-        let active = self.ring.lock().unwrap().active(Instant::now());
-        let moving = self.looks.lock().unwrap().get(&cx.cfg.id).is_some_and(|l| !l.settled());
+        let active = self.ring.lock().unwrap().active(cx.now());
+        let moving = self.looks.lock().unwrap().get(cx.instance().id()).is_some_and(|l| !l.settled());
         (active || moving).then_some(Cadence::Millis(FRAME_MS))
     }
 

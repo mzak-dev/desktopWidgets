@@ -106,7 +106,7 @@ fn main() {
     if tiers {
         // a few seconds of samples, so the monitor's graphs have a history to draw
         let (cfg, params) = (InstanceCfg::default(), BTreeMap::new());
-        let cx = SourceCx { cfg: &cfg, params: &params, tm, icon_pack: "Default" };
+        let cx = SourceCx::new(cfg.instance(), &params, tm, "Default");
         for _ in 0..8 {
             sources.value("sys", &cx);
             std::thread::sleep(Duration::from_millis(850));

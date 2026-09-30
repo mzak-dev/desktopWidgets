@@ -196,11 +196,11 @@ impl DataSource for Media {
         "media"
     }
 
-    fn value(&self, _cx: &SourceCx) -> Value {
+    fn value(&self, cx: &SourceCx) -> Value {
         if self.worker.lock().unwrap().is_none() {
             self.send(Msg::Session);
         }
-        self.track.lock().unwrap().value(Instant::now())
+        self.track.lock().unwrap().value(cx.now())
     }
 
     fn cadence(&self, field: &str, _cx: &SourceCx) -> Option<Cadence> {
@@ -474,8 +474,8 @@ mod tests {
         // a channel of its own, so the test never seeks what is really playing
         let (tx, rx) = mpsc::channel();
         *m.worker.lock().unwrap() = Some(tx);
-        let (cfg, params) = (crate::workspace::InstanceCfg::default(), BTreeMap::new());
-        let cx = SourceCx { cfg: &cfg, params: &params, tm: super::super::now_local(), icon_pack: "Default" };
+        let (cfg, params) = (BTreeMap::new(), BTreeMap::new());
+        let cx = SourceCx::new(super::super::InstanceRef::new("", &cfg), &params, super::super::now_local(), "Default");
         assert!(m.act("seek", "0.5", &cx));
         assert!(matches!(rx.try_recv(), Ok(Msg::Seek(f)) if f == 0.5));
         assert!(m.act("seek", "7", &cx) && matches!(rx.try_recv(), Ok(Msg::Seek(f)) if f == 1.0), "clamped to the end");
@@ -495,10 +495,23 @@ mod tests {
     }
 
     #[test]
+    fn a_source_reads_the_now_it_is_given() {
+        let m = Media::new(std::env::temp_dir());
+        let (tx, _rx) = mpsc::channel();
+        *m.worker.lock().unwrap() = Some(tx);
+        let t0 = Instant::now();
+        *m.track.lock().unwrap() = playing(60.0, t0);
+        let (saved, params) = (BTreeMap::new(), BTreeMap::new());
+        let at = |now| m.value(&SourceCx::new(super::super::InstanceRef::new("", &saved), &params, super::super::now_local(), "Default").with_now(now)).get("position").cloned();
+        assert_eq!(at(t0), Some(Value::Num(60.0)));
+        assert_eq!(at(t0 + Duration::from_secs(2)), Some(Value::Num(62.0)), "the injected now, not the wall clock");
+    }
+
+    #[test]
     fn it_ticks_only_while_playing() {
         let m = Media::new(std::env::temp_dir());
-        let (cfg, params) = (crate::workspace::InstanceCfg::default(), BTreeMap::new());
-        let cx = SourceCx { cfg: &cfg, params: &params, tm: super::super::now_local(), icon_pack: "Default" };
+        let (cfg, params) = (BTreeMap::new(), BTreeMap::new());
+        let cx = SourceCx::new(super::super::InstanceRef::new("", &cfg), &params, super::super::now_local(), "Default");
         assert_eq!(m.cadence("position", &cx), None, "paused or nothing playing");
         *m.track.lock().unwrap() = playing(0.0, Instant::now());
         assert_eq!((m.cadence("progress", &cx), m.cadence("title", &cx)), (Some(Cadence::Second), None));

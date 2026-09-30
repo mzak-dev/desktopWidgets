@@ -109,7 +109,7 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
         Ok(w) => w.meta().effective_params(&v.cfg.params_map()),
         Err(_) => v.cfg.params_map(),
     };
-    let cx = SourceCx { cfg: v.cfg, params: &params, tm: v.tm, icon_pack: v.icon_pack };
+    let cx = SourceCx::new(v.cfg.instance(), &params, v.tm, v.icon_pack);
     let sources = sv.sources;
     let read = |name: &str| sources.value(name, &cx);
     let mut icons_uploaded = false;

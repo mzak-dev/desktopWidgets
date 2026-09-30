@@ -61,7 +61,7 @@ fn every_builtin_fits_every_size_it_allows() {
             let params = meta.effective_params(&cfg.params_map());
             for (size_name, size) in &sizes {
                 let case = format!("{id} at {size_name} {size:?}, {variant}");
-                let cx = SourceCx { cfg: &cfg, params: &params, tm, icon_pack: "Default" };
+                let cx = SourceCx::new(cfg.instance(), &params, tm, "Default");
                 let read = |n: &str| sources.value(n, &cx);
                 let state = BTreeMap::new();
                 let inp = Inputs { params: &params, state: &state, card_size: *size, key_prefix: &cfg.id, read_source: &read, arrange: None };
@@ -113,7 +113,7 @@ fn texts_at(id: &str, size: (f32, f32)) -> Vec<String> {
     let params = w.meta().effective_params(&cfg.params_map());
     let sources = DataSources::builtin();
     let tm = Tm { year: 2026, month: 9, day: 23, dow: 3, hour: 12, minute: 0, second: 0, ms: 0 };
-    let cx = SourceCx { cfg: &cfg, params: &params, tm, icon_pack: "Default" };
+    let cx = SourceCx::new(cfg.instance(), &params, tm, "Default");
     let read = |n: &str| sources.value(n, &cx);
     let state = BTreeMap::new();
     let inp = Inputs { params: &params, state: &state, card_size: size, key_prefix: "t", read_source: &read, arrange: None };

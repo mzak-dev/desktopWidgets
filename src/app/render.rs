@@ -70,7 +70,7 @@ impl App {
             Ok(w) => w.meta().effective_params(&cfg.params_map()),
             Err(_) => cfg.params_map(),
         };
-        let cx = data::SourceCx { cfg, params: &params, tm, icon_pack: &pack };
+        let cx = data::SourceCx::new(cfg.instance(), &params, tm, &pack);
         let continuous = sources.needs_every_frame(&p.deps, &cx);
         // a playing GIF wakes at its own frame rate, never every display frame
         let frame_due = gpu.animation_delay(&p.frame.list).map(|d| now + d);
