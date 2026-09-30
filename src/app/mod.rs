@@ -39,11 +39,13 @@ use crate::code::store::KvStore;
 use crate::code::{CodeSources, Deps, WasmSource};
 use crate::content::{Catalog, Root};
 use crate::data::{self, DataSources};
+use crate::dialog::WinNative;
 use crate::draw::DrawList;
 use crate::edit::{self, Handle, Rect, Snap};
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::ImageStore;
 use crate::platform::win32::{self, ZMode};
+use crate::native::Prompt;
 use crate::plugins::{self, Plugin, PluginRow, PluginStore};
 use crate::settings::{self, Cmd, Scope, SettingsWin};
 use crate::text::TextEngine;
@@ -136,7 +138,7 @@ pub fn run(mut opts: Options) {
     let running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
     let installing = opts.install.take();
     if let Some(file) = &installing {
-        let installed = install_from_explorer(&opts.dir, file, running);
+        let installed = install_from_explorer(&opts.dir, file, running, &mut WinNative::default());
         if running || !installed {
             return; // a running copy reloads by itself
         }
@@ -773,7 +775,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.init_hotkey();
         if self.ws.instances.is_empty() {
             let card = self.new_card();
-            let mut host = AppHost::new(&self.opts.dir, None);
+            let mut native = WinNative::default();
+            let mut host = AppHost::new(&self.opts.dir, &mut native);
             self.ws.instances = default_instances(&self.monitors, &self.reg, card, &mut host);
             for l in host.into_logs() {
                 self.log(l);

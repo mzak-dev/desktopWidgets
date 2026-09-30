@@ -20,6 +20,7 @@ pub mod icons;
 pub mod images;
 pub mod meta;
 pub mod monitor;
+pub mod native;
 pub mod net;
 pub mod platform;
 pub mod plugins;

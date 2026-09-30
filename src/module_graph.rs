@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 /// Target layers (research/07-cycle-breaking.md): a module may import only modules on a
 /// lower or equal layer.
 const LAYERS: &[(&str, u8)] = &[
-    ("anim", 0), ("color", 0), ("dialog", 0), ("draw", 0), ("images", 0), ("monitor", 0), ("net", 0), ("suggest", 0), ("textspec", 0), ("value", 0),
+    ("anim", 0), ("color", 0), ("dialog", 0), ("draw", 0), ("images", 0), ("monitor", 0), ("native", 0), ("net", 0), ("suggest", 0), ("textspec", 0), ("value", 0),
     ("ambient", 1), ("expr", 1), ("meta", 1), ("platform", 1), ("shortcut", 1), ("text", 1), ("thumbs", 1),
     ("data", 2), ("gfx", 2), ("theme", 2),
     ("code", 3), ("elements", 3), ("icons", 3), ("workspace", 3),

@@ -109,7 +109,7 @@ fn main() {
         let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources, calendar: &wayfinder::ambient::FixedCalendar::default() };
         let mut ui = UiState::default();
         for a in acts {
-            let _ = ui.act(a, &ctx, None);
+            let _ = ui.act(a, &ctx, &mut wayfinder::native::Headless);
         }
         if name.ends_with("_large") {
             ui.scroll.insert("w/scroll-r".into(), 330.0); // down to the tray

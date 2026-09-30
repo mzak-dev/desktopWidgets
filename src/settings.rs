@@ -18,7 +18,8 @@ use winit::window::{CursorIcon, Window, WindowAttributes};
 use crate::anim::{Anim, Ease};
 use crate::color::{Color, TRANSPARENT};
 use crate::data::Shortcut;
-use crate::dialog;
+use crate::dialog::WinNative;
+use crate::native::{Native, Pick};
 use crate::draw::{Inst, KIND_ARC, KIND_CAPSULE, KIND_RECT};
 use crate::elements::{Shape, ShapeCx, rgba_with_opacity};
 use crate::gfx::{Gpu, Power, RenderError, Target};
@@ -2495,8 +2496,8 @@ impl UiState {
         vec![]
     }
 
-    /// `hwnd` parents native dialogs.
-    pub fn act(&mut self, a: &str, ctx: &Ctx, hwnd: Option<windows::Win32::Foundation::HWND>) -> Vec<Cmd> {
+    /// `native` asks the user for files, folders and clipboard text.
+    pub fn act(&mut self, a: &str, ctx: &Ctx, native: &mut dyn Native) -> Vec<Cmd> {
         let (verb, rest) = a.split_once(':').unwrap_or((a, ""));
         if verb != "del" && verb != "prm" {
             self.confirm_del = None;
@@ -2610,22 +2611,22 @@ impl UiState {
             }
             "folder" => {
                 let Some((id, name)) = rest.split_once('|') else { return vec![] };
-                match dialog::pick_folder(hwnd) {
+                match native.pick(Pick::Folder) {
                     Some(p) => vec![Cmd::Param(id.into(), name.into(), Value::Str(p.to_string_lossy().into_owned()))],
                     None => vec![],
                 }
             }
             "file" => {
                 let Some((id, name)) = rest.split_once('|') else { return vec![] };
-                let types = [("Images and GIFs", "*.gif;*.png;*.jpg;*.jpeg;*.webp;*.bmp"), ("All files", "*.*")];
-                match dialog::pick_file_of(hwnd, &types) {
+                const TYPES: &[(&str, &str)] = &[("Images and GIFs", "*.gif;*.png;*.jpg;*.jpeg;*.webp;*.bmp"), ("All files", "*.*")];
+                match native.pick(Pick::Filtered(TYPES)) {
                     Some(p) => vec![Cmd::Param(id.into(), name.into(), Value::Str(p.to_string_lossy().into_owned()))],
                     None => vec![],
                 }
             }
             "clear" => rest.split_once('|').map(|(id, name)| vec![Cmd::Param(id.into(), name.into(), Value::Str(String::new()))]).unwrap_or_default(),
             "scadd" => {
-                let Some(p) = dialog::pick_file(hwnd) else { return vec![] };
+                let Some(p) = native.pick(Pick::File) else { return vec![] };
                 let mut items = Self::instance(ctx, rest).map(|c| c.items()).unwrap_or_default();
                 let target = p.to_string_lossy().into_owned();
                 items.push(Shortcut { name: crate::data::file_stem(&target), target, icon: String::new() });
@@ -2633,7 +2634,7 @@ impl UiState {
             }
             "scbrowse" => {
                 let Some((id, idx)) = rest.split_once('|') else { return vec![] };
-                let Some(p) = dialog::pick_file(hwnd) else { return vec![] };
+                let Some(p) = native.pick(Pick::File) else { return vec![] };
                 let mut items = Self::instance(ctx, id).map(|c| c.items()).unwrap_or_default();
                 if let Some(it) = items.get_mut(idx.parse::<usize>().unwrap_or(usize::MAX)) {
                     it.target = p.to_string_lossy().into_owned();
@@ -2687,7 +2688,7 @@ impl UiState {
                 }
             }
             "pfolder" => vec![Cmd::OpenPluginsFolder],
-            "pinstall" => dialog::pick_file_of(hwnd, &[("Wayfinder plugin", "*.wfplugin;*.zip")]).map(|p| vec![Cmd::InstallPlugin(p)]).unwrap_or_default(),
+            "pinstall" => native.pick(Pick::Filtered(&[("Wayfinder plugin", "*.wfplugin;*.zip")])).map(|p| vec![Cmd::InstallPlugin(p)]).unwrap_or_default(),
             "openfolder" => vec![Cmd::OpenFolder],
             "claimfiles" => vec![Cmd::ClaimPluginFiles],
             "reload" => vec![Cmd::Reload],
@@ -2708,7 +2709,7 @@ impl UiState {
             }
             "logcopy" => {
                 let lines: Vec<String> = self.log_rows(ctx).iter().map(|l| format!("{} {:<7} {:<8} {}", l.time, l.level.label(), l.source, l.text)).collect();
-                dialog::set_clipboard_text(&lines.join("\r\n"));
+                native.set_clipboard(&lines.join("\r\n"));
                 vec![]
             }
             "openlog" => vec![Cmd::OpenData("wayfinder.log")],
@@ -2755,7 +2756,7 @@ impl UiState {
         Self::slider_cmd(target, v).into_iter().collect()
     }
 
-    pub fn on_key(&mut self, key: &Key, text: Option<&str>, ctx: &Ctx) -> Vec<Cmd> {
+    pub fn on_key(&mut self, key: &Key, text: Option<&str>, ctx: &Ctx, native: &mut dyn Native) -> Vec<Cmd> {
         let ctrl = self.mods.control_key();
         if self.searching() && matches!(key, Key::Named(NamedKey::Enter | NamedKey::Escape)) {
             // Enter takes the first match, Escape closes the list
@@ -2764,7 +2765,7 @@ impl UiState {
                 _ => None,
             };
             self.close_popup();
-            return first.map(|a| self.act(&a, ctx, None)).unwrap_or_default();
+            return first.map(|a| self.act(&a, ctx, native)).unwrap_or_default();
         }
         let Some(f) = self.focus.as_mut() else {
             if matches!(key, Key::Named(NamedKey::Escape)) {
@@ -2805,18 +2806,18 @@ impl UiState {
                 changed = false;
             }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("v") => {
-                if let Some(t) = dialog::clipboard_text() {
+                if let Some(t) = native.clipboard() {
                     f.caret = insert_at(&mut f.text, f.caret, &t);
                 } else {
                     changed = false;
                 }
             }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("c") => {
-                dialog::set_clipboard_text(&f.text);
+                native.set_clipboard(&f.text);
                 changed = false;
             }
             Key::Character(c) if ctrl && c.eq_ignore_ascii_case("x") => {
-                dialog::set_clipboard_text(&f.text);
+                native.set_clipboard(&f.text);
                 f.text.clear();
                 f.caret = 0;
             }
@@ -3268,8 +3269,9 @@ impl SettingsWin {
         self.window.scale_factor()
     }
 
-    fn hwnd(&self) -> Option<windows::Win32::Foundation::HWND> {
-        crate::platform::win32::hwnd_of(&self.window)
+    /// The real pickers and clipboard, parented to this window.
+    fn native(&self) -> WinNative {
+        WinNative::new(crate::platform::win32::hwnd_of(&self.window))
     }
 
     fn logical(&self, p: PhysicalPosition<f64>) -> (f32, f32) {
@@ -3293,7 +3295,8 @@ impl SettingsWin {
             }
             "cpsv" | "cph" => {
                 self.drag = Some(action.split(':').next().unwrap_or("").to_string());
-                self.ui.act(action, ctx, self.hwnd())
+                let mut native = self.native();
+                self.ui.act(action, ctx, &mut native)
             }
             "mod" => {
                 self.ui.mod_press(action.strip_prefix("mod:").unwrap_or(""), self.mouse);
@@ -3307,8 +3310,8 @@ impl SettingsWin {
                 vec![]
             }
             _ => {
-                let hwnd = self.hwnd();
-                self.ui.act(action, ctx, hwnd)
+                let mut native = self.native();
+                self.ui.act(action, ctx, &mut native)
             }
         }
     }
@@ -3351,7 +3354,7 @@ impl SettingsWin {
                         Some(a) if a.starts_with("sl:") => cmds.extend(self.slide_now(a, ctx)),
                         Some("cpsv" | "cph") => {
                             if let Some(a) = action.filter(|a| a.starts_with("cpsv:") || a.starts_with("cph:")) {
-                                cmds.extend(self.ui.act(&a, ctx, None));
+                                cmds.extend(self.ui.act(&a, ctx, &mut self.native()));
                             }
                         }
                         _ => {}
@@ -3385,7 +3388,7 @@ impl SettingsWin {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                cmds.extend(self.ui.on_key(&event.logical_key, event.text.as_deref(), ctx));
+                cmds.extend(self.ui.on_key(&event.logical_key, event.text.as_deref(), ctx, &mut self.native()));
                 self.redraw = true;
             }
             WindowEvent::HoveredFile(_) => {
@@ -3458,6 +3461,7 @@ impl SettingsWin {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native::{Headless, Scripted};
     use crate::theme::{Library, Selection};
     use crate::workspace::{InstanceCfg, MonitorRef};
     use std::path::Path;
@@ -3507,7 +3511,7 @@ mod tests {
         let other = FileOwner::Other("C:\\Apps\\wayfinder.exe".into());
         let theirs = ui.build(&Ctx { plugin_files: &other, ..ctx(&w) }, WIN).0;
         assert!(has(&theirs, "gn/pf/b"), "another build has them: offer to switch");
-        assert_eq!(ui.act("claimfiles", &ctx(&w), None), [Cmd::ClaimPluginFiles]);
+        assert_eq!(ui.act("claimfiles", &ctx(&w), &mut Headless), [Cmd::ClaimPluginFiles]);
     }
 
     #[test]
@@ -3615,7 +3619,7 @@ mod tests {
         w.ws.instances.push(cfg);
         let mut ui = UiState::default();
         ui.selected = Some("system_monitor-1".into());
-        ui.act("tier:normal", &ctx(&w), None);
+        ui.act("tier:normal", &ctx(&w), &mut Headless);
         let (root, _) = ui.build(&ctx(&w), WIN);
         let tile = find_node(&root, "ip/system_monitor-1/tray/gauge:cpu").expect("the CPU gauge has a tile");
         assert_eq!(tile.action.as_deref(), Some("mod:gauge:cpu"), "the tile drags it back");
@@ -3645,19 +3649,19 @@ mod tests {
         let c = Ctx { fonts: &fonts, ..ctx(&w) };
         let mut ui = UiState::default();
         ui.scroll.insert("s/ov/list".into(), 5000.0); // left by another, longer list
-        ui.act("dd:p:drawer-1:font_header", &c, None);
+        ui.act("dd:p:drawer-1:font_header", &c, &mut Headless);
         assert!(ui.scroll_of("s/ov/list") < 600.0, "opens on its own items, not scrolled past them");
         assert!(ui.wants_caret(), "the search takes the typing");
         for ch in ["c", "a", "m"] {
-            assert!(ui.on_key(&Key::Character(ch.into()), Some(ch), &c).is_empty());
+            assert!(ui.on_key(&Key::Character(ch.into()), Some(ch), &c, &mut Headless).is_empty());
         }
         assert_eq!(ui.dropdown_shown(&c, "p:drawer-1:font_header").iter().map(|(v, _)| v.as_str()).collect::<Vec<_>>(), ["Cambria"]);
         let mut shown = Vec::new();
         texts(&ui.build(&c, WIN).0, &mut shown);
         assert!(shown.iter().any(|t| t == "Cambria") && !shown.iter().any(|t| t == "Arial"), "{shown:?}");
-        assert_eq!(ui.on_key(&Key::Named(NamedKey::Enter), None, &c), [Cmd::Param("drawer-1".into(), "font_header".into(), Value::Str("Cambria".into()))]);
+        assert_eq!(ui.on_key(&Key::Named(NamedKey::Enter), None, &c, &mut Headless), [Cmd::Param("drawer-1".into(), "font_header".into(), Value::Str("Cambria".into()))]);
         assert!(!ui.has_popup() && !ui.wants_caret());
-        ui.act("dd:p:drawer-1:toggle", &c, None);
+        ui.act("dd:p:drawer-1:toggle", &c, &mut Headless);
         assert!(!ui.wants_caret(), "two choices need no search");
     }
 
@@ -3687,27 +3691,27 @@ mod tests {
         ui.selected = Some("system_monitor-1".into());
         let f = monitor_frame(&mut ui, &w, WIN);
         assert!(f.rect_of("z:system_monitor-1").is_none(), "Layer is under Advanced");
-        assert!(ui.act("adv:toggle", &c, None).is_empty() && ui.advanced);
-        assert!(ui.act("tier:large", &c, None).is_empty());
+        assert!(ui.act("adv:toggle", &c, &mut Headless).is_empty() && ui.advanced);
+        assert!(ui.act("tier:large", &c, &mut Headless).is_empty());
         monitor_frame(&mut ui, &w, WIN);
         assert_eq!(ui.preview_arr.borrow().as_ref().map(|a| a.tier.clone()).as_deref(), Some("large"));
-        assert_eq!(ui.act("layreset:system_monitor-1|large", &c, None), vec![Cmd::Layout("system_monitor-1".into(), "large".into(), None)]);
+        assert_eq!(ui.act("layreset:system_monitor-1|large", &c, &mut Headless), vec![Cmd::Layout("system_monitor-1".into(), "large".into(), None)]);
     }
 
     #[test]
     fn general_offers_a_restart_for_the_adapter_choice() {
         let w = world();
-        assert_eq!(UiState::default().act("restart", &ctx(&w), None), vec![Cmd::Restart]);
+        assert_eq!(UiState::default().act("restart", &ctx(&w), &mut Headless), vec![Cmd::Restart]);
     }
 
     #[test]
     fn size_limit_toggles_per_widget() {
         let mut w = world();
         let c = ctx(&w);
-        assert_eq!(UiState::default().act("lim:clock-1", &c, None), vec![Cmd::SizeLimit("clock-1".into(), false)]);
+        assert_eq!(UiState::default().act("lim:clock-1", &c, &mut Headless), vec![Cmd::SizeLimit("clock-1".into(), false)]);
         w.ws.instances[0].size_limit = false;
         let c = ctx(&w);
-        assert_eq!(UiState::default().act("lim:clock-1", &c, None), vec![Cmd::SizeLimit("clock-1".into(), true)]);
+        assert_eq!(UiState::default().act("lim:clock-1", &c, &mut Headless), vec![Cmd::SizeLimit("clock-1".into(), true)]);
     }
 
     #[test]
@@ -3718,8 +3722,8 @@ mod tests {
         let items = ui.dropdown_items(&c, "tp:clock-1:palette");
         assert_eq!(items[0], (String::new(), "Global (Midnight)".to_string()));
         assert_eq!(ui.dropdown_label(&c, "tp:clock-1:palette"), "Global (Midnight)");
-        assert_eq!(ui.act("pick:tp:clock-1:palette|Daylight", &c, None), vec![Cmd::ThemePick("clock-1".into(), "palette".into(), Some("Daylight".into()))]);
-        assert_eq!(ui.act("pick:tp:clock-1:palette|", &c, None), vec![Cmd::ThemePick("clock-1".into(), "palette".into(), None)]);
+        assert_eq!(ui.act("pick:tp:clock-1:palette|Daylight", &c, &mut Headless), vec![Cmd::ThemePick("clock-1".into(), "palette".into(), Some("Daylight".into()))]);
+        assert_eq!(ui.act("pick:tp:clock-1:palette|", &c, &mut Headless), vec![Cmd::ThemePick("clock-1".into(), "palette".into(), None)]);
     }
 
     #[test]
@@ -3728,7 +3732,7 @@ mod tests {
         w.ws.instances[0].style.insert("blur".into(), serde_json::json!(true));
         w.ws.instances[0].theme.palette = Some("Daylight".into());
         let c = ctx(&w);
-        let cmds = UiState::default().act("syreset:clock-1|*", &c, None);
+        let cmds = UiState::default().act("syreset:clock-1|*", &c, &mut Headless);
         assert_eq!(cmds, vec![Cmd::Style(Scope::Instance("clock-1".into()), "blur".into(), None), Cmd::ThemePick("clock-1".into(), "palette".into(), None)]);
     }
 
@@ -3738,12 +3742,12 @@ mod tests {
         w.ws.style.insert("blur".into(), serde_json::json!(true));
         let c = ctx(&w);
         let mut ui = UiState::default();
-        assert_eq!(ui.act("sy:*|outlines", &c, None), vec![Cmd::Style(Scope::Global, "outlines".into(), Some(Value::Bool(false)))]);
-        assert_eq!(ui.act("sy:clock-1|blur", &c, None), vec![Cmd::Style(Scope::Instance("clock-1".into()), "blur".into(), Some(Value::Bool(false)))], "the instance starts from the inherited global value");
-        assert_eq!(ui.act("syreset:*|blur", &c, None), vec![Cmd::Style(Scope::Global, "blur".into(), None)]);
-        assert_eq!(ui.act("syreset:*|*", &c, None), vec![Cmd::Style(Scope::Global, "blur".into(), None)], "reset all resets what is set");
+        assert_eq!(ui.act("sy:*|outlines", &c, &mut Headless), vec![Cmd::Style(Scope::Global, "outlines".into(), Some(Value::Bool(false)))]);
+        assert_eq!(ui.act("sy:clock-1|blur", &c, &mut Headless), vec![Cmd::Style(Scope::Instance("clock-1".into()), "blur".into(), Some(Value::Bool(false)))], "the instance starts from the inherited global value");
+        assert_eq!(ui.act("syreset:*|blur", &c, &mut Headless), vec![Cmd::Style(Scope::Global, "blur".into(), None)]);
+        assert_eq!(ui.act("syreset:*|*", &c, &mut Headless), vec![Cmd::Style(Scope::Global, "blur".into(), None)], "reset all resets what is set");
         assert_eq!(ui.dropdown_items(&c, "sy:*:anim-speed")[0], ("off".to_string(), "Off".to_string()));
-        assert_eq!(ui.act("pick:sy:*:anim-speed|off", &c, None), vec![Cmd::Style(Scope::Global, "anim-speed".into(), Some(Value::Str("off".into())))]);
+        assert_eq!(ui.act("pick:sy:*:anim-speed|off", &c, &mut Headless), vec![Cmd::Style(Scope::Global, "anim-speed".into(), Some(Value::Str("off".into())))]);
     }
 
     #[test]
@@ -3773,14 +3777,14 @@ mod tests {
         let c = ctx(&w);
         let mut ui = UiState::default();
         // a bool param toggles from its default (ticks defaults to true)
-        assert_eq!(ui.act("tog:clock-1|ticks", &c, None), vec![Cmd::Param("clock-1".into(), "ticks".into(), Value::Bool(false))]);
-        assert_eq!(ui.act("z:x", &c, None), vec![]);
-        assert_eq!(ui.act("pick:z:clock-1|topmost", &c, None), vec![Cmd::Z("clock-1".into(), "topmost".into())]);
-        assert_eq!(ui.act("pick:gpu|high", &c, None), vec![Cmd::Gpu("high".into())]);
-        let t = ui.act("pick:th:palette|Daylight", &c, None);
+        assert_eq!(ui.act("tog:clock-1|ticks", &c, &mut Headless), vec![Cmd::Param("clock-1".into(), "ticks".into(), Value::Bool(false))]);
+        assert_eq!(ui.act("z:x", &c, &mut Headless), vec![]);
+        assert_eq!(ui.act("pick:z:clock-1|topmost", &c, &mut Headless), vec![Cmd::Z("clock-1".into(), "topmost".into())]);
+        assert_eq!(ui.act("pick:gpu|high", &c, &mut Headless), vec![Cmd::Gpu("high".into())]);
+        let t = ui.act("pick:th:palette|Daylight", &c, &mut Headless);
         assert!(matches!(&t[0], Cmd::Theme(s) if s.palette == "Daylight" && s.fonts == "System"));
-        assert_eq!(ui.act("edit:toggle", &c, None), vec![Cmd::Edit(true)]);
-        assert_eq!(ui.act("nav:appearance", &c, None), vec![]);
+        assert_eq!(ui.act("edit:toggle", &c, &mut Headless), vec![Cmd::Edit(true)]);
+        assert_eq!(ui.act("nav:appearance", &c, &mut Headless), vec![]);
         assert_eq!(ui.page, Page::Appearance);
     }
 
@@ -3789,10 +3793,10 @@ mod tests {
         let w = world();
         let c = ctx(&w);
         let mut ui = UiState::default();
-        assert_eq!(ui.act("del:clock-1", &c, None), vec![], "first click only arms the confirmation");
-        assert_eq!(ui.act("sel:icon_folder-1", &c, None), vec![], "clicking elsewhere disarms it");
-        assert_eq!(ui.act("del:clock-1", &c, None), vec![]);
-        assert_eq!(ui.act("del:clock-1", &c, None), vec![Cmd::Remove("clock-1".into())]);
+        assert_eq!(ui.act("del:clock-1", &c, &mut Headless), vec![], "first click only arms the confirmation");
+        assert_eq!(ui.act("sel:icon_folder-1", &c, &mut Headless), vec![], "clicking elsewhere disarms it");
+        assert_eq!(ui.act("del:clock-1", &c, &mut Headless), vec![]);
+        assert_eq!(ui.act("del:clock-1", &c, &mut Headless), vec![Cmd::Remove("clock-1".into())]);
     }
 
     #[test]
@@ -3803,11 +3807,11 @@ mod tests {
         ui.focus_input(&c, "sn:icon_folder-1:1", None);
         assert_eq!(ui.input_text(&c, "sn:icon_folder-1:1"), "B");
         ui.mods = ModifiersState::empty();
-        let cmds = ui.on_key(&Key::Character("z".into()), Some("z"), &c);
+        let cmds = ui.on_key(&Key::Character("z".into()), Some("z"), &c, &mut Headless);
         let Cmd::Items(id, items) = &cmds[0] else { panic!("{cmds:?}") };
         assert_eq!((id.as_str(), items[0].name.as_str(), items[1].name.as_str()), ("icon_folder-1", "A", "Bz"), "row 1 changed, row 0 untouched");
         // deleting a row
-        assert!(matches!(&ui.act("scdel:icon_folder-1|0", &c, None)[0], Cmd::Items(_, i) if i.len() == 1 && i[0].name == "B"));
+        assert!(matches!(&ui.act("scdel:icon_folder-1|0", &c, &mut Headless)[0], Cmd::Items(_, i) if i.len() == 1 && i[0].name == "B"));
     }
 
     #[test]
@@ -3818,12 +3822,12 @@ mod tests {
         ui.focus_input(&c, "hx:sy:*:accent", Some(0));
         // typing into a field that already holds a colour stays invalid until it parses
         ui.focus.as_mut().unwrap().text = String::new();
-        assert_eq!(ui.on_key(&Key::Character("z".into()), Some("z"), &c), vec![], "'z' is not a hex digit");
+        assert_eq!(ui.on_key(&Key::Character("z".into()), Some("z"), &c, &mut Headless), vec![], "'z' is not a hex digit");
         ui.focus.as_mut().unwrap().text = "ff8800".into();
         ui.focus.as_mut().unwrap().caret = 6;
-        let cmds = ui.on_key(&Key::Named(NamedKey::Backspace), None, &c);
+        let cmds = ui.on_key(&Key::Named(NamedKey::Backspace), None, &c, &mut Headless);
         assert_eq!(cmds, vec![], "ff880 is five digits: invalid");
-        let cmds = ui.on_key(&Key::Character("0".into()), Some("0"), &c);
+        let cmds = ui.on_key(&Key::Character("0".into()), Some("0"), &c, &mut Headless);
         assert_eq!(cmds, vec![Cmd::Style(Scope::Global, "accent".into(), Some(Value::Str("#ff8800".into())))]);
     }
 
@@ -3832,12 +3836,12 @@ mod tests {
         let w = world();
         let c = ctx(&w);
         let mut ui = UiState::default();
-        ui.act("cp:sy:clock-1:accent", &c, None);
-        let cmds = ui.act(&format!("cpsv:{}:0", SV_N - 1), &c, None); // full saturation, full value
+        ui.act("cp:sy:clock-1:accent", &c, &mut Headless);
+        let cmds = ui.act(&format!("cpsv:{}:0", SV_N - 1), &c, &mut Headless); // full saturation, full value
         let Cmd::Style(Scope::Instance(id), name, Some(Value::Str(hex))) = &cmds[0] else { panic!("{cmds:?}") };
         assert_eq!((id.as_str(), name.as_str()), ("clock-1", "accent"));
         assert!(Color::parse(hex).is_some());
-        assert_eq!(ui.act("cpset:#00ff00", &c, None), vec![Cmd::Style(Scope::Instance("clock-1".into()), "accent".into(), Some(Value::Str("#00ff00".into())))]);
+        assert_eq!(ui.act("cpset:#00ff00", &c, &mut Headless), vec![Cmd::Style(Scope::Instance("clock-1".into()), "accent".into(), Some(Value::Str("#00ff00".into())))]);
     }
 
     fn texts(n: &Node, out: &mut Vec<String>) {
@@ -3853,18 +3857,18 @@ mod tests {
         w.ws.instances.push(InstanceCfg { id: "weather-1".into(), widget: "weather".into(), ..Default::default() });
         let c = ctx(&w);
         let mut ui = UiState::default();
-        ui.act("nav:plugins", &c, None);
-        assert_eq!(ui.act("prm:sunset", &c, None), vec![], "the first click only asks");
+        ui.act("nav:plugins", &c, &mut Headless);
+        assert_eq!(ui.act("prm:sunset", &c, &mut Headless), vec![], "the first click only asks");
         let mut shown = Vec::new();
         texts(&ui.build(&c, WIN).0, &mut shown);
         assert!(shown.iter().any(|t| t.contains("weather-1")), "{shown:?}");
         assert!(!shown.iter().any(|t| t.contains("clock-1")), "a built-in widget stays");
-        assert_eq!(ui.act("prm:sunset", &c, None), vec![Cmd::RemovePlugin("sunset".into())]);
-        ui.act("prm:sunset", &c, None);
-        assert_eq!(ui.act("pon:sunset", &c, None).len(), 1, "any other action disarms it");
-        assert_eq!(ui.act("prm:sunset", &c, None), vec![]);
-        ui.act("del:clock-1", &c, None);
-        assert_eq!(ui.act("prm:sunset", &c, None), vec![], "a widget's remove never confirms a plugin's");
+        assert_eq!(ui.act("prm:sunset", &c, &mut Headless), vec![Cmd::RemovePlugin("sunset".into())]);
+        ui.act("prm:sunset", &c, &mut Headless);
+        assert_eq!(ui.act("pon:sunset", &c, &mut Headless).len(), 1, "any other action disarms it");
+        assert_eq!(ui.act("prm:sunset", &c, &mut Headless), vec![]);
+        ui.act("del:clock-1", &c, &mut Headless);
+        assert_eq!(ui.act("prm:sunset", &c, &mut Headless), vec![], "a widget's remove never confirms a plugin's");
     }
 
     #[test]
@@ -3872,10 +3876,10 @@ mod tests {
         let w = world();
         let c = ctx(&w);
         let mut ui = UiState::default();
-        assert_eq!(ui.act("pon:sunset", &c, None), vec![Cmd::PluginEnabled("sunset".into(), false)]);
-        assert_eq!(ui.act("pon:broken", &c, None), vec![Cmd::PluginEnabled("broken".into(), true)]);
-        assert_eq!(ui.act("pon:nope", &c, None), vec![]);
-        assert_eq!(ui.act("pfolder", &c, None), vec![Cmd::OpenPluginsFolder]);
+        assert_eq!(ui.act("pon:sunset", &c, &mut Headless), vec![Cmd::PluginEnabled("sunset".into(), false)]);
+        assert_eq!(ui.act("pon:broken", &c, &mut Headless), vec![Cmd::PluginEnabled("broken".into(), true)]);
+        assert_eq!(ui.act("pon:nope", &c, &mut Headless), vec![]);
+        assert_eq!(ui.act("pfolder", &c, &mut Headless), vec![Cmd::OpenPluginsFolder]);
     }
 
     #[test]
@@ -3970,13 +3974,13 @@ mod tests {
         };
         assert!(shown(&ui, &w).iter().any(|t| t == "Step 1 of 4"), "setup replaces the pages");
         for _ in 0..5 {
-            assert!(ui.act("ob:next", &ctx(&w), None).is_empty());
+            assert!(ui.act("ob:next", &ctx(&w), &mut Headless).is_empty());
         }
         assert!(shown(&ui, &w).iter().any(|t| t == "Step 4 of 4"), "Continue stops at the last step");
-        ui.act("ob:back", &ctx(&w), None);
+        ui.act("ob:back", &ctx(&w), &mut Headless);
         assert!(shown(&ui, &w).iter().any(|t| t == "Put a few widgets out"));
         ui.page = Page::Log;
-        assert_eq!(ui.act("ob:done", &ctx(&w), None), [Cmd::Onboarded], "Skip setup and Finish both end it");
+        assert_eq!(ui.act("ob:done", &ctx(&w), &mut Headless), [Cmd::Onboarded], "Skip setup and Finish both end it");
         w.ws.onboarded = true;
         assert!(ui.page == Page::Widgets && shown(&ui, &w).iter().any(|t| t == "Edit layout"), "then the Widgets page");
     }
@@ -3998,18 +4002,18 @@ mod tests {
         };
         let mut ui = UiState::default();
         assert!(cards(&ui).is_empty(), "a selected widget's panel, not the gallery");
-        ui.act("gallery:open", &c, None);
+        ui.act("gallery:open", &c, &mut Headless);
         assert_eq!(cards(&ui).len(), w.reg.ids().len());
         assert_eq!(&cards(&ui)[..2], ["clock", "digital_clock"], "Time comes first");
-        ui.act("cat:Launchers", &c, None);
+        ui.act("cat:Launchers", &c, &mut Headless);
         assert_eq!(cards(&ui), ["drawer", "icon_folder", "icon_list"]);
-        ui.act("cat:", &c, None);
+        ui.act("cat:", &c, &mut Headless);
         ui.focus_input(&c, "q:widgets", None);
         for ch in ["t", "r", "a", "y"] {
-            assert!(ui.on_key(&Key::Character(ch.into()), Some(ch), &c).is_empty(), "typing a search changes nothing on the desktop");
+            assert!(ui.on_key(&Key::Character(ch.into()), Some(ch), &c, &mut Headless).is_empty(), "typing a search changes nothing on the desktop");
         }
         assert_eq!(cards(&ui), ["drawer"], "matches the description: a pull-out tray");
-        assert_eq!(ui.act("add:drawer", &c, None), [Cmd::Add("drawer".into())]);
+        assert_eq!(ui.act("add:drawer", &c, &mut Headless), [Cmd::Add("drawer".into())]);
         assert!(!ui.adding && ui.selected.as_deref() == Some("drawer-1"), "adding one shows it");
     }
 
@@ -4021,17 +4025,109 @@ mod tests {
         w.ws.instances.clear();
         let c = Ctx { log: &log, ..ctx(&w) };
         let mut ui = UiState::default();
-        ui.act("nav:log", &c, None);
+        ui.act("nav:log", &c, &mut Headless);
         assert_eq!(ui.log_rows(&c).len(), 3);
-        ui.act("lvl:warning", &c, None);
+        ui.act("lvl:warning", &c, &mut Headless);
         assert_eq!(ui.log_rows(&c).iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["Using the software adapter"]);
         let mut shown = Vec::new();
         texts(&ui.build(&c, WIN).0, &mut shown);
         assert!(shown.iter().any(|t| t.starts_with("Change adapter in General")), "{shown:?}");
-        ui.act("lvl:all", &c, None);
+        ui.act("lvl:all", &c, &mut Headless);
         ui.queries.insert("q:log".into(), "PLUGINS".into());
         assert_eq!(ui.log_rows(&c).len(), 1, "search matches the source too, ignoring case");
-        assert_eq!(ui.act("openlog", &c, None), [Cmd::OpenData("wayfinder.log")]);
+        assert_eq!(ui.act("openlog", &c, &mut Headless), [Cmd::OpenData("wayfinder.log")]);
+    }
+
+    fn param(id: &str, name: &str, v: &str) -> Vec<Cmd> {
+        vec![Cmd::Param(id.into(), name.into(), Value::Str(v.into()))]
+    }
+
+    #[test]
+    fn the_folder_and_file_pickers_set_a_param_or_do_nothing() {
+        let w = world();
+        let c = ctx(&w);
+        let mut ui = UiState::default();
+        let mut n = Scripted::new().pick_next("C:/Photos");
+        assert_eq!(ui.act("folder:clock-1|dir", &c, &mut n), param("clock-1", "dir", "C:/Photos"));
+        assert_eq!(ui.act("folder:clock-1|dir", &c, &mut n), vec![], "cancelled");
+        assert_eq!(ui.act("folder:nobar", &c, &mut n), vec![], "a malformed action never opens the dialog");
+        assert_eq!(n.picked, [Pick::Folder, Pick::Folder]);
+        let mut n = Scripted::new().pick_next("C:/a.gif");
+        assert_eq!(ui.act("file:clock-1|image", &c, &mut n), param("clock-1", "image", "C:/a.gif"));
+        let [Pick::Filtered(types)] = n.picked[..] else { panic!("{:?}", n.picked) };
+        assert_eq!(types[0].0, "Images and GIFs");
+        assert!(types[0].1.contains("*.gif") && types.iter().any(|t| t.1 == "*.*"), "{types:?}");
+        assert_eq!(ui.act("file:clock-1|image", &c, &mut n), vec![], "cancelled");
+    }
+
+    #[test]
+    fn a_picked_file_becomes_or_retargets_a_shortcut() {
+        let w = world();
+        let c = ctx(&w);
+        let mut ui = UiState::default();
+        let mut n = Scripted::new().pick_next("C:/Tools/notes.exe");
+        let cmds = ui.act("scadd:icon_folder-1", &c, &mut n);
+        let [Cmd::Items(id, items)] = &cmds[..] else { panic!("{cmds:?}") };
+        assert_eq!((id.as_str(), items.len()), ("icon_folder-1", 3));
+        assert_eq!((items[2].name.as_str(), items[2].target.as_str()), ("notes", "C:/Tools/notes.exe"), "named after the file");
+        assert_eq!(ui.act("scadd:icon_folder-1", &c, &mut n), vec![], "cancelled");
+        assert_eq!(n.picked, [Pick::File, Pick::File]);
+
+        let mut n = Scripted::new().pick_next("C:/Tools/other.exe");
+        let cmds = ui.act("scbrowse:icon_folder-1|1", &c, &mut n);
+        let [Cmd::Items(_, items)] = &cmds[..] else { panic!("{cmds:?}") };
+        assert_eq!((items[0].target.as_str(), items[1].target.as_str(), items[1].name.as_str()), ("a.exe", "C:/Tools/other.exe", "B"), "only row 1 moves; it keeps its name");
+        let mut n = Scripted::new().pick_next("x.exe");
+        assert_eq!(ui.act("scbrowse:icon_folder-1|9", &c, &mut n), vec![], "no such row");
+    }
+
+    #[test]
+    fn installing_a_plugin_asks_for_a_wayfinder_plugin_file() {
+        let w = world();
+        let c = ctx(&w);
+        let mut ui = UiState::default();
+        let mut n = Scripted::new().pick_next("C:/dl/sunset.wfplugin");
+        assert_eq!(ui.act("pinstall", &c, &mut n), [Cmd::InstallPlugin("C:/dl/sunset.wfplugin".into())]);
+        let [Pick::Filtered([(name, spec)])] = n.picked[..] else { panic!("{:?}", n.picked) };
+        assert_eq!((name, spec), (&"Wayfinder plugin", &"*.wfplugin;*.zip"));
+        assert_eq!(ui.act("pinstall", &c, &mut n), vec![], "cancelled");
+    }
+
+    #[test]
+    fn copying_the_log_puts_the_shown_rows_on_the_clipboard() {
+        let w = world();
+        let line = |level, source: &str, text: &str| LogLine { time: "01:29:58".into(), level, source: source.into(), text: text.into() };
+        let log = vec![line(Level::Info, "core", "ready"), line(Level::Error, "plugins", "could not install x")];
+        let c = Ctx { log: &log, ..ctx(&w) };
+        let mut ui = UiState::default();
+        let mut n = Scripted::new();
+        assert_eq!(ui.act("logcopy", &c, &mut n), vec![]);
+        assert_eq!(n.written, ["01:29:58 Info    core     ready\r\n01:29:58 Error   plugins  could not install x"]);
+        ui.act("lvl:error", &c, &mut n);
+        ui.act("logcopy", &c, &mut n);
+        assert_eq!(n.written[1], "01:29:58 Error   plugins  could not install x", "the filter applies");
+    }
+
+    #[test]
+    fn a_focused_field_pastes_copies_and_cuts_through_the_clipboard() {
+        let w = world();
+        let c = ctx(&w);
+        let mut ui = UiState::default();
+        ui.focus_input(&c, "sn:icon_folder-1:1", None);
+        ui.mods = ModifiersState::CONTROL;
+        let v = Key::Character("v".into());
+        let mut n = Scripted::new().with_clipboard("  notes\r\n ");
+        let cmds = ui.on_key(&v, None, &c, &mut n);
+        let [Cmd::Items(_, items)] = &cmds[..] else { panic!("{cmds:?}") };
+        assert_eq!(items[1].name, "Bnotes", "pasted as one trimmed line at the caret");
+        assert_eq!(ui.on_key(&v, None, &c, &mut Scripted::new()), vec![], "an empty clipboard pastes nothing");
+        assert_eq!(ui.on_key(&v, None, &c, &mut Headless), vec![]);
+        let mut n = Scripted::new();
+        assert_eq!(ui.on_key(&Key::Character("c".into()), None, &c, &mut n), vec![], "copy changes nothing");
+        assert_eq!(n.written, ["Bnotes"]);
+        let cmds = ui.on_key(&Key::Character("X".into()), None, &c, &mut n);
+        let [Cmd::Items(_, items)] = &cmds[..] else { panic!("{cmds:?}") };
+        assert_eq!((n.written.len(), items[1].name.as_str()), (2, ""), "cut copies, then empties the field");
     }
 
     #[test]
@@ -4039,8 +4135,8 @@ mod tests {
         let w = world();
         let c = ctx(&w);
         let mut ui = UiState::default();
-        assert_eq!(ui.act("setc:sy:*:accent|#6b8cff", &c, None), [Cmd::Style(Scope::Global, "accent".into(), Some(Value::Str("#6b8cff".into())))]);
-        assert_eq!(ui.act("gpufix", &c, None), [Cmd::Gpu("low".into()), Cmd::Restart]);
+        assert_eq!(ui.act("setc:sy:*:accent|#6b8cff", &c, &mut Headless), [Cmd::Style(Scope::Global, "accent".into(), Some(Value::Str("#6b8cff".into())))]);
+        assert_eq!(ui.act("gpufix", &c, &mut Headless), [Cmd::Gpu("low".into()), Cmd::Restart]);
         assert_eq!(split_unit("Corner roundness (px)"), ("Corner roundness", "px"));
         assert_eq!((with_unit(15.0, "px"), with_unit(60.0, "%"), with_unit(8.0, "")), ("15 px".to_string(), "60%".to_string(), "8".to_string()));
         assert_eq!(gpu_parts("Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox"), ["Microsoft Basic Render Driver", "DX12", "CPU", "Mailbox"]);

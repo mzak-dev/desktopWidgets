@@ -1,7 +1,10 @@
-//! Native file/folder pickers and clipboard text (blocking, on the event-loop
-//! thread: they are user-initiated, modal actions).
+//! The Win32 bodies of the `Native` and `Prompt` seams: file/folder pickers, clipboard
+//! text, message boxes (blocking, on the event-loop thread: they are user-initiated,
+//! modal actions). `WinNative` is the adapter; the traits live in `native`.
 
 use std::path::PathBuf;
+
+use crate::native::{Native, Pick, Prompt, one_line};
 
 use windows::Win32::Foundation::{HGLOBAL, HWND};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
@@ -10,6 +13,47 @@ use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, Glo
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog, SIGDN_FILESYSPATH};
 use windows::core::{HSTRING, PCWSTR};
+
+/// The real dialogs, parented to `hwnd` when there is a window.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WinNative {
+    pub hwnd: Option<HWND>,
+}
+
+impl WinNative {
+    pub fn new(hwnd: Option<HWND>) -> Self {
+        Self { hwnd }
+    }
+}
+
+impl Native for WinNative {
+    fn pick(&mut self, what: Pick) -> Option<PathBuf> {
+        match what {
+            Pick::File => pick(self.hwnd, false, &[]),
+            Pick::Folder => pick(self.hwnd, true, &[]),
+            Pick::Filtered(types) => pick(self.hwnd, false, types),
+        }
+    }
+
+    fn clipboard(&mut self) -> Option<String> {
+        clipboard_text()
+    }
+
+    fn set_clipboard(&mut self, text: &str) {
+        set_clipboard_text(text);
+    }
+}
+
+/// Message boxes have no parent: they are asked before a window exists or from the tray.
+impl Prompt for WinNative {
+    fn confirm(&mut self, title: &str, text: &str) -> bool {
+        confirm(title, text)
+    }
+
+    fn tell(&mut self, title: &str, text: &str, error: bool) {
+        tell(title, text, error);
+    }
+}
 
 fn pick(hwnd: Option<HWND>, folders: bool, types: &[(&str, &str)]) -> Option<PathBuf> {
     unsafe {
@@ -33,23 +77,9 @@ fn pick(hwnd: Option<HWND>, folders: bool, types: &[(&str, &str)]) -> Option<Pat
     }
 }
 
-pub fn pick_file(hwnd: Option<HWND>) -> Option<PathBuf> {
-    pick(hwnd, false, &[])
-}
-
-/// Only files matching one of `(name, "*.a;*.b")`.
-pub fn pick_file_of(hwnd: Option<HWND>, types: &[(&str, &str)]) -> Option<PathBuf> {
-    pick(hwnd, false, types)
-}
-
-pub fn pick_folder(hwnd: Option<HWND>) -> Option<PathBuf> {
-    pick(hwnd, true, &[])
-}
-
 const CF_UNICODETEXT: u32 = 13;
 
-/// Clipboard text with newlines flattened: every field here is one line.
-pub fn clipboard_text() -> Option<String> {
+fn clipboard_text() -> Option<String> {
     unsafe {
         OpenClipboard(None).ok()?;
         let text = GetClipboardData(CF_UNICODETEXT).ok().and_then(|handle| {
@@ -67,11 +97,11 @@ pub fn clipboard_text() -> Option<String> {
             Some(s)
         });
         let _ = CloseClipboard();
-        text.map(|s| s.replace(['\r', '\n'], " ").trim().to_string()).filter(|s| !s.is_empty())
+        text.and_then(|s| one_line(&s))
     }
 }
 
-pub fn set_clipboard_text(text: &str) {
+fn set_clipboard_text(text: &str) {
     unsafe {
         if OpenClipboard(None).is_err() {
             return;
@@ -91,14 +121,12 @@ pub fn set_clipboard_text(text: &str) {
     }
 }
 
-/// A modal OK/Cancel question; true on OK.
-pub fn confirm(title: &str, text: &str) -> bool {
+fn confirm(title: &str, text: &str) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{IDOK, MB_ICONQUESTION, MB_OKCANCEL, MessageBoxW};
     unsafe { MessageBoxW(None, &HSTRING::from(text), &HSTRING::from(title), MB_OKCANCEL | MB_ICONQUESTION) == IDOK }
 }
 
-/// A modal note; `error` shows the error icon.
-pub fn tell(title: &str, text: &str, error: bool) {
+fn tell(title: &str, text: &str, error: bool) {
     use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_ICONINFORMATION, MB_OK, MessageBoxW};
     unsafe {
         MessageBoxW(None, &HSTRING::from(text), &HSTRING::from(title), MB_OK | if error { MB_ICONERROR } else { MB_ICONINFORMATION });

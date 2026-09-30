@@ -165,7 +165,8 @@ impl App {
     fn widget_action(&mut self, i: usize, verb: &str, rest: &str) -> bool {
         let Some(Ok(w)) = self.reg.get(&self.ws.instances[i].widget).cloned() else { return false };
         let hwnd = self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w));
-        let mut host = AppHost::new(&self.opts.dir, hwnd);
+        let mut native = WinNative::new(hwnd);
+        let mut host = AppHost::new(&self.opts.dir, &mut native);
         let mut cx = ActionCx { cfg: &self.ws.instances[i], state: &mut self.wins[i].state, host: &mut host, sources: &self.sources, wants_redraw: false };
         let handled = w.handle_action(verb, rest, &mut cx);
         let redraw = cx.wants_redraw;
