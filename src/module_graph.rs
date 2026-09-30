@@ -1,18 +1,11 @@
-//! Module-graph ratchet: parses production `crate::<module>` imports into a graph and
-//! asserts (1) the import cycle is exactly `CYCLE` and (2) the layer violations are
-//! exactly `LAYER_VIOLATIONS`. Both lists only shrink: a refactor that breaks an edge
-//! removes it here; a new edge that closes a cycle or points up a layer fails the test.
-//! Test code (`#[cfg(test)]` items) is not counted.
+//! Module-graph check: parses production `crate::<module>` imports into a graph and
+//! asserts (1) it has no import cycle and (2) every import points down or across the layer
+//! table (research/07-cycle-breaking.md). A new edge that closes a cycle or points up a
+//! layer fails the test. Test code (`#[cfg(test)]` items) is not counted.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-
-/// The strongly connected component of the module graph at the time of writing
-/// (research/07-cycle-breaking.md). Shrink it as the cycle is broken; empty is the goal.
-const CYCLE: &[&str] = &[
-    "code", "data",
-];
 
 /// Target layers (research/07-cycle-breaking.md): a module may import only modules on a
 /// lower or equal layer.
@@ -29,12 +22,6 @@ const LAYERS: &[(&str, u8)] = &[
     ("plugins", 9),
     ("cli", 10), ("settings", 10),
     ("app", 11),
-];
-
-/// Edges (from, to) that point up the layer table today. Loose on purpose: it starts as
-/// the current state and shrinks to empty.
-const LAYER_VIOLATIONS: &[(&str, &str)] = &[
-    ("data", "code"),
 ];
 
 type Edges = BTreeMap<(String, String), Vec<String>>;
@@ -373,53 +360,31 @@ fn describe(edges: &Edges, pairs: impl Iterator<Item = (String, String)>) -> Str
 }
 
 #[test]
-fn module_cycle_is_exactly_the_allow_list() {
+fn module_graph_has_no_import_cycle() {
     let edges = graph();
     let sccs = cycles(&edges);
-    let allowed: BTreeSet<String> = CYCLE.iter().map(|s| s.to_string()).collect();
-    let actual: BTreeSet<String> = sccs.iter().flatten().cloned().collect();
-    let mut problems = String::new();
-    let new: BTreeSet<_> = actual.difference(&allowed).cloned().collect();
-    if !new.is_empty() {
-        let touching = edges
-            .keys()
-            .filter(|(a, b)| actual.contains(a) && actual.contains(b) && (new.contains(a) || new.contains(b)))
-            .cloned();
-        problems += &format!(
-            "new modules joined an import cycle: {new:?}. Edges that tie them into it:\n{}\n",
-            describe(&edges, touching)
-        );
-    }
-    let gone: BTreeSet<_> = allowed.difference(&actual).cloned().collect();
-    if !gone.is_empty() {
-        problems += &format!("modules left the cycle, remove them from CYCLE in src/module_graph.rs: {gone:?}\n");
-    }
-    assert!(problems.is_empty(), "module import cycle changed:\n{problems}");
+    let tying: Vec<_> = edges.keys().filter(|(a, b)| sccs.iter().any(|c| c.contains(a) && c.contains(b))).cloned().collect();
+    assert!(sccs.is_empty(), "modules import each other in a cycle: {sccs:?}. Edges inside it:
+{}", describe(&edges, tying.into_iter()));
 }
 
 #[test]
-fn layer_violations_are_exactly_the_allow_list() {
+fn every_import_points_down_the_layer_table() {
     let edges = graph();
     let layer: BTreeMap<&str, u8> = LAYERS.iter().copied().collect();
-    let mut actual: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut up = BTreeSet::new();
     for (a, b) in edges.keys() {
         match (layer.get(a.as_str()), layer.get(b.as_str())) {
             (Some(la), Some(lb)) => {
                 if lb > la {
-                    actual.insert((a.clone(), b.clone()));
+                    up.insert((a.clone(), b.clone()));
                 }
             }
             _ => panic!("module {a} or {b} is missing from LAYERS in src/module_graph.rs"),
         }
     }
-    let allowed: BTreeSet<(String, String)> =
-        LAYER_VIOLATIONS.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect();
-    let new = describe(&edges, actual.difference(&allowed).cloned());
-    let fixed: Vec<_> = allowed.difference(&actual).map(|(a, b)| format!("{a} -> {b}")).collect();
-    assert!(
-        new.is_empty() && fixed.is_empty(),
-        "layer violations changed.\nnew (import points up the layer table):\n{new}\nfixed (remove from LAYER_VIOLATIONS): {fixed:?}"
-    );
+    assert!(up.is_empty(), "imports point up the layer table:
+{}", describe(&edges, up.into_iter()));
 }
 
 #[cfg(test)]

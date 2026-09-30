@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use crate::anim::Anim;
 use crate::card::Card;
 use crate::code::runtime::Limits;
-use crate::code::{Deps, WasmSource};
+use crate::code::{CodeSources, Deps, WasmSource};
 use crate::content::{Catalog, Root};
 use crate::data::{DataSources, Tm};
 use crate::gfx::{Gpu, Power};
@@ -238,7 +238,8 @@ fn render(r: &Render) -> Result<bool, String> {
         false => None,
     };
     let places = crate::code::fs::Places { home: std::env::var_os("USERPROFILE").map(PathBuf::from), private: vec![r.data.clone()] };
-    sources.sync_code(specs, |spec| WasmSource::start(spec, Deps { fetch: fetch.clone(), store: None, notify: notify.clone(), limits: Limits::default(), places: places.clone() }));
+    let mut code = CodeSources::default();
+    code.sync(&mut sources, specs, |spec| WasmSource::start(spec, Deps { fetch: fetch.clone(), store: None, notify: notify.clone(), limits: Limits::default(), places: places.clone() }));
 
     let meta = match &def {
         Ok(w) => Some(w.meta().clone()),
@@ -270,11 +271,11 @@ fn render(r: &Render) -> Result<bool, String> {
     };
     // enter animations start transparent: render once to start them, then after they settle
     let first = frame(base, &mut gpu, &mut text, &mut icons, &mut anim);
-    if !sources.launch_rules(&first.deps).is_empty() {
+    if !code.launch_rules(&first.deps).is_empty() {
         let deadline = Instant::now() + Duration::from_secs_f32(r.wait.max(0.0));
         while let Some(left) = deadline.checked_duration_since(Instant::now()) {
             let _ = news.recv_timeout(left);
-            let got = sources.take_news().iter().any(|(_, n)| n.all || n.changed.contains(&cfg.id));
+            let got = sources.take_news().iter().chain(&code.take_news()).any(|(_, n)| n.all || n.changed.contains(&cfg.id));
             if got {
                 break;
             }

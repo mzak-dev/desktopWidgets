@@ -35,7 +35,7 @@ use crate::anim::{self, Anim, Ease};
 use crate::card::Card;
 use crate::code::runtime::Limits;
 use crate::code::store::KvStore;
-use crate::code::{Deps, WasmSource};
+use crate::code::{CodeSources, Deps, WasmSource};
 use crate::content::{Catalog, Root};
 use crate::data::{self, DataSources};
 use crate::draw::DrawList;
@@ -171,6 +171,8 @@ pub struct App {
     theme: Theme,
     reg: Registry,
     sources: DataSources,
+    /// The Plugins' Code Sources, which `sources` also serves.
+    code: CodeSources,
     gpu: Option<Gpu>,
     text: TextEngine,
     icons: IconService,
@@ -253,6 +255,7 @@ impl App {
             theme,
             reg: Registry::default(),
             sources,
+            code: CodeSources::default(),
             gpu: None,
             text,
             wins: Vec::new(),
@@ -581,7 +584,7 @@ impl App {
         });
         let (fetch, stores) = (self.fetch.clone(), &self.stores);
         let places = crate::code::fs::Places { home: std::env::var_os("USERPROFILE").map(PathBuf::from), private: vec![self.opts.dir.clone()] };
-        self.sources.sync_code(specs, |spec| {
+        self.code.sync(&mut self.sources, specs, |spec| {
             let deps = Deps { fetch: fetch.clone(), store: stores.get(&spec.plugin).cloned(), notify: notify.clone(), limits: Limits::default(), places: places.clone() };
             WasmSource::start(spec, deps)
         });
@@ -615,7 +618,7 @@ impl App {
 
     /// Copies each running Code Source's status onto its Plugins page row.
     fn refresh_code_status(&mut self) {
-        let status: BTreeMap<String, String> = self.sources.code_status().into_iter().map(|(n, s)| (n, s.line())).collect();
+        let status: BTreeMap<String, String> = self.code.status().into_iter().map(|(n, s)| (n, s.line())).collect();
         for c in self.plugin_rows.iter_mut().flat_map(|r| &mut r.code).filter(|c| c.runs) {
             c.status = status.get(&c.source).cloned().unwrap_or_default();
         }
@@ -623,7 +626,7 @@ impl App {
 
     fn take_source_news(&mut self) {
         let mut status = false;
-        for (name, news) in self.sources.take_news() {
+        for (name, news) in self.sources.take_news().into_iter().chain(self.code.take_news()) {
             for l in news.logs {
                 self.log(format!("{name}: {l}"));
             }

@@ -188,14 +188,14 @@ impl App {
             }
         }
         if verb == "param" {
-            match click_param(rest, &self.sources.file_params()) {
+            match click_param(rest, &self.code.file_params()) {
                 Ok((name, v)) => self.set_param(i, &name, &v),
                 Err(e) => self.log(format!("{}: {e}", self.ws.instances[i].id)),
             }
             return;
         }
         match engine_action(&mut self.wins[i].state, verb, rest) {
-            VerbOutcome::Launch(target) if !crate::code::launch::allowed(&target, &self.sources.launch_rules(&self.wins[i].deps), std::env::var_os("USERPROFILE").map(PathBuf::from).as_deref()) => {
+            VerbOutcome::Launch(target) if !crate::code::launch::allowed(&target, &self.code.launch_rules(&self.wins[i].deps), std::env::var_os("USERPROFILE").map(PathBuf::from).as_deref()) => {
                 self.log(format!("refused to open `{target}`: a widget showing plugin data may only open https:// links and what its plugin lists under [code] launch"));
             }
             VerbOutcome::Redraw => self.wins[i].redraw = true,

@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::data::{Cadence, DataSource, News, SourceCx};
+use crate::data::{Cadence, DataSource, DataSources, News, SourceCx};
 use crate::net::{Fetch, HostPattern, Net};
 use crate::value::Value;
 
@@ -191,6 +191,59 @@ impl DataSource for WasmSource {
     fn retain(&self, live: &BTreeSet<String>) {
         self.shared.slots.lock().unwrap().retain(|id, _| live.contains(id));
         let _ = self.tx.send(Msg::Retain(live.clone()));
+    }
+}
+
+/// The running Code Sources of the enabled Plugins, kept beside `DataSources` (which holds
+/// the same sources as `Arc<dyn DataSource>` to read and act on): the app asks this for what
+/// only Code Sources have (status, launch rules, file params, news).
+#[derive(Default)]
+pub struct CodeSources {
+    list: Vec<(String, Arc<WasmSource>)>,
+}
+
+impl CodeSources {
+    /// Makes the running Code Sources exactly `wanted` (key, spec), in `data` too. One whose
+    /// key is unchanged keeps running, with its values; the built-ins are never touched. A
+    /// dropped one's channel closes when its last `Arc` goes, and its thread ends after its
+    /// current call.
+    pub fn sync(&mut self, data: &mut DataSources, wanted: Vec<(String, CodeSpec)>, mut start: impl FnMut(CodeSpec) -> WasmSource) {
+        let mut old = std::mem::take(&mut self.list);
+        let keys = wanted.iter().map(|(k, _)| k.clone()).collect();
+        for (key, spec) in wanted {
+            match old.iter().position(|(k, _)| *k == key) {
+                Some(i) => self.list.push(old.swap_remove(i)),
+                None => self.list.push((key, Arc::new(start(spec)))),
+            }
+        }
+        drop(old);
+        let list = &self.list;
+        data.sync_plugins(keys, |key| list.iter().find(|(k, _)| k == key).map(|(_, s)| s.clone() as Arc<dyn DataSource>).expect("a wanted key is in the list"));
+    }
+
+    fn get(&self, name: &str) -> Option<&WasmSource> {
+        self.list.iter().find(|(_, c)| c.name() == name).map(|(_, c)| c.as_ref())
+    }
+
+    /// Per Code Source name, what changed since last asked.
+    pub fn take_news(&self) -> Vec<(String, News)> {
+        self.list.iter().map(|(_, c)| (c.name().to_string(), c.take_news())).filter(|(_, n)| *n != News::default()).collect()
+    }
+
+    /// Per Code Source name, how it is doing.
+    pub fn status(&self) -> Vec<(String, Status)> {
+        self.list.iter().map(|(_, c)| (c.name().to_string(), c.status())).collect()
+    }
+
+    /// Every param that grants some plugin's code a folder (`fs_read_params`).
+    pub fn file_params(&self) -> BTreeSet<String> {
+        self.list.iter().flat_map(|(_, c)| c.file_params().iter().cloned()).collect()
+    }
+
+    /// The launch rules of each Code Source `deps` reads (see `launch::allowed`).
+    pub fn launch_rules(&self, deps: &BTreeSet<String>) -> Vec<&[launch::LaunchRule]> {
+        let names: BTreeSet<&str> = deps.iter().map(|d| d.split('.').next().unwrap_or(d)).collect();
+        names.into_iter().filter_map(|n| self.get(n)).map(|s| s.launch_rules()).collect()
     }
 }
 
@@ -601,6 +654,57 @@ pub(crate) mod tests {
             assert!(Instant::now() < deadline, "the worker outlived its source");
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+
+    fn spec(n: &str) -> CodeSpec {
+        CodeSpec { plugin: n.into(), source: n.into(), module: "nope.wasm".into(), hosts: vec![], fs_read: vec![], fs_read_params: vec![], launch: vec![], initial: Value::Nil }
+    }
+
+    #[test]
+    fn sync_keeps_an_unchanged_source_alive() {
+        let (mut data, mut code) = (DataSources::builtin(), CodeSources::default());
+        let started = std::cell::RefCell::new(Vec::new());
+        let launch = |s: CodeSpec| {
+            started.borrow_mut().push(s.source.clone());
+            start(&format!("sync-{}", s.source), &returning(r#"{"value":{}}"#), Limits::default(), None).0
+        };
+        code.sync(&mut data, vec![("a#1".into(), spec("a")), ("b#1".into(), spec("b"))], launch);
+        code.sync(&mut data, vec![("a#1".into(), spec("a")), ("b#2".into(), spec("b"))], launch);
+        assert_eq!(*started.borrow(), ["a", "b", "b"], "a kept running; b's changed key restarted it");
+        assert!(data.get("weather").is_some(), "DataSources serves them too");
+        assert!(!data.native_names().contains("weather"));
+        code.sync(&mut data, vec![], launch);
+        assert!(code.list.is_empty() && data.get("weather").is_none());
+    }
+
+    #[test]
+    fn dropping_a_plugin_source_stops_its_worker() {
+        let (mut data, mut code) = (DataSources::builtin(), CodeSources::default());
+        let mut src = Some(start("sync-drop", &returning(r#"{"value":{}}"#), Limits::default(), None).0);
+        code.sync(&mut data, vec![("weather#1".into(), spec("weather"))], |_| src.take().unwrap());
+        let held = code.list[0].1.clone();
+        code.sync(&mut data, vec![], |_| unreachable!());
+        assert!(data.get("weather").is_none(), "gone from both registries");
+        let worker = Arc::try_unwrap(held).ok().expect("CodeSources and DataSources let go of it").stop();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !worker.is_finished() {
+            assert!(Instant::now() < deadline, "the worker outlived its source");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn code_sources_answer_status_file_params_and_launch_rules() {
+        let (mut data, mut code) = (DataSources::builtin(), CodeSources::default());
+        let deps = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<BTreeSet<String>>();
+        assert!(code.launch_rules(&deps(&["weather.temp"])).is_empty(), "no Code Source yet");
+        let mut src = Some(start_with("sync-answers", &returning(r#"{"value":{}}"#), Limits::default(), None, |s| s.fs_read_params = vec!["folder".into()]).0);
+        code.sync(&mut data, vec![("weather#1".into(), spec("weather"))], |_| src.take().unwrap());
+        assert_eq!(code.file_params(), deps(&["folder"]));
+        assert_eq!(code.launch_rules(&deps(&["weather.temp", "clock.minute"])).len(), 1, "one Code Source read");
+        assert!(code.launch_rules(&deps(&["sys.gauges", "clock.minute"])).is_empty(), "no Code Source read");
+        assert_eq!(code.status().into_iter().map(|(n, _)| n).collect::<Vec<_>>(), ["weather"]);
+        assert!(code.take_news().len() <= 1);
     }
 
     /// The SDK's weather example, built: `WF_EXAMPLE_WASM=<path to weather.wasm>`

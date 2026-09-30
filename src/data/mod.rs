@@ -12,7 +12,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::code::{CodeSpec, Status, WasmSource};
 use crate::value::Value;
 
 pub use audio::Audio;
@@ -221,8 +220,8 @@ impl Notifier {
 
 pub struct DataSources {
     list: Vec<Box<dyn DataSource>>,
-    /// Plugins' Code Sources, each with the key it was started from.
-    code: Vec<(String, WasmSource)>,
+    /// Plugins' sources, each with the key it was started from (`sync_plugins`).
+    plugins: Vec<(String, Arc<dyn DataSource>)>,
     board: Arc<Board>,
 }
 
@@ -250,7 +249,7 @@ impl DataSources {
         for s in &list {
             s.attach(Notifier { source: s.name().to_string(), board: board.clone() });
         }
-        Self { list, code: Vec::new(), board }
+        Self { list, plugins: Vec::new(), board }
     }
 
     /// Adds a source, as an app built on Wayfinder does for its own (`Options::extra_sources`).
@@ -275,33 +274,33 @@ impl DataSources {
     }
 
     pub fn names(&self) -> Vec<String> {
-        self.list.iter().map(|s| s.name().to_string()).chain(self.code.iter().map(|(_, c)| c.name().to_string())).collect()
+        self.list.iter().map(|s| s.name().to_string()).chain(self.plugins.iter().map(|(_, c)| c.name().to_string())).collect()
     }
 
-    /// Every source but plugin code: the built-ins and any registered by the app.
+    /// Every source but the plugins': the built-ins and any registered by the app.
     pub fn native_names(&self) -> BTreeSet<String> {
         self.list.iter().map(|s| s.name().to_string()).collect()
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn DataSource> {
-        self.list.iter().find(|s| s.name() == name).map(|s| s.as_ref()).or_else(|| self.code(name).map(|c| c as &dyn DataSource))
+        self.list.iter().find(|s| s.name() == name).map(|s| s.as_ref()).or_else(|| self.plugins.iter().find(|(_, s)| s.name() == name).map(|(_, s)| s.as_ref()))
     }
 
-    fn code(&self, name: &str) -> Option<&WasmSource> {
-        self.code.iter().find(|(_, c)| c.name() == name).map(|(_, c)| c)
-    }
-
-    /// Makes the running Code Sources exactly `wanted` (key, spec). One whose key is unchanged
-    /// keeps running, with its values; the built-ins are never touched.
-    pub fn sync_code(&mut self, wanted: Vec<(String, CodeSpec)>, mut start: impl FnMut(CodeSpec) -> WasmSource) {
-        let mut old = std::mem::take(&mut self.code);
-        for (key, spec) in wanted {
+    /// Makes the plugins' sources exactly `keys`. One whose key is unchanged stays, with its
+    /// values; `make` builds each new one; the built-ins are never touched. A dropped source's
+    /// last `Arc` goes with it: whoever else holds it (`code::CodeSources`) lets go too, and
+    /// a Code Source's thread ends after its current call.
+    pub fn sync_plugins(&mut self, keys: Vec<String>, mut make: impl FnMut(&str) -> Arc<dyn DataSource>) {
+        let mut old = std::mem::take(&mut self.plugins);
+        for key in keys {
             match old.iter().position(|(k, _)| *k == key) {
-                Some(i) => self.code.push(old.swap_remove(i)),
-                None => self.code.push((key, start(spec))),
+                Some(i) => self.plugins.push(old.swap_remove(i)),
+                None => {
+                    let source = make(&key);
+                    self.plugins.push((key, source)); // no Notifier: plugin code never posts news to the board
+                }
             }
         }
-        // dropped: their channels close and their threads end after the current call
     }
 
     /// Sends `verb` to the source `source`; false if none handled it.
@@ -309,33 +308,15 @@ impl DataSources {
         self.get(source).is_some_and(|s| s.act(verb, arg, cx))
     }
 
-    /// Per source name, what changed since last asked.
+    /// Per native source name, what changed since last asked (a Code Source's news is asked of
+    /// `code::CodeSources`).
     pub fn take_news(&self) -> Vec<(String, News)> {
-        let mut out: Vec<(String, News)> = std::mem::take(&mut *self.board.pending.lock().unwrap()).into_iter().collect();
-        out.extend(self.code.iter().map(|(_, c)| (c.name().to_string(), c.take_news())).filter(|(_, n)| *n != News::default()));
-        out
+        std::mem::take(&mut *self.board.pending.lock().unwrap()).into_iter().collect()
     }
 
     pub fn retain(&self, live: &BTreeSet<String>) {
         self.list.iter().for_each(|s| s.retain(live));
-        self.code.iter().for_each(|(_, c)| c.retain(live));
-    }
-
-    /// Per Code Source name, how it is doing.
-    pub fn code_status(&self) -> Vec<(String, Status)> {
-        self.code.iter().map(|(_, c)| (c.name().to_string(), c.status())).collect()
-    }
-
-    /// Whether any of `deps` reads a Code Source.
-    /// Every param that grants some plugin's code a folder (`fs_read_params`).
-    pub fn file_params(&self) -> BTreeSet<String> {
-        self.code.iter().flat_map(|(_, c)| c.file_params().iter().cloned()).collect()
-    }
-
-    /// The launch rules of each Code Source `deps` reads (see `code::launch::allowed`).
-    pub fn launch_rules(&self, deps: &BTreeSet<String>) -> Vec<&[crate::code::launch::LaunchRule]> {
-        let names: BTreeSet<&str> = deps.iter().map(|d| d.split('.').next().unwrap_or(d)).collect();
-        names.into_iter().filter_map(|n| self.code(n)).map(|s| s.launch_rules()).collect()
+        self.plugins.iter().for_each(|(_, s)| s.retain(live));
     }
 
     pub fn value(&self, name: &str, cx: &SourceCx) -> Option<Value> {
@@ -498,30 +479,42 @@ mod tests {
     }
 
     #[test]
-    fn sync_keeps_an_unchanged_source_alive() {
-        use crate::code::runtime::{Limits, tests::returning};
-        use crate::code::tests::start;
+    fn sync_keeps_an_unchanged_plugin_source_alive() {
+        struct Plugin(&'static str);
+        impl DataSource for Plugin {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn value(&self, _: &SourceCx) -> Value {
+                Value::Nil
+            }
+            fn cadence(&self, _: &str, _: &SourceCx) -> Option<Cadence> {
+                None
+            }
+        }
         let mut src = DataSources::builtin();
-        let spec = |n: &str| CodeSpec { plugin: n.into(), source: n.into(), module: "nope.wasm".into(), hosts: vec![], fs_read: vec![], fs_read_params: vec![], launch: vec![], initial: Value::Nil };
-        let started = std::cell::RefCell::new(Vec::new());
-        let launch = |s: CodeSpec| {
-            started.borrow_mut().push(s.source.clone());
-            start(&format!("sync-{}", s.source), &returning(r#"{"value":{}}"#), Limits::default(), None).0
+        let made = std::cell::RefCell::new(Vec::new());
+        let sync = |src: &mut DataSources, keys: &[&str]| {
+            src.sync_plugins(keys.iter().map(|k| k.to_string()).collect(), |k| {
+                made.borrow_mut().push(k.to_string());
+                Arc::new(Plugin(if k.starts_with('a') { "a" } else { "b" }))
+            })
         };
-        src.sync_code(vec![("a#1".into(), spec("a")), ("b#1".into(), spec("b"))], launch);
-        src.sync_code(vec![("a#1".into(), spec("a")), ("b#2".into(), spec("b"))], launch);
-        assert_eq!(*started.borrow(), ["a", "b", "b"], "a kept running; b's changed key restarted it");
-        src.sync_code(vec![], launch);
-        assert!(src.code.is_empty());
+        sync(&mut src, &["a#1", "b#1"]);
+        sync(&mut src, &["a#1", "b#2"]);
+        assert_eq!(*made.borrow(), ["a#1", "b#1", "b#2"], "a kept running; b's changed key rebuilt it");
+        assert!(src.names().ends_with(&["a".to_string(), "b".to_string()]) && src.get("a").is_some());
+        assert!(!src.native_names().contains("a"), "a plugin source is not native");
+        sync(&mut src, &[]);
+        assert!(src.get("a").is_none() && src.plugins.is_empty());
     }
 
     #[test]
     fn builtin_state_survives_sync() {
         let mut src = DataSources::builtin();
         let before = src.get("sys").unwrap() as *const dyn DataSource as *const u8;
-        src.sync_code(vec![], |_| unreachable!());
+        src.sync_plugins(vec![], |_| unreachable!());
         assert!(std::ptr::eq(before, src.get("sys").unwrap() as *const dyn DataSource as *const u8), "Sys keeps its history");
-        assert!(src.launch_rules(&deps(&["sys.gauges", "clock.minute"])).is_empty(), "no Code Source read");
     }
 
     /// A native source like an app built on Wayfinder would add.
