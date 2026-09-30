@@ -41,6 +41,20 @@ impl Power {
     }
 }
 
+/// The adapter a `Gpu` runs on, for a render's record of its environment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdapterReport {
+    pub name: String,
+    pub driver: String,
+    pub driver_info: String,
+    pub backend: String,
+    pub device_type: String,
+    pub vendor: u32,
+    pub device: u32,
+    /// A CPU rasteriser (WARP on Windows): the only adapter a hermetic render may use.
+    pub software: bool,
+}
+
 struct GpuImage {
     bind: wgpu::BindGroup,
     frames: Option<crate::images::Frames>,
@@ -190,6 +204,11 @@ impl Gpu {
         }))
         .map_err(|e| format!("no adapter: {e}"))?;
         Self::build(instance, adapter, wgpu::TextureFormat::Bgra8Unorm, wgpu::CompositeAlphaMode::Auto, wgpu::PresentMode::Fifo)
+    }
+
+    pub fn adapter_report(&self) -> AdapterReport {
+        let i = self.adapter.get_info();
+        AdapterReport { name: i.name, driver: i.driver, driver_info: i.driver_info, backend: format!("{:?}", i.backend), device_type: format!("{:?}", i.device_type), vendor: i.vendor, device: i.device, software: i.device_type == wgpu::DeviceType::Cpu }
     }
 
     fn build(

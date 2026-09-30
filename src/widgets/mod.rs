@@ -102,13 +102,17 @@ pub struct View<'a> {
     pub card: Card,
 }
 
+/// The one frame path: the desktop, `--render-widget` and the examples all build a Widget's
+/// frame here. Sources are read at `v.now` (the caller's clock, real in the app, virtual in a
+/// headless render) and animations run at the theme's `anim-speed`.
 pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
+    sv.anim.duration_factor = crate::anim::duration_factor(&v.theme.str("anim-speed"));
     let card_size = v.card.card_size(v.window_size);
     let params = match def {
         Ok(w) => w.meta().effective_params(&v.cfg.params_map()),
         Err(_) => v.cfg.params_map(),
     };
-    let cx = SourceCx::new(v.cfg.instance(), &params, v.tm, v.icon_pack);
+    let cx = SourceCx::new(v.cfg.instance(), &params, v.tm, v.icon_pack).with_now(v.now);
     let sources = sv.sources;
     let read = |name: &str| sources.value(name, &cx);
     let mut images_changed = false;
@@ -290,6 +294,61 @@ mod tests {
         assert_eq!(images.size("file:/no/such/picture.png"), Some((48, 48)));
         let rect = p.frame.rects.iter().find(|(k, _)| k == "pic-1/img").unwrap().1;
         assert!(rect[2] == rect[3] && rect[2] != 32.0, "{rect:?}");
+    }
+
+    /// A widget that notes what its `clock` source says, and a `clock` that says how far
+    /// past `base` the caller's clock is.
+    struct Probe(WidgetMeta, std::sync::Mutex<Vec<Value>>);
+
+    impl Widget for Probe {
+        fn meta(&self) -> &WidgetMeta {
+            &self.0
+        }
+
+        fn build(&self, inp: &Inputs, _: &Theme, _: &dyn Fn(&str) -> Option<(f32, f32)>) -> Result<Built, String> {
+            self.1.lock().unwrap().push((inp.read_source)("clock").unwrap_or_default());
+            Ok(Built { root: Node::new(inp.key_prefix).wh(inp.card_size.0, inp.card_size.1), deps: BTreeSet::new(), image_ids: BTreeSet::new(), warnings: vec![], expand: None, arrangement: None })
+        }
+    }
+
+    struct Since(Instant);
+
+    impl crate::data::DataSource for Since {
+        fn name(&self) -> &str {
+            "clock"
+        }
+
+        fn value(&self, cx: &SourceCx) -> Value {
+            Value::Num(cx.now().saturating_duration_since(self.0).as_secs_f64())
+        }
+
+        fn cadence(&self, _: &str, _: &SourceCx) -> Option<crate::data::Cadence> {
+            None
+        }
+    }
+
+    #[test]
+    fn prepare_reads_sources_at_the_views_clock_and_animates_at_the_themes_speed() {
+        let meta = WidgetMeta { id: "probe".into(), name: "Probe".into(), description: String::new(), category: String::new(), icon: String::new(), default_card_size: (100.0, 40.0), min_card_size: (48.0, 48.0), max_card_size: None, params: vec![], initial_state: BTreeMap::new(), needs: vec![], tiers: vec![], slots: vec![], modules: vec![] };
+        let probe = Arc::new(Probe(meta, Default::default()));
+        let def: Def = Ok(probe.clone());
+        let base = Instant::now();
+        let mut sources = DataSources::new(vec![]);
+        sources.register(Box::new(Since(base))).unwrap();
+        let cfg = InstanceCfg { id: "probe-1".into(), widget: "probe".into(), w: 100.0, h: 40.0, ..Default::default() };
+        let (state, mut text, mut images) = (BTreeMap::new(), TextEngine::new(), ImageStore::default());
+        let mut run = |speed: Option<&str>, at: Instant| {
+            let layer: BTreeMap<String, Value> = speed.iter().map(|s| ("anim-speed".to_string(), Value::Str(s.to_string()))).collect();
+            let theme = Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[&layer]);
+            let card = Card::new(&theme);
+            let v = View { cfg: &cfg, state: &state, window_size: (100.0, 40.0), theme: &theme, icon_pack: "Default", tm: Tm { year: 2026, month: 1, day: 15, dow: 4, hour: 10, minute: 10, second: 30, ms: 0 }, hover: None, scale: 1.0, now: at, card };
+            let mut anim = Anim::default();
+            prepare(&def, &v, &mut Services { images: &mut images, text: &mut text, anim: &mut anim, sources: &sources });
+            anim.duration_factor
+        };
+        assert_eq!(run(None, base + std::time::Duration::from_secs(7)), 1.0);
+        assert_eq!(probe.1.lock().unwrap().last(), Some(&Value::Num(7.0)), "a source sees the clock the caller gave the frame");
+        assert_eq!((run(Some("off"), base), run(Some("fast"), base), run(Some("relaxed"), base)), (0.0, 0.6, 1.6), "every caller of prepare honours the theme's anim-speed");
     }
 
     #[test]

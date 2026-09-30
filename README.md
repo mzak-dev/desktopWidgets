@@ -401,12 +401,17 @@ fn main() {
 **Command line for authors.** These print to the console and exit. Wayfinder is a Windows app, so pipe its output (`| Out-Host`) for the shell to wait for it and set `$LASTEXITCODE`:
 
 ```powershell
-wayfinder --render-widget sunset_weather --png out.png --size 300x200 --param city=Oslo --time 15:42   # also a path to a .toml
+wayfinder --render-widget clock --png out.png --size 300x200 --now 2026-03-08T15:42 --env sys.cpu=90   # also a path to a .toml
 wayfinder plugin pack plugins\sunset            # sunset.wfplugin next to the folder, checked
 wayfinder plugin check sunset.wfplugin          # 0 when it installs and loads cleanly, 1 with problems
 ```
 
-`--render-widget` renders through the real pipeline on the software adapter, with plugin code running (`--wait` seconds for its first answer), so CI can check widgets without a desktop. `wayfinder::plugins::{describe, check, pack}` do the same from Rust; `describe` is a stable API.
+`--render-widget` renders through the real pipeline on the software adapter, so CI can check widgets without a desktop. `wayfinder::plugins::{describe, check, pack}` do the same from Rust; `describe` is a stable API.
+
+A render is **hermetic by default**: a fixed date and time (Thursday 2026-01-15 10:10:30 UTC), example system readings, an example paused track, a steady tone, tile icons instead of the shell's, no network, an empty temporary data folder, only the built-in widgets (plus the folder of a `.toml` you name), the theme's `anim-speed`, and the software adapter (`--gpu high|low` uses a hardware one and marks the run not hermetic). It waits for plugin code and pictures to settle (`--wait` seconds per code source; a timeout is an error, never a half-loaded PNG), and the frame is drawn 2 s after the first, so an animation has finished. Change the environment with `--now <ISO>`, `--time HH:MM` (the time of day on the pinned date) and `--env key=value` (repeatable, for example `sys.cpu=90`, `media.playing=true`, `zone="Tokyo Standard Time"`, `anim=off`, `settle=500ms`, `fetch.responses=[{...}]`; an unknown key suggests the nearest). `--real clock,sys,media,audio,icons,fetch` takes a seam from your machine instead. Every render writes `out.png.env.json` beside the PNG: the pins, what was read from the machine, the content and font set, the adapter and whether the run was `hermetic`. Two hermetic renders on one machine are byte-identical; text is measured with the machine's own fonts, so a render is exact on the same machine and font set, not across machines. The pins, the record and these flags are tooling, not a frozen interface.
+
+> [!NOTE]
+> This changes what `--render-widget` did before. It no longer reads your installed plugins, your own widgets or the real `--data` folder: add `--installed` (with `--data <dir>` for a folder other than the default) to look a widget up by id among them, as before. It no longer uses today's date and your machine's readings, media, sound and icons: `--time` now sets the time of day on the pinned date, and `--real` brings the machine back. Plugin code gets no network unless you ask (`--env fetch=real`, or canned answers with `--env fetch.responses=[...]`). `--palette`, `--scale` and `--transparent` are the pins of the same names, and the theme's `anim-speed` now applies to a render as it does on the desktop. A render that reads the machine or installed content says so on its last line and in the `.env.json`.
 
 > [!WARNING]
 > `examples/phase0_spike.rs` is kept only as the record of the early measurements. **Do not run it**: it stress-tests multi-window swapchains and, together with the bug fixed in ADR-006, crashed an AMD driver during development.

@@ -2,37 +2,29 @@
 //! from and exits; none starts the desktop app or needs one running.
 //!
 //!   wayfinder --render-widget <id | file.toml> --png <out.png> [--size WxH] [--param k=v]...
-//!             [--state k=v]... [--palette name] [--scale 1.25] [--time HH:MM] [--transparent]
-//!             [--wait secs] [--data dir] [--gpu software|high|low]
+//!             [--state k=v]... [--palette name] [--scale 1.25] [--time HH:MM] [--now ISO]
+//!             [--env key=value]... [--real seams] [--installed] [--transparent] [--wait secs]
+//!             [--data dir] [--gpu software|high|low]
 //!   wayfinder plugin pack <folder> [out.wfplugin]
 //!   wayfinder plugin check <file.wfplugin | folder>
 //!
 //! Exit codes: 0 fine, 1 the widget or plugin has problems, 2 bad arguments.
+//!
+//! A render is hermetic unless told otherwise (see `render`): a fixed date, system readings,
+//! track and sound, no network, no installed content, the software adapter. `--env`, `--now`,
+//! `--real` and `--installed` change that, and `<png>.env.json` records what was used.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, mpsc};
-use std::time::{Duration, Instant};
 
+use crate::plugins;
+pub use crate::render::Request as Render;
+#[cfg(test)]
 use crate::ambient::Pins;
-use crate::anim::Anim;
-use crate::card::Card;
-use crate::code::runtime::Limits;
-use crate::code::{CodeSources, Deps, WasmSource};
-use crate::content::{Catalog, Root};
-use crate::data::{DataSources, Tm};
-use crate::gfx::{Gpu, Power};
-use crate::icons::ImageStore;
-use crate::plugins::{self, PluginStore};
-use crate::text::TextEngine;
-use crate::theme::{Selection, Theme};
-use crate::value::Value;
-use crate::widgets::{Services, View, prepare};
-use crate::workspace::{self, InstanceCfg};
 
 pub const USAGE: &str = "usage:
   wayfinder --render-widget <id | file.toml> --png <out.png> [--size WxH] [--param k=v]... [--state k=v]...
-            [--palette name] [--scale 1.25] [--time HH:MM] [--transparent] [--wait secs] [--data dir] [--gpu mode]
+            [--palette name] [--scale 1.25] [--time HH:MM] [--now ISO] [--env key=value]... [--real seams]
+            [--installed] [--transparent] [--wait secs] [--data dir] [--gpu mode]
   wayfinder plugin pack <folder> [out.wfplugin]
   wayfinder plugin check <file.wfplugin | folder>";
 
@@ -42,27 +34,6 @@ pub enum Command {
     Pack { dir: PathBuf, out: Option<PathBuf> },
     Check(PathBuf),
     Usage(String),
-}
-
-#[derive(Debug, PartialEq)]
-pub struct Render {
-    /// A widget id (built-in, a plugin's or the user's) or a widget file.
-    pub widget: String,
-    pub png: PathBuf,
-    /// The card's size in logical px; the widget's default size without it.
-    pub size: Option<(f32, f32)>,
-    pub params: Vec<(String, serde_json::Value)>,
-    pub state: Vec<(String, serde_json::Value)>,
-    pub palette: Option<String>,
-    pub scale: f32,
-    pub time: Option<(u32, u32)>,
-    pub transparent: bool,
-    /// How long to wait for plugin code to answer.
-    pub wait: f32,
-    pub data: PathBuf,
-    pub gpu: String,
-    /// The environment pins from `--env key=value`; parsed and checked, not yet applied.
-    pub pins: Pins,
 }
 
 /// `v` as JSON when it is (numbers, booleans, lists), else as text.
@@ -88,7 +59,7 @@ pub fn command(args: &[String]) -> Option<Command> {
     let i = args.iter().position(|a| a == "--render-widget")?;
     let parse = || -> Result<Render, String> {
         let widget = args.get(i + 1).filter(|w| !w.starts_with("--")).ok_or("--render-widget needs a widget id or file")?.clone();
-        let mut r = Render { widget, png: PathBuf::new(), size: None, params: vec![], state: vec![], palette: None, scale: 1.25, time: None, transparent: false, wait: 5.0, data: workspace::data_dir(), gpu: "software".into(), pins: Pins::default() };
+        let mut r = Render::new(widget);
         let mut it = args.iter().enumerate().filter(|(j, _)| *j != i && *j != i + 1).map(|(_, a)| a);
         while let Some(a) = it.next() {
             let mut val = || it.next().cloned().ok_or_else(|| format!("{a} needs a value"));
@@ -101,16 +72,19 @@ pub fn command(args: &[String]) -> Option<Command> {
                 }
                 "--param" => r.params.push(pair(&val()?, "--param")?),
                 "--state" => r.state.push(pair(&val()?, "--state")?),
-                "--palette" => r.palette = Some(val()?),
-                "--scale" => r.scale = val()?.parse().ok().filter(|s: &f32| *s > 0.0 && *s <= 4.0).ok_or("--scale is a number from 0 to 4")?,
+                "--palette" => r.pins.palette = val()?,
+                "--scale" => r.pins.scale = val()?.parse().ok().filter(|s: &f32| *s > 0.0 && *s <= 4.0).ok_or("--scale is a number from 0 to 4")?,
                 "--time" => {
                     let v = val()?;
                     let (h, m) = v.split_once(':').ok_or("--time is HH:MM")?;
                     r.time = Some((h.parse().map_err(|_| "--time is HH:MM")?, m.parse().map_err(|_| "--time is HH:MM")?));
                 }
-                "--transparent" => r.transparent = true,
+                "--now" => r.pins.set("now", &serde_json::Value::String(val()?)).map_err(|e| format!("--now: {e}"))?,
+                "--real" => r.pins.set("real", &serde_json::Value::String(val()?)).map_err(|e| format!("--real: {e}"))?,
+                "--installed" => r.installed = true,
+                "--transparent" => r.pins.transparent = true,
                 "--wait" => r.wait = val()?.parse().map_err(|_| "--wait is seconds")?,
-                "--data" => r.data = val()?.into(),
+                "--data" => r.data = Some(val()?.into()),
                 "--gpu" => r.gpu = val()?,
                 "--env" => {
                     let (k, v) = pair(&val()?, "--env")?;
@@ -165,7 +139,7 @@ pub fn run(cmd: Command) -> i32 {
             }
             i32::from(!r.problems.is_empty())
         }
-        Command::Render(r) => match render(&r) {
+        Command::Render(r) => match crate::render::render(&r) {
             Ok(errors) => i32::from(errors),
             Err(e) => {
                 eprintln!("wayfinder: {e}");
@@ -199,140 +173,6 @@ fn attach_console() {
             let _ = AttachConsole(ATTACH_PARENT_PROCESS);
         }
     }
-}
-
-/// Renders one widget as the desktop would and writes a PNG. Returns whether the widget
-/// showed an error.
-fn render(r: &Render) -> Result<bool, String> {
-    if r.pins != Pins::default() {
-        println!("warning: --env pins are checked but not applied to this render yet");
-    }
-    let plugin_list = PluginStore::new(&r.data).list();
-    let mut roots = plugins::roots(&plugin_list, &Default::default());
-    roots.push(Root::user(&r.data));
-    let mut cat = Catalog::load(&roots);
-    let file = Path::new(&r.widget);
-    let id = if r.widget.ends_with(".toml") {
-        let dir = file.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-        cat.registry.load_dir(dir);
-        file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
-    } else {
-        r.widget.clone()
-    };
-    let def = cat.registry.get(&id).ok_or_else(|| format!("no widget `{id}`"))?.clone();
-    for e in cat.registry.errors().into_iter().filter(|e| e.contains(&id)) {
-        println!("warning: {e}");
-    }
-
-    let mut gpu = Gpu::new_headless(Power::parse(&r.gpu))?;
-    // plugin code runs as in the app, without the user's saved data
-    let mut ambient = crate::ambient::Ambient::windows(&r.data);
-    let mut text = TextEngine::with_fonts((ambient.fonts)());
-    for e in text.sync_fonts(&cat.font_files) {
-        println!("warning: {e}");
-    }
-    let mut images = ImageStore::new(ambient.icons.clone(), cat.icon_packs.clone());
-    images.set_cache(r.data.join(".cache").join("thumbs"));
-    let sel = Selection { palette: r.palette.clone().unwrap_or_default(), ..Default::default() };
-    let theme = Theme::compose(&cat.library, &sel, &[]);
-    let card = Card::new(&theme);
-
-    let mut sources = DataSources::from(&ambient);
-    let (news_tx, news) = mpsc::channel();
-    let news_tx = Mutex::new(news_tx);
-    let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
-        let _ = news_tx.lock().unwrap().send(());
-    });
-    sources.set_waker(notify.clone());
-    let (specs, _) = plugins::code_specs(&plugin_list, &Default::default());
-    if specs.iter().any(|(_, s)| !s.hosts.is_empty()) {
-        ambient.fetch = crate::platform::winhttp::WinHttp::new().ok().map(|w| Arc::new(w) as Arc<dyn crate::net::Fetch>);
-    }
-    let fetch = ambient.fetch.clone();
-    let places = crate::code::fs::Places { home: std::env::var_os("USERPROFILE").map(PathBuf::from), private: vec![r.data.clone()] };
-    let mut code = CodeSources::default();
-    code.sync(&mut sources, specs, |spec| WasmSource::start(spec, Deps { fetch: fetch.clone(), store: None, notify: notify.clone(), limits: Limits::default(), places: places.clone(), calendar: ambient.calendar.clone() }));
-
-    let meta = match &def {
-        Ok(w) => Some(w.meta().clone()),
-        Err(_) => None,
-    };
-    let card_size = r.size.or(meta.as_ref().map(|m| m.default_card_size)).unwrap_or((200.0, 120.0));
-    let size = card.window_size(card_size);
-    let mut cfg = InstanceCfg { id: format!("{id}-1"), widget: id.clone(), w: size.0, h: size.1, ..Default::default() };
-    if let Some(m) = &meta {
-        crate::widgets::seed_params(m, &mut cfg);
-    }
-    for (k, v) in &r.params {
-        cfg.params.insert(k.clone(), v.clone());
-    }
-    let mut state: BTreeMap<String, Value> = meta.as_ref().map(|m| m.initial_state.clone()).unwrap_or_default();
-    state.extend(r.state.iter().map(|(k, v)| (k.clone(), Value::from(v))));
-    let now_tm = ambient.calendar.now();
-    let tm = match r.time {
-        Some((hour, minute)) => Tm { hour, minute, second: 0, ms: 0, ..now_tm },
-        None => now_tm,
-    };
-
-    let mut anim = Anim::default();
-    let base = Instant::now();
-    let frame = |at: Instant, text: &mut TextEngine, images: &mut ImageStore, anim: &mut Anim| {
-        let v = View { cfg: &cfg, state: &state, window_size: size, theme: &theme, icon_pack: "Default", tm, hover: None, scale: r.scale, now: at, card };
-        let mut sv = Services { images, text, anim, sources: &sources };
-        prepare(&def, &v, &mut sv)
-    };
-    // enter animations start transparent: render once to start them, then after they settle
-    let first = frame(base, &mut text, &mut images, &mut anim);
-    if !code.launch_rules(&first.deps).is_empty() {
-        let deadline = Instant::now() + Duration::from_secs_f32(r.wait.max(0.0));
-        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
-            let _ = news.recv_timeout(left);
-            let got = sources.take_news().iter().chain(&code.take_news()).any(|(_, n)| n.all || n.changed.contains(&cfg.id));
-            if got {
-                break;
-            }
-        }
-    }
-    // small copies of pictures are made off-thread
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while images.pending() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
-        images.take_ready();
-    }
-    images.take_ready();
-    let at = Duration::from_secs(2);
-    let p = frame(base + at, &mut text, &mut images, &mut anim);
-    for w in &p.warnings {
-        println!("warning: {w}");
-    }
-    if let Some(e) = &p.error {
-        println!("error: {e}");
-    }
-    let (pw, ph) = ((size.0 * r.scale).round() as u32, (size.1 * r.scale).round() as u32);
-    gpu.apply(images.drain());
-    let mut px = gpu.render_offscreen(pw, ph, &p.frame.list, &mut text, at)?;
-    // premultiplied: over a backdrop, or back to straight alpha for a transparent PNG
-    for (i, c) in px.chunks_exact_mut(4).enumerate() {
-        let a = c[3] as f32 / 255.0;
-        if r.transparent {
-            if a > 0.0 {
-                for k in 0..3 {
-                    c[k] = (c[k] as f32 / a).min(255.0) as u8;
-                }
-            }
-        } else {
-            let (x, y) = ((i as u32 % pw) as f32 / pw as f32, (i as u32 / pw) as f32 / ph as f32);
-            let bg = [30.0 + 70.0 * x, 60.0 + 50.0 * (1.0 - y), 120.0 + 60.0 * y];
-            for k in 0..3 {
-                c[k] = (c[k] as f32 + bg[k] * (1.0 - a)).clamp(0.0, 255.0) as u8;
-            }
-            c[3] = 255;
-        }
-    }
-    let img = image::RgbaImage::from_raw(pw, ph, px).ok_or("the renderer returned the wrong size")?;
-    img.save(&r.png).map_err(|e| format!("{}: {e}", r.png.display()))?;
-    println!("rendered {id} at {:.0}x{:.0} to {}", card_size.0, card_size.1, r.png.display());
-    Ok(p.error.is_some())
 }
 
 #[cfg(test)]
@@ -372,12 +212,25 @@ mod tests {
     }
 
     #[test]
+    fn the_look_flags_set_pins_and_the_environment_flags_are_sugar_over_them() {
+        let render = |extra: &[&str]| command(&args(&[&["--render-widget", "clock", "--png", "o.png"][..], extra].concat()));
+        let Some(Command::Render(r)) = render(&["--palette", "Dawn", "--scale", "2", "--now", "2026-03-08T02:30:00", "--time", "15:42", "--real", "sys,gpu", "--installed", "--data", "D:/wf", "--gpu", "low", "--wait", "9"]) else { panic!() };
+        assert_eq!((r.pins.palette.as_str(), r.pins.scale, r.installed, r.data, r.gpu.as_str(), r.wait), ("Dawn", 2.0, true, Some(PathBuf::from("D:/wf")), "low", 9.0));
+        assert_eq!((r.pins.now.month, r.pins.now.day, r.pins.now.hour, r.time), (3, 8, 2, Some((15, 42))), "--time is applied after the pins, to their date");
+        assert_eq!(r.pins.real.len(), 2);
+        for bad in [&["--now", "soon"][..], &["--now", "2026-02-30T10:00"], &["--real", "clok"], &["--real", "clock", "--now", "2026-03-08T02:30:00"], &["--scale", "9"], &["--now"]] {
+            assert!(matches!(render(bad), Some(Command::Usage(_))), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn render_options_parse() {
         let Some(Command::Render(r)) = command(&args(&["--render-widget", "clock", "--png", "o.png", "--size", "300x200", "--param", "title=Quick launch", "--param", "smooth=true", "--state", "selected=2", "--time", "15:42", "--transparent"])) else { panic!() };
-        assert_eq!((r.widget.as_str(), r.png, r.size, r.time, r.transparent), ("clock", PathBuf::from("o.png"), Some((300.0, 200.0)), Some((15, 42)), true));
+        assert_eq!((r.widget.as_str(), r.png, r.size, r.time, r.pins.transparent), ("clock", PathBuf::from("o.png"), Some((300.0, 200.0)), Some((15, 42)), true));
+        assert_eq!((r.installed, r.data, r.gpu.as_str(), r.wait), (false, None, "software", 5.0));
         assert_eq!(r.params, [("title".to_string(), serde_json::json!("Quick launch")), ("smooth".to_string(), serde_json::json!(true))]);
         assert_eq!(r.state, [("selected".to_string(), serde_json::json!(2))]);
-        assert_eq!(r.pins, Pins::default(), "without --env the environment is the default");
+        assert_eq!(r.pins, Pins { transparent: true, ..Pins::default() }, "without --env the environment is the default");
         for bad in [&["--render-widget", "clock"][..], &["--render-widget", "clock", "--png", "o.png", "--size", "big"], &["--render-widget", "clock", "--png", "o.png", "--nope"], &["--render-widget", "--png", "o.png"]] {
             assert!(matches!(command(&args(bad)), Some(Command::Usage(_))), "{bad:?}");
         }

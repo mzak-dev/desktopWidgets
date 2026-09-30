@@ -121,6 +121,28 @@ impl TextEngine {
         Self { fs, swash: SwashCache::new(), slots: HashMap::new(), frame: 0, files: HashMap::new() }
     }
 
+    /// One line per font face this engine can shape with (names, style, weight, stretch and
+    /// where the face is stored), sorted: the fonts text is measured with, for a render to
+    /// record which font set its metrics belong to.
+    pub fn font_faces(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .fs
+            .db()
+            .faces()
+            .map(|f| {
+                let names: Vec<&str> = f.families.iter().map(|(n, _)| n.as_str()).collect();
+                let at = match &f.source {
+                    Source::Binary(d) => format!("memory:{}", (**d).as_ref().len()),
+                    Source::File(p) => format!("{}:{}", p.display(), std::fs::metadata(p).map_or(0, |m| m.len())),
+                    Source::SharedFile(p, d) => format!("{}:{}", p.display(), (**d).as_ref().len()),
+                };
+                format!("{}|{}|{:?}|{}|{:?}|{}|{at}", names.join(","), f.post_script_name, f.style, f.weight.0, f.stretch, f.index)
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
     /// What the renderer draws text with: the font system, the glyph cache and the shaped
     /// buffers (read after `prepare`).
     pub fn render_parts(&mut self) -> (&mut FontSystem, &mut SwashCache, Buffers<'_>) {

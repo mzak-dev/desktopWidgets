@@ -174,9 +174,16 @@ impl Ambient {
     ///
     /// Panics on a zone or locale `Pins::set` would have refused.
     pub fn fixed_with(pins: &Pins) -> Ambient {
+        Self::fixed_at(pins, std::time::Instant::now())
+    }
+
+    /// `fixed_with`, with a playing track started at `origin` on the caller's (virtual)
+    /// monotonic clock instead of at this call, so a render that reads sources at
+    /// `origin + 2 s` finds it 2 s further on, however long the machine took to get there.
+    pub fn fixed_at(pins: &Pins, origin: std::time::Instant) -> Ambient {
         let m = &pins.media;
         let art = if m.art.is_empty() || m.art.starts_with("file:") { m.art.clone() } else { format!("file:{}", m.art) };
-        let track = Track { active: m.active, title: m.title.clone(), artist: m.artist.clone(), album: m.album.clone(), source: m.source.clone(), playing: m.playing, can_seek: m.can_seek, art, position: m.position, duration: m.duration, at: m.playing.then(std::time::Instant::now) };
+        let track = Track { active: m.active, title: m.title.clone(), artist: m.artist.clone(), album: m.album.clone(), source: m.source.clone(), playing: m.playing, can_seek: m.can_seek, art, position: m.position, duration: m.duration, at: m.playing.then_some(origin) };
         let capture: Arc<dyn Capture> = if pins.audio.silence { Arc::new(Silence) } else { Arc::new(Tone::new(pins.audio.tones.iter().copied(), pins.audio.amp)) };
         let fetch: Option<Arc<dyn Fetch>> = match &pins.fetch {
             FetchMode::Offline => Some(Arc::new(OfflineFetch)),
@@ -271,6 +278,17 @@ mod tests {
         assert_eq!((t.title.as_str(), t.artist.as_str(), t.album.as_str(), t.source.as_str(), t.playing, t.can_seek, t.duration, t.art.as_str()), ("T", "A", "L", "S", true, false, 300.0, "file:cover.png"));
         assert!(t.at.is_some(), "a playing track runs on");
         assert!(Ambient::fixed().media.track().at.is_none() && !pinned(|p| p.set("media.active", &serde_json::json!(false)).unwrap()).media.track().active);
+    }
+
+    #[test]
+    fn a_playing_track_runs_from_the_origin_it_is_given() {
+        let origin = std::time::Instant::now() + std::time::Duration::from_secs(1000);
+        let mut p = Pins::default();
+        p.set("media.playing", &serde_json::json!(true)).unwrap();
+        let track = Ambient::fixed_at(&p, origin).media.track();
+        assert_eq!((track.position_at(origin), track.position_at(origin + std::time::Duration::from_secs(2))), (83.0, 85.0));
+        p.set("media.playing", &serde_json::json!(false)).unwrap();
+        assert_eq!(Ambient::fixed_at(&p, origin).media.track().position_at(origin + std::time::Duration::from_secs(2)), 83.0, "paused stays put");
     }
 
     #[test]

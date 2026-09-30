@@ -36,7 +36,6 @@ impl App {
         let def = reg.get(&cfg.widget).unwrap_or(&missing);
         let tm = ambient.calendar.now();
         let pack = cfg.theme.resolve(&ws.theme).icon_pack;
-        iw.anim.duration_factor = anim::duration_factor(&theme.str("anim-speed"));
         let v = View { cfg, state: &iw.state, window_size: size, theme: &theme, icon_pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };
         let mut sv = Services { images, text, anim: &mut iw.anim, sources };
         let mut p = widgets::prepare(def, &v, &mut sv);

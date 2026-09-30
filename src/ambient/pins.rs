@@ -432,6 +432,63 @@ impl Pins {
         Ok(())
     }
 
+    /// Every Pin as the `(key, value)` that `set` would take to make it, in `KEYS` order, for
+    /// the render's record of the environment. Setting these on a default `Pins` gives an equal
+    /// one. A canned network is one `fetch.responses` entry instead of `fetch`.
+    pub fn entries(&self) -> Vec<(&'static str, Value)> {
+        use serde_json::json;
+        let f32v = |n: f32| json!((f64::from(n) * 1e6).round() / 1e6);
+        let t = &self.now;
+        let now = if t.ms == 0 { format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}", t.year, t.month, t.day, t.hour, t.minute, t.second) } else { format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}", t.year, t.month, t.day, t.hour, t.minute, t.second, t.ms) };
+        let (fetch, responses) = match &self.fetch {
+            FetchMode::Offline => (Some(json!("offline")), None),
+            FetchMode::Real => (Some(json!("real")), None),
+            FetchMode::Canned(c) => (None, Some(Value::Array(c.iter().map(|a| json!({ "url": a.url, "status": a.status, "content_type": a.content_type, "body": a.body })).collect()))),
+        };
+        let mut out: Vec<(&'static str, Value)> = vec![
+            ("now", json!(now)),
+            ("zone", json!(self.zone)),
+            ("locale", json!(self.locale)),
+            ("sys.cpu", json!(self.sys.cpu)),
+            ("sys.ram", json!(self.sys.ram)),
+            ("sys.disk", json!(self.sys.disk)),
+            ("sys.net_down", json!(self.sys.net_down)),
+            ("sys.net_up", json!(self.sys.net_up)),
+            ("sys.processes", json!(self.sys.processes)),
+            ("sys.uptime", json!(self.sys.uptime)),
+            ("sys.battery", json!(self.sys.battery)),
+            ("sys.charging", json!(self.sys.charging)),
+            ("sys.gpus", json!(self.sys.gpus)),
+            ("media.active", json!(self.media.active)),
+            ("media.playing", json!(self.media.playing)),
+            ("media.title", json!(self.media.title)),
+            ("media.artist", json!(self.media.artist)),
+            ("media.album", json!(self.media.album)),
+            ("media.source", json!(self.media.source)),
+            ("media.position", json!(self.media.position)),
+            ("media.duration", json!(self.media.duration)),
+            ("media.can_seek", json!(self.media.can_seek)),
+            ("media.art", json!(self.media.art)),
+            ("audio", json!(if self.audio.silence { "silence" } else { "tone" })),
+            ("audio.tones", Value::Array(self.audio.tones.iter().map(|hz| f32v(*hz)).collect())),
+            ("audio.amp", f32v(self.audio.amp)),
+            ("icons", json!(match self.icons { IconMode::Tiles => "tiles", IconMode::System => "system" })),
+            ("fonts", json!("system")),
+        ];
+        out.extend(fetch.map(|f| ("fetch", f)));
+        out.extend(responses.map(|r| ("fetch.responses", r)));
+        out.extend([
+            ("settle", json!(self.settle.as_secs_f64())),
+            ("scale", f32v(self.scale)),
+            ("palette", json!(self.palette)),
+            ("anim", json!(self.anim)),
+            ("transparent", json!(self.transparent)),
+            ("backdrop", json!(match self.backdrop { Backdrop::Gradient => "gradient".to_string(), Backdrop::Solid([r, g, b]) => format!("#{r:02x}{g:02x}{b:02x}") })),
+            ("real", json!(self.real.iter().map(|s| s.name()).collect::<Vec<_>>())),
+        ]);
+        out
+    }
+
     /// Finds Pins that cannot both hold: a value pinned for a seam that is taken from the
     /// machine, or a charging state with no battery.
     pub fn check(&self) -> Result<(), String> {
@@ -611,6 +668,28 @@ mod tests {
         assert_eq!(with("real", json!("clock, sys")).real, BTreeSet::from([Seam::Clock, Seam::Sys]));
         assert_eq!(with("real", json!(["gpu"])).real, BTreeSet::from([Seam::Gpu]));
         assert!(err("real", json!("clok")).contains("did you mean `clock`"));
+    }
+
+    #[test]
+    fn entries_set_on_a_default_give_the_same_pins_back() {
+        let mut p = Pins::default();
+        for (k, v) in [("now", json!("2026-03-08T15:42:10.25")), ("zone", json!("Tokyo Standard Time")), ("sys.cpu", json!(9)), ("sys.battery", json!(40)), ("sys.gpus", json!([1, 2])), ("media.playing", json!(true)), ("media.art", json!("c.png")), ("audio.tones", json!([220.5])), ("audio.amp", json!(0.3)), ("icons", json!("system")), ("settle", json!("500ms")), ("scale", json!(1.5)), ("anim", json!("off")), ("backdrop", json!("#1e2a3c")), ("real", json!("gpu"))] {
+            p.set(k, &v).unwrap();
+        }
+        let back = |p: &Pins| {
+            let mut q = Pins::default();
+            for (k, v) in p.entries() {
+                q.set(k, &v).unwrap_or_else(|e| panic!("{k}={v}: {e}"));
+            }
+            q
+        };
+        assert_eq!(back(&p), p);
+        assert_eq!(back(&Pins::default()), Pins::default());
+        p.set("fetch.responses", &json!([{ "url": "https://a.example/", "body": "x" }])).unwrap();
+        assert_eq!(back(&p), p, "a canned network comes back as fetch.responses");
+        let keys: Vec<&str> = p.entries().iter().map(|(k, _)| *k).collect();
+        assert!(keys.iter().all(|k| KEYS.contains(k)) && keys.len() == KEYS.len() - 1, "every key but the other spelling of fetch");
+        assert_eq!(Pins::default().entries()[0].1, json!("2026-01-15T10:10:30"));
     }
 
     #[test]

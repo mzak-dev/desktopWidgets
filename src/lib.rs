@@ -24,6 +24,7 @@ pub mod native;
 pub mod net;
 pub mod platform;
 pub mod plugins;
+pub mod render;
 pub mod settings;
 pub mod shortcut;
 pub mod suggest;
