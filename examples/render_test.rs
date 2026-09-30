@@ -4,7 +4,7 @@
 //!
 //!   cargo run --release --example render_test -- out.png
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use wayfinder::anim::Anim;
 use wayfinder::color::Color;
@@ -109,7 +109,7 @@ fn main() {
         frame.hits.len()
     );
 
-    let px = gpu.render_offscreen(pw, ph, &frame.list, &mut text).expect("render");
+    let px = gpu.render_offscreen(pw, ph, &frame.list, &mut text, Duration::ZERO).expect("render");
     // composite over a gradient "wallpaper" so the alpha is visible
     let mut img = image::RgbaImage::new(pw, ph);
     for y in 0..ph {

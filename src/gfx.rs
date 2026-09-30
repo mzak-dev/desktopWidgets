@@ -43,12 +43,7 @@ impl Power {
 
 struct GpuImage {
     bind: wgpu::BindGroup,
-    /// Its layout size: one frame's, for an animation.
-    w: u32,
-    h: u32,
     frames: Option<crate::images::Frames>,
-    /// Its texture's size in memory.
-    bytes: u64,
 }
 
 struct Buf {
@@ -450,26 +445,18 @@ impl Gpu {
     }
 
 
-    pub fn has_image(&self, id: &str) -> bool {
-        self.images.contains_key(id)
-    }
-
-    pub fn image_size(&self, id: &str) -> Option<(u32, u32)> {
-        self.images.get(id).map(|i| (i.w, i.h))
-    }
-
-    pub fn image_bytes(&self, id: &str) -> Option<u64> {
-        self.images.get(id).map(|i| i.bytes)
-    }
-
-    /// Upload straight-alpha RGBA8.
-    pub fn upload_image(&mut self, id: &str, rgba: &[u8], w: u32, h: u32) {
-        self.upload(id, rgba, w, h, None);
-    }
-
-    /// A decoded file: a still, or an animation's packed frames.
-    pub fn upload_decoded(&mut self, id: &str, d: &crate::images::Decoded) {
-        self.upload(id, &d.px, d.w, d.h, d.frames.clone());
+    /// Applies the image store's queue, in order. Called once before each render, so what the
+    /// render draws is what the store decided; nothing else uploads or drops a texture.
+    pub fn apply(&mut self, ops: Vec<crate::images::ImageOp>) {
+        use crate::images::ImageOp;
+        for op in ops {
+            match op {
+                ImageOp::Upload(id, d) => self.upload(&id, &d.px, d.w, d.h, d.frames),
+                ImageOp::Drop(id) => {
+                    self.images.remove(&id);
+                }
+            }
+        }
     }
 
     /// How soon a playing animation in `list` shows its next frame.
@@ -504,17 +491,11 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
-        let bytes = w as u64 * h as u64 * 4;
-        let (w, h) = frames.as_ref().map_or((w, h), |f| (f.frame_w, f.frame_h));
-        self.images.insert(id.to_string(), GpuImage { bind, w, h, frames, bytes });
-    }
-
-    pub fn drop_image(&mut self, id: &str) {
-        self.images.remove(id);
+        self.images.insert(id.to_string(), GpuImage { bind, frames });
     }
 
 
-    fn encode(&mut self, t: &mut Target, list: &DrawList, text: &mut TextEngine, view: &wgpu::TextureView) -> Result<wgpu::CommandBuffer, String> {
+    fn encode(&mut self, t: &mut Target, list: &DrawList, text: &mut TextEngine, view: &wgpu::TextureView, at: std::time::Duration) -> Result<wgpu::CommandBuffer, String> {
         let (w, h) = (t.cfg.width, t.cfg.height);
         self.queue.write_buffer(&t.globals, 0, bytemuck::cast_slice(&[w as f32, h as f32, 0.0, 0.0]));
         t.viewport.update(&self.queue, Resolution { width: w, height: h });
@@ -543,7 +524,7 @@ impl Gpu {
                 .prepare(&self.device, &self.queue, fs, &mut self.atlas, &t.viewport, areas, swash)
                 .map_err(|e| format!("text prepare: {e}"))?;
             t.shapes[i].write(&self.device, &self.queue, bytemuck::cast_slice(&layer.shapes));
-            let elapsed = self.epoch.elapsed().as_millis() as u64;
+            let elapsed = at.as_millis() as u64;
             let imgs: Vec<ImgInst> = layer
                 .images
                 .iter()
@@ -632,14 +613,15 @@ impl Gpu {
             }
         };
         let view = frame.texture.create_view(&Default::default());
-        let cmd = self.encode(t, list, text, &view).map_err(RenderError::Skip)?;
+        let cmd = self.encode(t, list, text, &view, self.epoch.elapsed()).map_err(RenderError::Skip)?;
         self.queue.submit([cmd]);
         self.queue.present(frame);
         self.atlas.trim();
         Ok(())
     }
 
-    pub fn render_offscreen(&mut self, w: u32, h: u32, list: &DrawList, text: &mut TextEngine) -> Result<Vec<u8>, String> {
+    /// `at` is how long the animations have played: it picks each GIF's frame.
+    pub fn render_offscreen(&mut self, w: u32, h: u32, list: &DrawList, text: &mut TextEngine, at: std::time::Duration) -> Result<Vec<u8>, String> {
         let mut t = self.target_inner(None, None, w, h);
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen"),
@@ -652,7 +634,7 @@ impl Gpu {
             view_formats: &[],
         });
         let view = tex.create_view(&Default::default());
-        let cmd = self.encode(&mut t, list, text, &view)?;
+        let cmd = self.encode(&mut t, list, text, &view, at)?;
         let row = (w * 4).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),

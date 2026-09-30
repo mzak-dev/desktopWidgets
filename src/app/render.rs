@@ -5,7 +5,7 @@ impl App {
         let now = Instant::now();
         let theme = self.theme_of(i);
         let card = Card::new(&theme);
-        let App { gpu, text, icons, theme: chrome, reg, sources, ws, wins, edit, remove_armed, .. } = self;
+        let App { gpu, text, images, theme: chrome, reg, sources, ws, wins, edit, remove_armed, .. } = self;
         let (Some(gpu), Some(iw)) = (gpu.as_mut(), wins.get_mut(i)) else { return };
         let (Some(window), Some(target)) = (iw.window.clone(), iw.target.as_mut()) else { return };
         let cfg = &ws.instances[i];
@@ -38,7 +38,7 @@ impl App {
         let pack = cfg.theme.resolve(&ws.theme).icon_pack;
         iw.anim.duration_factor = anim::duration_factor(&theme.str("anim-speed"));
         let v = View { cfg, state: &iw.state, window_size: size, theme: &theme, icon_pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };
-        let mut sv = Services { gpu, icons, text, anim: &mut iw.anim, sources };
+        let mut sv = Services { images, text, anim: &mut iw.anim, sources };
         let mut p = widgets::prepare(def, &v, &mut sv);
 
         if *edit {
@@ -51,6 +51,7 @@ impl App {
             p.frame.list.put_on_top(of.list);
             p.frame.animating |= of.animating;
         }
+        gpu.apply(images.drain());
         let mut lost = None;
         match gpu.render(target, &p.frame.list, text) {
             Ok(()) => iw.error = None,

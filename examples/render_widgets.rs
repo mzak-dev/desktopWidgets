@@ -15,7 +15,7 @@ use wayfinder::anim::Anim;
 use wayfinder::card::Card;
 use wayfinder::data::{DataSources, Shortcut, SourceCx, Tm};
 use wayfinder::gfx::{Gpu, Power};
-use wayfinder::icons::IconService;
+use wayfinder::icons::ImageStore;
 use wayfinder::text::TextEngine;
 use wayfinder::theme::{Library, Selection, Theme};
 use wayfinder::value::Value;
@@ -55,7 +55,7 @@ fn main() {
 
     let mut gpu = Gpu::new_headless(Power::parse(&std::env::var("WAYFINDER_GPU").unwrap_or_else(|_| "software".into()))).expect("gpu");
     let mut text = TextEngine::new();
-    let mut icons = IconService::default();
+    let mut images = ImageStore::default();
     let lib = Library::load(Path::new("nope"));
     let sel = Selection { palette: palette.clone(), ..Default::default() };
     let theme = Theme::compose(&lib, &sel, &[]);
@@ -128,14 +128,14 @@ fn main() {
         let base = Instant::now();
         {
             let v = View { cfg: &cfg, state: &state, window_size: size, theme: &theme, icon_pack: "Default", tm, hover: None, scale, now: base, card };
-            let mut sv = Services { gpu: &mut gpu, icons: &mut icons, text: &mut text, anim: &mut anim, sources: &sources };
+            let mut sv = Services { images: &mut images, text: &mut text, anim: &mut anim, sources: &sources };
             let _ = prepare(def, &v, &mut sv);
         }
         // two passes: the first learns the expand size, the second lays out at it
         for pass in 0..2 {
             let now = base + Duration::from_millis(2000);
             let v = View { cfg: &cfg, state: &state, window_size: size, theme: &theme, icon_pack: "Default", tm, hover: None, scale, now, card };
-            let mut sv = Services { gpu: &mut gpu, icons: &mut icons, text: &mut text, anim: &mut anim, sources: &sources };
+            let mut sv = Services { images: &mut images, text: &mut text, anim: &mut anim, sources: &sources };
             let mut p = prepare(def, &v, &mut sv);
             if edit_overlay {
                 let ov = wayfinder::edit::overlay(&cfg.id, size, card.gutter, "60, 60   200x120", &theme, None, tiles.len() % 2 == 1);
@@ -161,7 +161,8 @@ fn main() {
                 }
             }
             let (pw, ph) = ((size.0 * scale) as u32, (size.1 * scale) as u32);
-            let px = gpu.render_offscreen(pw, ph, &p.frame.list, &mut text).expect("render");
+            gpu.apply(images.drain());
+            let px = gpu.render_offscreen(pw, ph, &p.frame.list, &mut text, now - base).expect("render");
             println!("{:<14} {:>4.0}x{:<4.0} deps={:?} shapes={} texts={}", c.widget, size.0, size.1, p.deps, p.frame.list.layers[0].shapes.len(), p.frame.list.layers[0].texts.len());
             tiles.push((pw, ph, px));
             break;

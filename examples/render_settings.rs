@@ -11,7 +11,7 @@ use wayfinder::anim::Anim;
 use wayfinder::content::Contents;
 use wayfinder::data::Shortcut;
 use wayfinder::gfx::{Gpu, Power};
-use wayfinder::icons::IconService;
+use wayfinder::icons::ImageStore;
 use wayfinder::plugins::{CodeRow, PluginRow};
 use wayfinder::settings::{Ctx, Level, LogLine, UiState};
 use wayfinder::text::TextEngine;
@@ -26,7 +26,7 @@ fn main() {
     let mut gpu = Gpu::new_headless(power).expect("gpu");
     println!("gpu: {}", gpu.info);
     let mut text = TextEngine::new();
-    let mut icons = IconService::default();
+    let mut images = ImageStore::default();
     let lib = Library::load(Path::new("nope"));
     let reg = Registry::load(Path::new("nope"));
     let families = text.family_names();
@@ -120,16 +120,17 @@ fn main() {
         // pass 0 seeds enter animations and popup anchors, pass 1 is the settled frame
         for pass in 0..2 {
             let now = base + Duration::from_millis(if pass == 0 { 0 } else { 2500 });
-            let (root, images) = ui.build(&ctx, size);
-            for id in &images {
-                icons.ensure(&mut gpu, id);
+            let (root, wanted) = ui.build(&ctx, size);
+            for id in &wanted {
+                images.ensure(id);
             }
             let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now, scale: 1.0 };
             let frame = ui::layout(&root, size, &mut env);
             ui.record_anchors(&frame);
             ui.record_preview(&frame);
             if pass == 1 {
-                png = Some(gpu.render_offscreen(size.0 as u32, size.1 as u32, &frame.list, &mut text).expect("render"));
+                gpu.apply(images.drain());
+                png = Some(gpu.render_offscreen(size.0 as u32, size.1 as u32, &frame.list, &mut text, now - base).expect("render"));
             }
         }
         let px = png.unwrap();

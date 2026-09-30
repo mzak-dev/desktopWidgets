@@ -22,7 +22,7 @@ use crate::dialog;
 use crate::draw::{Inst, KIND_ARC, KIND_CAPSULE, KIND_RECT};
 use crate::elements::{Shape, ShapeCx, rgba_with_opacity};
 use crate::gfx::{Gpu, Power, RenderError, Target};
-use crate::icons::IconService;
+use crate::icons::ImageStore;
 use crate::format::Arrangement;
 use crate::plugins::PluginRow;
 use crate::text::TextEngine;
@@ -3404,7 +3404,7 @@ impl SettingsWin {
         cmds
     }
 
-    pub fn render(&mut self, gpu: &mut Gpu, text: &mut TextEngine, icons: &mut IconService, ctx: &Ctx) {
+    pub fn render(&mut self, gpu: &mut Gpu, text: &mut TextEngine, store: &mut ImageStore, ctx: &Ctx) {
         let now = Instant::now();
         if self.ui.wants_caret() && now.duration_since(self.ui.caret_at) >= Duration::from_millis(530) {
             self.ui.caret_on = !self.ui.caret_on;
@@ -3416,10 +3416,11 @@ impl SettingsWin {
         let size = (phys.width as f32 / s, phys.height as f32 / s);
         let (root, images) = self.ui.build(ctx, size);
         for id in &images {
-            icons.ensure(gpu, id);
+            store.ensure(id);
         }
         let mut env = Env { text, anim: &mut self.anim, hover: self.hover.as_deref(), now, scale: s };
         let frame = ui::layout(&root, size, &mut env);
+        gpu.apply(store.drain());
         match gpu.render(&mut self.target, &frame.list, text) {
             Ok(()) => {}
             Err(RenderError::Skip(e)) | Err(RenderError::Lost(e)) => eprintln!("wayfinder: settings render: {e}"),

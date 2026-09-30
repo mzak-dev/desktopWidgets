@@ -41,7 +41,7 @@ use crate::data::{self, DataSources};
 use crate::draw::DrawList;
 use crate::edit::{self, Handle, Rect, Snap};
 use crate::gfx::{Gpu, Power, RenderError, Target};
-use crate::icons::IconService;
+use crate::icons::ImageStore;
 use crate::net::Fetch;
 use crate::platform::win32::{self, ZMode};
 use crate::plugins::{self, Plugin, PluginRow, PluginStore};
@@ -175,7 +175,7 @@ pub struct App {
     code: CodeSources,
     gpu: Option<Gpu>,
     text: TextEngine,
-    icons: IconService,
+    images: ImageStore,
     wins: Vec<Instance>,
     settings: Option<SettingsWin>,
     edit: bool,
@@ -240,15 +240,15 @@ impl App {
         let (ws, ws_err) = Workspace::load(&dir);
         let theme = Theme::default(); // composed by `rebuild_theme` below
         let text = TextEngine::new();
-        let mut icons = IconService::default();
-        icons.set_cache(dir.join(".cache").join("thumbs"));
+        let mut images = ImageStore::default();
+        images.set_cache(dir.join(".cache").join("thumbs"));
         let waker = Mutex::new(proxy.clone());
-        icons.set_waker(Arc::new(move || {
+        images.set_waker(Arc::new(move || {
             let _ = waker.lock().unwrap().send_event(UserEvent::ImagesReady);
         }));
         let mut app = App {
             proxy,
-            icons,
+            images,
             opts,
             ws,
             lib: Library::default(), // filled by `load_content` below
@@ -495,7 +495,7 @@ impl App {
         self.log(format!("GPU lost ({why}): rebuilding"));
         self.settings = None;
         self.gpu = None;
-        self.icons.forget();
+        self.images.forget();
         let windows: Vec<(usize, Arc<Window>)> = self.wins.iter().enumerate().filter_map(|(i, w)| w.window.clone().map(|win| (i, win))).collect();
         for w in &mut self.wins {
             w.target = None;
@@ -553,10 +553,8 @@ impl App {
         self.reg = cat.registry;
         self.migrate_instances();
         self.lib = cat.library;
-        self.icons.set_packs(cat.icon_packs);
-        if let Some(g) = self.gpu.as_mut() {
-            self.icons.flush_files(g);
-        }
+        self.images.set_packs(cat.icon_packs);
+        self.images.flush_files();
         let font_problems = self.text.sync_fonts(&cat.font_files);
         self.families = self.text.family_names();
         for e in self.lib.errors.clone().into_iter().chain(self.reg.errors()).chain(font_problems) {
@@ -662,8 +660,10 @@ impl App {
 
     /// Uploads the pictures made off-thread and redraws what shows them.
     fn images_ready(&mut self) {
-        let Some(gpu) = self.gpu.as_mut() else { return };
-        let ids = self.icons.take_ready(gpu);
+        if self.gpu.is_none() {
+            return;
+        }
+        let ids = self.images.take_ready();
         if ids.is_empty() {
             return;
         }
@@ -841,7 +841,7 @@ impl ApplicationHandler<UserEvent> for App {
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
         if self.settings.as_ref().is_some_and(|s| s.window.id() == id) {
             let gpu_info = self.gpu.as_ref().map(|g| g.info.clone()).unwrap_or_else(|| "no GPU yet".into());
-            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, .. } = self;
+            let App { ws, reg, lib, theme, log, edit, settings, text, images, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, .. } = self;
             let off = plugins::hidden_instances(ws, reg, installed);
             let hidden: Vec<(String, settings::Hidden)> = ws.instances.iter().zip(wins.iter()).filter(|(_, w)| w.window.is_none()).map(|(c, _)| (c.id.clone(), off.get(&c.id).map_or(settings::Hidden::Parked, |p| settings::Hidden::PluginOff(p.clone())))).collect();
             let source_names = sources.names();
@@ -850,7 +850,7 @@ impl ApplicationHandler<UserEvent> for App {
             let cmds = s.event(&ev, &ctx, text);
             if matches!(ev, WindowEvent::RedrawRequested) {
                 if let Some(g) = gpu.as_mut() {
-                    s.render(g, text, icons, &ctx);
+                    s.render(g, text, images, &ctx);
                 }
             }
             for c in cmds {
@@ -955,7 +955,9 @@ impl ApplicationHandler<UserEvent> for App {
         if let Some(g) = self.gpu.as_mut() {
             let shown = self.wins.iter().filter(|w| w.window.is_some()).filter_map(|w| w.frame.as_ref());
             let drawn = shown.flat_map(|f| f.list.image_ids()).chain(self.settings.iter().flat_map(|s| s.drawn_images()));
-            self.icons.release_unused(g, drawn);
+            self.images.release_unused(drawn);
+            // uploads and drops made outside a render (thumbnails ready, content reloaded) land now
+            g.apply(self.images.drain());
         }
         if let Some(s) = &self.settings {
             match s.next_frame(now) {

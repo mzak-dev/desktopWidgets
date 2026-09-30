@@ -18,8 +18,7 @@ use crate::anim::Anim;
 use crate::card::Card;
 use crate::data::{DataSources, SourceCx, Tm};
 use crate::format::{self, Arrange};
-use crate::gfx::Gpu;
-use crate::icons::IconService;
+use crate::icons::ImageStore;
 use crate::text::TextEngine;
 use crate::theme::Theme;
 use crate::ui::{self, Env, Frame};
@@ -78,12 +77,12 @@ pub struct Prepared {
     pub warnings: Vec<String>,
     pub expand: Option<ExpandInfo>,
     pub error: Option<String>,
-    pub icons_uploaded: bool,
+    /// A new image size became known: the queued uploads are in `Services.images`.
+    pub images_changed: bool,
 }
 
 pub struct Services<'a> {
-    pub gpu: &'a mut Gpu,
-    pub icons: &'a mut IconService,
+    pub images: &'a mut ImageStore,
     pub text: &'a mut TextEngine,
     pub anim: &'a mut Anim,
     pub sources: &'a DataSources,
@@ -112,7 +111,7 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
     let cx = SourceCx::new(v.cfg.instance(), &params, v.tm, v.icon_pack);
     let sources = sv.sources;
     let read = |name: &str| sources.value(name, &cx);
-    let mut icons_uploaded = false;
+    let mut images_changed = false;
     let mut result = None;
     for _ in 0..2 {
         let outcome = match def {
@@ -121,8 +120,8 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
                 let unmet = w.meta().unmet(|n| sources.get(n).is_some());
                 if unmet.is_empty() {
                     let inp = Inputs { params: &params, state: v.state, card_size, key_prefix: &v.cfg.id, read_source: &read, arrange: Some(Arrange { layout: &v.cfg.layout, tier: None, preview: false }) };
-                    let gpu = &*sv.gpu;
-                    w.build(&inp, v.theme, &|id| gpu.image_size(id).map(|(w, h)| (w as f32, h as f32)))
+                    let images = &*sv.images;
+                    w.build(&inp, v.theme, &|id| images.size(id).map(|(w, h)| (w as f32, h as f32)))
                 } else {
                     Err(format!("{}: {}", w.meta().name, needs_message(&unmet)))
                 }
@@ -132,9 +131,9 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
             Ok(b) => {
                 let mut fresh = false;
                 for id in &b.image_ids {
-                    fresh |= sv.icons.ensure(sv.gpu, id);
+                    fresh |= sv.images.ensure(id);
                 }
-                icons_uploaded |= fresh;
+                images_changed |= fresh;
                 result = Some(Ok(b));
                 if !fresh {
                     break;
@@ -155,13 +154,14 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
     };
     let mut env = Env { text: sv.text, anim: sv.anim, hover: v.hover, now: v.now, scale: v.scale };
     let frame = ui::layout(&root, v.window_size, &mut env);
-    Prepared { frame, deps, warnings, expand, error, icons_uploaded }
+    Prepared { frame, deps, warnings, expand, error, images_changed }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::color::Color;
+    use crate::images::ImageOp;
     use crate::ui::Node;
     use crate::expr::Scope;
     use crate::theme::{Library, Selection};
@@ -203,6 +203,93 @@ mod tests {
         let window = card.window_node("b-1", card.window_size((100.0, 40.0)), b.root);
         assert_eq!((window.key.as_str(), window.children[0].look.border), ("b-1~", 0.0), "outlines off reaches Rust Widgets too");
         assert_eq!(b.expand.map(|e| card.expand_in_window_units(e).width), Some(Some(340.0)));
+    }
+
+    /// A Widget with one `image` element, at the picture's real size once it is known.
+    struct Picture {
+        meta: WidgetMeta,
+        id: String,
+        /// What `image_size` said at each build.
+        seen: std::sync::Mutex<Vec<Option<(f32, f32)>>>,
+    }
+
+    impl Widget for Picture {
+        fn meta(&self) -> &WidgetMeta {
+            &self.meta
+        }
+
+        fn build(&self, inp: &Inputs, _: &Theme, image_size: &dyn Fn(&str) -> Option<(f32, f32)>) -> Result<Built, String> {
+            let size = image_size(&self.id);
+            self.seen.lock().unwrap().push(size);
+            let (w, h) = size.unwrap_or((32.0, 32.0));
+            let mut img = Node::new(format!("{}/img", inp.key_prefix));
+            img.kind = ui::Kind::Image(ui::ImageSpec { id: self.id.clone(), w, h, tint: None, play: true, frame: None, fit: ui::Fit::Contain, feather: 0.0, fade: 0, ready: size.is_some() });
+            let root = Node::new(inp.key_prefix).wh(inp.card_size.0, inp.card_size.1).child(img);
+            Ok(Built { root, deps: BTreeSet::new(), image_ids: BTreeSet::from([self.id.clone()]), warnings: vec![], expand: None, arrangement: None })
+        }
+    }
+
+    fn picture(id: &str) -> (Arc<Picture>, Def) {
+        let meta = WidgetMeta { id: "pic".into(), name: "Pic".into(), description: String::new(), category: String::new(), icon: String::new(), default_card_size: (200.0, 100.0), min_card_size: (48.0, 48.0), max_card_size: None, params: vec![], initial_state: BTreeMap::new(), needs: vec![], tiers: vec![], slots: vec![], modules: vec![] };
+        let w = Arc::new(Picture { meta, id: id.into(), seen: Default::default() });
+        (w.clone(), Ok(w))
+    }
+
+    /// Runs `prepare` with no `Gpu` anywhere: an `ImageStore`, a `TextEngine` and empty sources.
+    fn prepare_pic(def: &Def, images: &mut ImageStore) -> Prepared {
+        let (theme, cfg, state) = (theme(), InstanceCfg { id: "pic-1".into(), widget: "pic".into(), w: 200.0, h: 100.0, ..Default::default() }, BTreeMap::new());
+        let card = Card::new(&theme);
+        let v = View { cfg: &cfg, state: &state, window_size: (200.0, 100.0), theme: &theme, icon_pack: "Default", tm: Tm { year: 2026, month: 9, day: 23, dow: 3, hour: 10, minute: 8, second: 0, ms: 0 }, hover: None, scale: 1.0, now: Instant::now(), card };
+        let (mut text, mut anim, sources) = (TextEngine::new(), Anim::default(), DataSources::new(vec![]));
+        let mut sv = Services { images, text: &mut text, anim: &mut anim, sources: &sources };
+        prepare(def, &v, &mut sv)
+    }
+
+    fn png(name: &str, w: u32, h: u32) -> String {
+        let dir = std::env::temp_dir().join(format!("wf-prepare-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        image::RgbaImage::new(w, h).save(&path).unwrap();
+        format!("file:{}", path.display())
+    }
+
+    #[test]
+    fn prepare_builds_and_lays_out_a_widget_with_no_gpu() {
+        let id = png("lay.png", 40, 30);
+        let (w, def) = picture(&id);
+        let mut images = ImageStore::default();
+        let p = prepare_pic(&def, &mut images);
+        assert!(p.error.is_none(), "{:?}", p.error);
+        assert!(p.images_changed);
+        let rect = p.frame.rects.iter().find(|(k, _)| k == "pic-1/img").map(|(_, r)| *r).expect("the image was laid out");
+        assert_eq!(rect[2] * 30.0, rect[3] * 40.0, "at the picture's 4:3, not the 32x32 stand-in the first build used: {rect:?}");
+        assert_eq!(p.frame.list.image_ids().collect::<Vec<_>>(), [id.as_str()]);
+        assert_eq!(images.size(&id), Some((40, 30)));
+        assert_eq!(w.seen.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_widget_builds_twice_only_when_a_new_size_became_known() {
+        let id = png("twice.png", 16, 8);
+        let (w, def) = picture(&id);
+        let mut images = ImageStore::default();
+        prepare_pic(&def, &mut images);
+        assert_eq!(*w.seen.lock().unwrap(), [None, Some((16.0, 8.0))], "the first pass has no size, ensure records it, the second lays out with it");
+        let again = prepare_pic(&def, &mut images);
+        assert!(!again.images_changed);
+        assert_eq!(w.seen.lock().unwrap().len(), 3, "known already: one build");
+        let ops = images.drain();
+        assert!(matches!(ops.as_slice(), [ImageOp::Upload(i, d)] if *i == id && (d.w, d.h) == (16, 8)), "one upload, however many frames");
+    }
+
+    #[test]
+    fn a_missing_picture_lays_out_as_the_generic_icon() {
+        let (_, def) = picture("file:/no/such/picture.png");
+        let mut images = ImageStore::default();
+        let p = prepare_pic(&def, &mut images);
+        assert_eq!(images.size("file:/no/such/picture.png"), Some((48, 48)));
+        let rect = p.frame.rects.iter().find(|(k, _)| k == "pic-1/img").unwrap().1;
+        assert!(rect[2] == rect[3] && rect[2] != 32.0, "{rect:?}");
     }
 
     #[test]

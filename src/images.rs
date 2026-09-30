@@ -41,6 +41,14 @@ impl Decoded {
     }
 }
 
+/// What the store asks the renderer to do to its image textures; applied in order,
+/// once before each render (`Gpu::apply`).
+pub enum ImageOp {
+    /// Make (or replace) the texture for this id.
+    Upload(String, Decoded),
+    Drop(String),
+}
+
 pub fn decode_file(p: &Path) -> Option<Decoded> {
     decode_bytes(&std::fs::read(p).ok()?)
 }

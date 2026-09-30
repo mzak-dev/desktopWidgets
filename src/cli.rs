@@ -21,7 +21,7 @@ use crate::code::{CodeSources, Deps, WasmSource};
 use crate::content::{Catalog, Root};
 use crate::data::{DataSources, Tm};
 use crate::gfx::{Gpu, Power};
-use crate::icons::IconService;
+use crate::icons::ImageStore;
 use crate::plugins::{self, PluginStore};
 use crate::text::TextEngine;
 use crate::theme::{Selection, Theme};
@@ -218,8 +218,8 @@ fn render(r: &Render) -> Result<bool, String> {
     for e in text.sync_fonts(&cat.font_files) {
         println!("warning: {e}");
     }
-    let mut icons = IconService::new(cat.icon_packs.clone());
-    icons.set_cache(r.data.join(".cache").join("thumbs"));
+    let mut images = ImageStore::new(cat.icon_packs.clone());
+    images.set_cache(r.data.join(".cache").join("thumbs"));
     let sel = Selection { palette: r.palette.clone().unwrap_or_default(), ..Default::default() };
     let theme = Theme::compose(&cat.library, &sel, &[]);
     let card = Card::new(&theme);
@@ -264,13 +264,13 @@ fn render(r: &Render) -> Result<bool, String> {
 
     let mut anim = Anim::default();
     let base = Instant::now();
-    let frame = |at: Instant, gpu: &mut Gpu, text: &mut TextEngine, icons: &mut IconService, anim: &mut Anim| {
+    let frame = |at: Instant, text: &mut TextEngine, images: &mut ImageStore, anim: &mut Anim| {
         let v = View { cfg: &cfg, state: &state, window_size: size, theme: &theme, icon_pack: "Default", tm, hover: None, scale: r.scale, now: at, card };
-        let mut sv = Services { gpu, icons, text, anim, sources: &sources };
+        let mut sv = Services { images, text, anim, sources: &sources };
         prepare(&def, &v, &mut sv)
     };
     // enter animations start transparent: render once to start them, then after they settle
-    let first = frame(base, &mut gpu, &mut text, &mut icons, &mut anim);
+    let first = frame(base, &mut text, &mut images, &mut anim);
     if !code.launch_rules(&first.deps).is_empty() {
         let deadline = Instant::now() + Duration::from_secs_f32(r.wait.max(0.0));
         while let Some(left) = deadline.checked_duration_since(Instant::now()) {
@@ -283,12 +283,13 @@ fn render(r: &Render) -> Result<bool, String> {
     }
     // small copies of pictures are made off-thread
     let deadline = Instant::now() + Duration::from_secs(20);
-    while icons.pending() && Instant::now() < deadline {
+    while images.pending() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
-        icons.take_ready(&mut gpu);
+        images.take_ready();
     }
-    icons.take_ready(&mut gpu);
-    let p = frame(base + Duration::from_secs(2), &mut gpu, &mut text, &mut icons, &mut anim);
+    images.take_ready();
+    let at = Duration::from_secs(2);
+    let p = frame(base + at, &mut text, &mut images, &mut anim);
     for w in &p.warnings {
         println!("warning: {w}");
     }
@@ -296,7 +297,8 @@ fn render(r: &Render) -> Result<bool, String> {
         println!("error: {e}");
     }
     let (pw, ph) = ((size.0 * r.scale).round() as u32, (size.1 * r.scale).round() as u32);
-    let mut px = gpu.render_offscreen(pw, ph, &p.frame.list, &mut text)?;
+    gpu.apply(images.drain());
+    let mut px = gpu.render_offscreen(pw, ph, &p.frame.list, &mut text, at)?;
     // premultiplied: over a backdrop, or back to straight alpha for a transparent PNG
     for (i, c) in px.chunks_exact_mut(4).enumerate() {
         let a = c[3] as f32 / 255.0;

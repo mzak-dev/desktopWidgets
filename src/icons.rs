@@ -1,7 +1,8 @@
 //! Icon sourcing (decision 22): explicit path -> Icon Pack by app name -> the
-//! target's own icon -> a generic one. Uploaded once per image id.
+//! target's own icon -> a generic one. Each image id is decoded once; the store asks the
+//! renderer to upload it with an `ImageOp` and keeps only its size, never a device.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use windows::Win32::Graphics::Gdi::{BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits, ReleaseDC};
@@ -11,25 +12,19 @@ use windows::Win32::UI::Shell::{SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGFI_
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
 use windows::core::HSTRING;
 
+use crate::images::{Decoded, ImageOp};
 use crate::shortcut::ID_SEP;
-use crate::gfx::Gpu;
 
 pub const GENERIC: &str = "icon:generic";
 
-pub struct Rgba {
-    pub px: Vec<u8>,
-    pub w: u32,
-    pub h: u32,
-}
-
-fn load_image(p: &Path) -> Option<Rgba> {
+fn load_image(p: &Path) -> Option<Decoded> {
     let img = image::open(p).ok()?.to_rgba8();
     let (w, h) = img.dimensions();
-    Some(Rgba { px: img.into_raw(), w, h })
+    Some(Decoded { px: img.into_raw(), w, h, frames: None })
 }
 
 /// A neutral rounded tile for anything with no icon at all.
-pub fn generic() -> Rgba {
+pub fn generic() -> Decoded {
     let n = 48u32;
     let mut px = vec![0u8; (n * n * 4) as usize];
     for y in 0..n {
@@ -45,7 +40,7 @@ pub fn generic() -> Rgba {
             px[i..i + 4].copy_from_slice(&[235, 240, 255, (a * 255.0) as u8]);
         }
     }
-    Rgba { px, w: n, h: n }
+    Decoded { px, w: n, h: n, frames: None }
 }
 
 fn resolve_path(target: &str) -> Option<PathBuf> {
@@ -92,7 +87,7 @@ fn link_target(lnk: &Path) -> Option<(PathBuf, Option<PathBuf>)> {
 
 /// 48px via the system image list, falling back to the classic 32px icon. A shortcut shows
 /// what it opens, so a `.lnk` to a document or folder has that icon, not a blank page.
-fn shell_icon(path: &Path) -> Option<Rgba> {
+fn shell_icon(path: &Path) -> Option<Decoded> {
     if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk")) {
         if let Some((target, icon)) = link_target(path) {
             if let Some(i) = icon.as_deref().and_then(load_image) {
@@ -130,7 +125,7 @@ fn shell_icon(path: &Path) -> Option<Rgba> {
     }
 }
 
-unsafe fn hicon_to_rgba(hicon: HICON) -> Option<Rgba> {
+unsafe fn hicon_to_rgba(hicon: HICON) -> Option<Decoded> {
     unsafe {
         let mut info = ICONINFO::default();
         GetIconInfo(hicon, &mut info).ok()?;
@@ -156,7 +151,7 @@ unsafe fn hicon_to_rgba(hicon: HICON) -> Option<Rgba> {
                 if px.chunks_exact(4).all(|p| p[3] == 0) {
                     px.chunks_exact_mut(4).for_each(|p| p[3] = 255); // old icons without alpha
                 }
-                out = Some(Rgba { px, w, h });
+                out = Some(Decoded { px, w, h, frames: None });
             }
         }
         ReleaseDC(None, hdc);
@@ -168,13 +163,13 @@ unsafe fn hicon_to_rgba(hicon: HICON) -> Option<Rgba> {
 
 /// Icon Pack lookup: `<pack>/<name>.png` where name is the target's file
 /// stem, lowercased (`Chrome.lnk` -> `chrome.png`), or its full file name.
-fn from_pack(pack_dir: &Path, target: &str) -> Option<Rgba> {
+fn from_pack(pack_dir: &Path, target: &str) -> Option<Decoded> {
     let stem = crate::shortcut::file_stem(target).to_lowercase();
     let file = Path::new(target).file_name()?.to_string_lossy().to_lowercase();
     [format!("{stem}.png"), format!("{file}.png")].iter().find_map(|n| load_image(&pack_dir.join(n)))
 }
 
-pub fn resolve(target: &str, explicit: &str, pack_dir: Option<&Path>) -> Rgba {
+pub fn resolve(target: &str, explicit: &str, pack_dir: Option<&Path>) -> Decoded {
     if !explicit.is_empty() {
         if let Some(i) = load_image(Path::new(explicit)) {
             return i;
@@ -227,18 +222,30 @@ impl Residency {
     }
 }
 
-/// Uploads images on demand and remembers which ids the GPU already has.
+/// What the renderer holds of an image: its layout size (one frame's, for an animation)
+/// and its texture's size in memory.
+struct Loaded {
+    size: (u32, u32),
+    bytes: u64,
+}
+
+/// Decodes images on demand and remembers which ids the renderer has. It never touches a
+/// device: what to upload or drop is queued as `ImageOp`s, and `Gpu::apply` takes them
+/// (`drain`) once before each render.
 #[derive(Default)]
-pub struct IconService {
+pub struct ImageStore {
     /// Icon Pack name to its folder, from every content root.
     packs: BTreeMap<String, PathBuf>,
     seen: HashSet<String>,
+    /// Every id whose upload is queued or done, and not dropped since.
+    loaded: HashMap<String, Loaded>,
+    ops: Vec<ImageOp>,
     residency: Residency,
     /// `thumb:` images, made off the UI thread.
     thumbs: crate::thumbs::Thumbs,
 }
 
-impl IconService {
+impl ImageStore {
     pub fn new(packs: BTreeMap<String, PathBuf>) -> Self {
         Self { packs, ..Default::default() }
     }
@@ -257,18 +264,34 @@ impl IconService {
         self.thumbs.set_waker(wake);
     }
 
-    /// Uploads the `thumb:` images made since last asked and returns their ids.
-    pub fn take_ready(&mut self, gpu: &mut Gpu) -> Vec<String> {
+    /// An image's layout size, once `ensure` has decoded it: what `Widget::build` lays an
+    /// `image` element out at.
+    pub fn size(&self, id: &str) -> Option<(u32, u32)> {
+        self.loaded.get(id).map(|l| l.size)
+    }
+
+    /// The queued uploads and drops, oldest first. The renderer applies them in this order.
+    pub fn drain(&mut self) -> Vec<ImageOp> {
+        std::mem::take(&mut self.ops)
+    }
+
+    fn upload(&mut self, id: &str, d: Decoded) {
+        self.loaded.insert(id.to_string(), Loaded { size: d.size(), bytes: d.w as u64 * d.h as u64 * 4 });
+        self.ops.push(ImageOp::Upload(id.to_string(), d));
+    }
+
+    fn drop_image(&mut self, id: &str) {
+        if self.loaded.remove(id).is_some() {
+            self.ops.push(ImageOp::Drop(id.to_string()));
+        }
+    }
+
+    /// Queues the `thumb:` images made since last asked and returns their ids.
+    pub fn take_ready(&mut self) -> Vec<String> {
         let ready = self.thumbs.take();
         let mut ids = Vec::with_capacity(ready.len());
         for (id, d) in ready {
-            match d {
-                Some(d) => gpu.upload_decoded(&id, &d),
-                None => {
-                    let g = generic();
-                    gpu.upload_image(&id, &g.px, g.w, g.h);
-                }
-            }
+            self.upload(&id, d.unwrap_or_else(generic));
             self.seen.insert(id.clone());
             ids.push(id);
         }
@@ -280,17 +303,17 @@ impl IconService {
         self.thumbs.has_pending()
     }
 
-    /// Make sure `id` is on the GPU. Returns true when something was uploaded. A `thumb:`
-    /// image is only queued here; `take_ready` uploads it.
-    pub fn ensure(&mut self, gpu: &mut Gpu, id: &str) -> bool {
-        if id.is_empty() || gpu.has_image(id) {
+    /// Make sure `id` is decoded and queued for upload. Returns true when a new size became
+    /// known. A `thumb:` image is only queued here; `take_ready` uploads it.
+    pub fn ensure(&mut self, id: &str) -> bool {
+        if id.is_empty() || self.loaded.contains_key(id) {
             return false;
         }
         if id.starts_with(crate::thumbs::PREFIX) {
             self.thumbs.request(id);
             return false;
         }
-        if !self.seen.insert(id.to_string()) && gpu.has_image(GENERIC) {
+        if !self.seen.insert(id.to_string()) && self.loaded.contains_key(GENERIC) {
             return false; // tried already; fall back to generic below
         }
         let img = if id == GENERIC {
@@ -298,7 +321,7 @@ impl IconService {
         } else if let Some(path) = id.strip_prefix("file:") {
             match crate::images::decode_file(Path::new(path)) {
                 Some(d) => {
-                    gpu.upload_decoded(id, &d);
+                    self.upload(id, d);
                     return true;
                 }
                 None => generic(),
@@ -310,42 +333,43 @@ impl IconService {
         } else {
             generic()
         };
-        gpu.upload_image(id, &img.px, img.w, img.h);
+        self.upload(id, img);
         true
     }
 
     /// Content was reloaded: images read from files (and Icon Packs) may have changed.
     /// The system's own icons are kept; extracting them again is slow.
-    pub fn flush_files(&mut self, gpu: &mut Gpu) {
+    pub fn flush_files(&mut self) {
         let stale: Vec<String> = self.seen.iter().filter(|id| from_files(id)).cloned().collect();
         for id in stale {
-            gpu.drop_image(&id);
+            self.drop_image(&id);
             self.seen.remove(&id);
         }
     }
 
     /// Drops images no window has drawn for a while (see `IDLE_BUDGET`). `drawn` is what
     /// every open window draws now; the generic icon always stays.
-    pub fn release_unused<'a>(&mut self, gpu: &mut Gpu, drawn: impl IntoIterator<Item = &'a str>) {
+    pub fn release_unused<'a>(&mut self, drawn: impl IntoIterator<Item = &'a str>) {
         let drawn: HashSet<&str> = drawn.into_iter().collect();
-        let IconService { seen, residency, .. } = self;
-        let loaded = seen.iter().filter(|id| id.as_str() != GENERIC).filter_map(|id| Some((id.as_str(), gpu.image_bytes(id)?)));
-        for id in residency.settle(loaded, &drawn, IDLE_BUDGET) {
-            gpu.drop_image(&id);
+        let loaded = self.seen.iter().filter(|id| id.as_str() != GENERIC).filter_map(|id| Some((id.as_str(), self.loaded.get(id)?.bytes)));
+        for id in self.residency.settle(loaded, &drawn, IDLE_BUDGET) {
+            self.drop_image(&id);
             self.seen.remove(&id);
         }
     }
 
-    /// The GPU was rebuilt: nothing is uploaded any more.
+    /// The GPU was rebuilt: nothing is uploaded any more, and what was queued for it is moot.
     pub fn forget(&mut self) {
         self.seen.clear();
+        self.loaded.clear();
+        self.ops.clear();
         self.residency.clear();
     }
 
     /// Forget everything (icon pack changed, so ids are new anyway, but this frees the memory).
-    pub fn reset(&mut self, gpu: &mut Gpu, ids: impl IntoIterator<Item = String>) {
+    pub fn reset(&mut self, ids: impl IntoIterator<Item = String>) {
         for id in ids {
-            gpu.drop_image(&id);
+            self.drop_image(&id);
         }
         self.seen.clear();
         self.residency.clear();
@@ -385,6 +409,66 @@ mod tests {
         let alpha = |x: usize, y: usize| g.px[(y * 48 + x) * 4 + 3];
         assert_eq!(alpha(0, 0), 0, "corner is transparent");
         assert!(alpha(24, 24) > 100, "centre dot is visible");
+    }
+
+    fn describe(ops: Vec<ImageOp>) -> Vec<String> {
+        let name = |id: &str| Path::new(id).file_name().unwrap().to_string_lossy().into_owned();
+        ops.into_iter().map(|op| match op {
+            ImageOp::Upload(id, d) => format!("up {} {}x{}", name(&id), d.w, d.h),
+            ImageOp::Drop(id) => format!("drop {}", name(&id)),
+        }).collect()
+    }
+
+    #[test]
+    fn the_store_queues_uploads_and_drops_in_the_order_it_decided_them() {
+        let dir = std::env::temp_dir().join(format!("wf-ops-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = |name: &str, w: u32, h: u32| {
+            let p = dir.join(name);
+            image::RgbaImage::new(w, h).save(&p).unwrap();
+            format!("file:{}", p.display())
+        };
+        let (a, b) = (file("a.png", 4, 3), file("b.png", 8, 2));
+        let mut s = ImageStore::default();
+        assert!(s.ensure(&a) && s.ensure(&b) && !s.ensure(&a), "a known id is not decoded again");
+        assert_eq!((s.size(&a), s.size(&b), s.size("file:nope")), (Some((4, 3)), Some((8, 2)), None));
+        assert_eq!(describe(s.drain()), ["up a.png 4x3", "up b.png 8x2"]);
+        assert!(s.drain().is_empty(), "drained once");
+
+        // content reloaded: the files may have changed, so the next ensure decodes again, after the drops
+        s.flush_files();
+        assert_eq!(s.size(&a), None);
+        s.ensure(&a);
+        let dropped = describe(s.drain());
+        assert_eq!(dropped.len(), 3);
+        assert!(dropped[..2].contains(&"drop a.png".to_string()) && dropped[..2].contains(&"drop b.png".to_string()));
+        assert_eq!(dropped[2], "up a.png 4x3", "the re-upload comes after the drop of the same id");
+
+        // the GPU was rebuilt: what was queued for the old one is moot, and everything is decoded again
+        s.ensure(&b);
+        s.forget();
+        assert!(s.drain().is_empty() && s.size(&a).is_none());
+        assert!(s.ensure(&a));
+        assert_eq!(describe(s.drain()), ["up a.png 4x3"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn an_unreadable_image_is_stored_as_the_generic_tile_once() {
+        let mut s = ImageStore::default();
+        assert!(s.ensure("file:/no/such/x.png"));
+        assert_eq!(s.size("file:/no/such/x.png"), Some((48, 48)));
+        assert!(!s.ensure("file:/no/such/x.png"));
+        assert_eq!(describe(s.drain()), ["up x.png 48x48"]);
+    }
+
+    #[test]
+    fn an_animation_lays_out_at_one_frames_size() {
+        let mut s = ImageStore::default();
+        let frames = crate::images::Frames { cols: 2, rows: 1, count: 2, frame_w: 10, frame_h: 6, delays_ms: vec![100, 100], total_ms: 200 };
+        s.upload("gif", Decoded { px: vec![0; 20 * 6 * 4], w: 20, h: 6, frames: Some(frames) });
+        assert_eq!(s.size("gif"), Some((10, 6)));
+        assert_eq!(s.loaded["gif"].bytes, 20 * 6 * 4);
     }
 
     #[test]
