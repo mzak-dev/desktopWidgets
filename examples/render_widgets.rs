@@ -53,7 +53,7 @@ fn main() {
     let scale = 1.25f32;
     let items = shortcuts();
 
-    let mut gpu = Gpu::new_headless(Power::parse(&std::env::var("WAYFINDER_GPU").unwrap_or_else(|_| "software".into()))).expect("gpu");
+    let mut gpu = Gpu::new_headless(Power::from_env()).expect("gpu");
     let mut text = TextEngine::new();
     let mut images = ImageStore::default();
     let lib = Library::load(Path::new("nope"));

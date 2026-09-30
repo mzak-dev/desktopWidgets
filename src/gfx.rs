@@ -22,13 +22,31 @@ pub enum Power {
 }
 
 impl Power {
-    /// Low unless asked: High can pin a core (ADR-005).
-    pub fn parse(s: &str) -> Power {
-        match s.to_ascii_lowercase().as_str() {
-            "high" => Power::High,
-            "software" | "warp" | "cpu" => Power::Software,
-            _ => Power::Low,
+    /// `high`, `low` or `software` (`warp` and `cpu` too). Anything else is an error, never a
+    /// guess: a typo must not pick a hardware adapter, which has crashed drivers before.
+    pub fn parse(s: &str) -> Result<Power, String> {
+        let lower = s.to_ascii_lowercase();
+        match lower.as_str() {
+            "high" => Ok(Power::High),
+            "low" => Ok(Power::Low),
+            "software" | "warp" | "cpu" => Ok(Power::Software),
+            "" => Err("the gpu mode is empty; use software, low or high".into()),
+            _ => Err(format!("unknown gpu mode `{s}`{}; use software, low or high", crate::suggest::suggest(&lower, &[&["software", "warp", "cpu", "low", "high"]]))),
         }
+    }
+
+    /// `s` (from `source`, for the message), or the software adapter with a warning when it is
+    /// not a gpu mode: the one choice that cannot reach a vendor driver.
+    pub fn parse_or_software(s: &str, source: &str) -> Power {
+        Power::parse(s).unwrap_or_else(|e| {
+            eprintln!("wayfinder: {source}: {e}; using software");
+            Power::Software
+        })
+    }
+
+    /// `WAYFINDER_GPU` for tools and examples: software when unset, and when it is not a mode.
+    pub fn from_env() -> Power {
+        std::env::var("WAYFINDER_GPU").map_or(Power::Software, |v| Power::parse_or_software(&v, "WAYFINDER_GPU"))
     }
     fn wgpu(self) -> wgpu::PowerPreference {
         match self {
@@ -685,5 +703,39 @@ impl Gpu {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpu_modes_parse_and_anything_else_is_an_error_not_a_hardware_adapter() {
+        for (s, p) in [("software", Power::Software), ("WARP", Power::Software), ("cpu", Power::Software), ("low", Power::Low), ("Low", Power::Low), ("high", Power::High), ("HIGH", Power::High)] {
+            assert_eq!(Power::parse(s), Ok(p), "{s}");
+        }
+        for bad in ["bogus", "", " low", "lo w", "medium", "hardware"] {
+            let e = Power::parse(bad).unwrap_err();
+            assert!(e.contains("software, low or high"), "{bad:?}: {e}");
+        }
+        assert!(Power::parse("").unwrap_err().contains("empty"));
+        assert!(Power::parse("bogus").unwrap_err().contains("`bogus`"));
+    }
+
+    #[test]
+    fn a_near_miss_names_the_mode_it_was_close_to() {
+        assert!(Power::parse("sofware").unwrap_err().contains("did you mean `software`?"));
+        assert!(Power::parse("hihg").unwrap_err().contains("did you mean `high`?"));
+        assert!(Power::parse("lwo").unwrap_err().contains("did you mean `low`?"));
+        assert!(!Power::parse("bogus").unwrap_err().contains("did you mean"));
+    }
+
+    #[test]
+    fn unknown_modes_from_the_environment_or_settings_fall_back_to_software() {
+        assert_eq!(Power::parse_or_software("bogus", "test"), Power::Software);
+        assert_eq!(Power::parse_or_software("", "test"), Power::Software);
+        assert_eq!(Power::parse_or_software("high", "test"), Power::High);
+        assert_eq!(Power::parse_or_software("low", "test"), Power::Low);
     }
 }

@@ -87,7 +87,7 @@ fn main() {
     let (lw, lh) = (620.0f32, 290.0f32);
     let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
 
-    let mut gpu = Gpu::new_headless(Power::parse(&std::env::var("WAYFINDER_GPU").unwrap_or_else(|_| "software".into()))).expect("gpu");
+    let mut gpu = Gpu::new_headless(Power::from_env()).expect("gpu");
     println!("gpu: {}", gpu.info);
     let mut text = TextEngine::new();
     let mut anim = Anim::default();

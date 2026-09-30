@@ -302,6 +302,10 @@ impl App {
         if let Some(e) = ws_err {
             app.log(e);
         }
+        let (mode, source) = app.opts.gpu_override.as_deref().map_or((app.ws.gpu.clone(), "the saved gpu setting"), |g| (g.to_string(), "--gpu"));
+        if let Err(e) = Power::parse(&mode) {
+            app.log(format!("{source}: {e}; using software"));
+        }
         for e in guide_errors.into_iter().chain(source_errors) {
             app.log(e);
         }
@@ -312,7 +316,9 @@ impl App {
         if self.forced_software {
             return Power::Software;
         }
-        Power::parse(self.opts.gpu_override.as_deref().unwrap_or(&self.ws.gpu))
+        // an unknown mode (hand-edited workspace.json, an app built on Wayfinder) is logged once
+        // at startup and runs on the software adapter, never on a hardware one by accident
+        Power::parse(self.opts.gpu_override.as_deref().unwrap_or(&self.ws.gpu)).unwrap_or(Power::Software)
     }
 
     pub fn request_edit_on_start(&mut self) {

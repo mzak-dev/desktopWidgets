@@ -135,7 +135,7 @@ fn ambient_for(pins: &Pins, real: &BTreeSet<Seam>, t0: Instant, data: &Path) -> 
 /// its `.env.json`. Returns whether the widget showed an error.
 pub fn render(r: &Request) -> Result<bool, String> {
     let scratch = Scratch::new()?;
-    let power = Power::parse(&r.gpu);
+    let power = Power::parse(&r.gpu).map_err(|e| format!("--gpu: {e}"))?;
     let real = real_seams(&r.pins, power);
     let mut pins = r.pins.clone();
     let data: PathBuf = if r.installed { r.data.clone().unwrap_or_else(workspace::data_dir) } else { scratch.0.clone() };

@@ -22,7 +22,7 @@ use wayfinder::workspace::{InstanceCfg, MonitorRef, Workspace};
 
 fn main() {
     let out = std::env::args().nth(1).unwrap_or_else(|| ".".into());
-    let power = Power::parse(&std::env::var("WAYFINDER_GPU").unwrap_or_else(|_| "software".into()));
+    let power = Power::from_env();
     let mut gpu = Gpu::new_headless(power).expect("gpu");
     println!("gpu: {}", gpu.info);
     let mut text = TextEngine::new();

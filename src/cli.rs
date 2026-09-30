@@ -16,6 +16,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::gfx::Power;
 use crate::plugins;
 pub use crate::render::Request as Render;
 #[cfg(test)]
@@ -24,7 +25,7 @@ use crate::ambient::Pins;
 pub const USAGE: &str = "usage:
   wayfinder --render-widget <id | file.toml> --png <out.png> [--size WxH] [--param k=v]... [--state k=v]...
             [--palette name] [--scale 1.25] [--time HH:MM] [--now ISO] [--env key=value]... [--real seams]
-            [--installed] [--transparent] [--wait secs] [--data dir] [--gpu mode]
+            [--installed] [--transparent] [--wait secs] [--data dir] [--gpu software|low|high]
   wayfinder plugin pack <folder> [out.wfplugin]
   wayfinder plugin check <file.wfplugin | folder>";
 
@@ -56,7 +57,13 @@ pub fn command(args: &[String]) -> Option<Command> {
             _ => usage("wayfinder plugin: pack <folder> or check <file>".into()),
         });
     }
-    let i = args.iter().position(|a| a == "--render-widget")?;
+    let Some(i) = args.iter().position(|a| a == "--render-widget") else {
+        // running the app: a bad `--gpu` must stop here, not fall through to some adapter
+        return args.iter().position(|a| a == "--gpu").and_then(|j| match args.get(j + 1) {
+            Some(v) => Power::parse(v).err().map(|e| format!("--gpu: {e}")),
+            None => Some("--gpu needs a value".into()),
+        }).map(usage);
+    };
     let parse = || -> Result<Render, String> {
         let widget = args.get(i + 1).filter(|w| !w.starts_with("--")).ok_or("--render-widget needs a widget id or file")?.clone();
         let mut r = Render::new(widget);
@@ -85,7 +92,11 @@ pub fn command(args: &[String]) -> Option<Command> {
                 "--transparent" => r.pins.transparent = true,
                 "--wait" => r.wait = val()?.parse().map_err(|_| "--wait is seconds")?,
                 "--data" => r.data = Some(val()?.into()),
-                "--gpu" => r.gpu = val()?,
+                "--gpu" => {
+                    let v = val()?;
+                    Power::parse(&v).map_err(|e| format!("--gpu: {e}"))?;
+                    r.gpu = v;
+                }
                 "--env" => {
                     let (k, v) = pair(&val()?, "--env")?;
                     r.pins.set(&k, &v).map_err(|e| format!("--env {e}"))?;
@@ -220,6 +231,25 @@ mod tests {
         assert_eq!(r.pins.real.len(), 2);
         for bad in [&["--now", "soon"][..], &["--now", "2026-02-30T10:00"], &["--real", "clok"], &["--real", "clock", "--now", "2026-03-08T02:30:00"], &["--scale", "9"], &["--now"]] {
             assert!(matches!(render(bad), Some(Command::Usage(_))), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_gpu_mode_is_a_usage_error_that_lists_the_valid_ones() {
+        let render = |extra: &[&str]| command(&args(&[&["--render-widget", "clock", "--png", "o.png"][..], extra].concat()));
+        for ok in ["software", "low", "high"] {
+            assert!(matches!(render(&["--gpu", ok]), Some(Command::Render(_))), "{ok}");
+        }
+        let Some(Command::Usage(e)) = render(&["--gpu", "sofware"]) else { panic!() };
+        assert!(e.contains("unknown gpu mode `sofware`") && e.contains("did you mean `software`?") && e.contains("software, low or high"), "{e}");
+        for bad in [&["--gpu", "bogus"][..], &["--gpu", ""], &["--gpu"]] {
+            assert!(matches!(render(bad), Some(Command::Usage(_))), "{bad:?}");
+        }
+        // running the app takes `--gpu` too: valid values and its absence pass through, the rest stop
+        assert_eq!(command(&args(&["--gpu", "low", "--edit"])), None);
+        assert_eq!(command(&args(&["--data", "D:\\wf"])), None);
+        for bad in [&["--gpu", "bogus"][..], &["--edit", "--gpu", ""], &["--gpu"]] {
+            assert!(matches!(command(&args(bad)), Some(Command::Usage(_))), "{bad:?}");
         }
     }
 
