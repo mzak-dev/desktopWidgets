@@ -78,7 +78,7 @@ fn every_builtin_fits_every_size_it_allows() {
                 }
                 let frame = {
                     let mut anim = Anim::default();
-                    let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale: 1.0 };
+                    let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale: 1.0, trace: false };
                     ui::layout(&b.root, *size, &mut env)
                 };
                 let (mut texts, mut shapes) = (Vec::new(), Vec::new());

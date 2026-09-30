@@ -21,7 +21,7 @@ use crate::data::Shortcut;
 use crate::dialog::WinNative;
 use crate::native::{Native, Pick};
 use crate::draw::{Inst, KIND_ARC, KIND_CAPSULE, KIND_RECT};
-use crate::elements::{Shape, ShapeCx, rgba_with_opacity};
+use crate::elements::{Shape, ShapeCx, num_str, rgba_with_opacity};
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::ImageStore;
 use crate::format::Arrangement;
@@ -655,6 +655,10 @@ impl Shape for Dots {
         "dots"
     }
 
+    fn describe(&self) -> (&'static str, Vec<(&'static str, String)>) {
+        ("dots", vec![("gap", num_str(self.gap)), ("color", self.color.to_hex())])
+    }
+
     fn emit(&self, cx: &ShapeCx, out: &mut Vec<Inst>) {
         let (s, (w, h)) = (cx.scale, cx.logical_size);
         let (x0, y0) = (cx.center_px[0] - w * s / 2.0, cx.center_px[1] - h * s / 2.0);
@@ -683,6 +687,10 @@ struct Dashed {
 impl Shape for Dashed {
     fn name(&self) -> &'static str {
         "dashed"
+    }
+
+    fn describe(&self) -> (&'static str, Vec<(&'static str, String)>) {
+        ("dashed", vec![("radius", num_str(self.radius)), ("width", num_str(self.width)), ("dash", num_str(self.dash)), ("gap", num_str(self.gap)), ("color", self.color.to_hex())])
     }
 
     fn emit(&self, cx: &ShapeCx, out: &mut Vec<Inst>) {
@@ -724,6 +732,10 @@ struct Arrow {
 impl Shape for Arrow {
     fn name(&self) -> &'static str {
         "arrow"
+    }
+
+    fn describe(&self) -> (&'static str, Vec<(&'static str, String)>) {
+        ("arrow", vec![("color", self.color.to_hex()), ("width", num_str(self.width))])
     }
 
     fn emit(&self, cx: &ShapeCx, out: &mut Vec<Inst>) {
@@ -3423,7 +3435,7 @@ impl SettingsWin {
         for id in &images {
             store.ensure(id);
         }
-        let mut env = Env { text, anim: &mut self.anim, hover: self.hover.as_deref(), now, scale: s };
+        let mut env = Env { text, anim: &mut self.anim, hover: self.hover.as_deref(), now, scale: s, trace: false };
         let frame = ui::layout(&root, size, &mut env);
         gpu.apply(store.drain());
         match gpu.render(&mut self.target, &frame.list, text) {
@@ -3541,7 +3553,7 @@ mod tests {
         let laid = |ui: &UiState| {
             let (root, _) = ui.build(&ctx(&w), MIN_WIN);
             let (mut text, mut anim) = (TextEngine::new(), Anim::default());
-            let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale: 1.0 };
+            let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale: 1.0, trace: false };
             ui::layout(&root, MIN_WIN, &mut env)
         };
         let mut ui = UiState::default();
@@ -3565,7 +3577,7 @@ mod tests {
     fn monitor_frame(ui: &mut UiState, w: &World, size: (f32, f32)) -> Frame {
         let (root, _) = ui.build(&ctx(w), size);
         let (mut text, mut anim) = (TextEngine::new(), Anim::default());
-        let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale: 1.0 };
+        let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale: 1.0, trace: false };
         let f = ui::layout(&root, size, &mut env);
         ui.record_preview(&f);
         f

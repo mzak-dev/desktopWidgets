@@ -1,4 +1,4 @@
-use super::{Attrs, ElementKind, Kind, Shape, ShapeCx, rgba_with_opacity};
+use super::{Attrs, ElementKind, Kind, Shape, ShapeCx, num_str, rgba_with_opacity};
 use crate::color::Color;
 use crate::draw::{Inst, KIND_CAPSULE};
 
@@ -41,6 +41,20 @@ fn build(a: &mut Attrs) -> Result<Kind, String> {
 impl Shape for TicksSpec {
     fn name(&self) -> &'static str {
         "ticks"
+    }
+
+    fn describe(&self) -> (&'static str, Vec<(&'static str, String)>) {
+        ("ticks", vec![
+            ("count", self.count.to_string()),
+            ("major_every", self.major_every.to_string()),
+            ("len", num_str(self.len)),
+            ("major_len", num_str(self.major_len)),
+            ("width", num_str(self.width)),
+            ("major_width", num_str(self.major_width)),
+            ("color", self.color.to_hex()),
+            ("major_color", self.major_color.to_hex()),
+            ("inset", num_str(self.inset)),
+        ])
     }
 
     fn emit(&self, cx: &ShapeCx, out: &mut Vec<Inst>) {

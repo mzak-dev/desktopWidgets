@@ -124,7 +124,7 @@ pub(crate) fn dump(root: &Node, frame: &Frame, out: &mut String) {
 /// `dump` of `root` laid out at `size`, under a `## case` header.
 pub(crate) fn dump_case(case: &str, root: &Node, size: (f32, f32), text: &mut TextEngine, out: &mut String) {
     let mut anim = Anim::default();
-    let mut env = Env { text, anim: &mut anim, hover: None, now: Instant::now(), scale: 1.0 };
+    let mut env = Env { text, anim: &mut anim, hover: None, now: Instant::now(), scale: 1.0, trace: false };
     let frame = ui::layout(root, size, &mut env);
     let _ = writeln!(out, "## {case}");
     dump(root, &frame, out);

@@ -1,4 +1,4 @@
-use super::{Attrs, ElementKind, Kind, Shape, ShapeCx, rgba_with_opacity};
+use super::{Attrs, ElementKind, Kind, Shape, ShapeCx, num_str, rgba_with_opacity};
 use crate::color::Color;
 use crate::draw::{Inst, KIND_ARC};
 
@@ -31,6 +31,10 @@ fn build(a: &mut Attrs) -> Result<Kind, String> {
 impl Shape for ArcSpec {
     fn name(&self) -> &'static str {
         "arc"
+    }
+
+    fn describe(&self) -> (&'static str, Vec<(&'static str, String)>) {
+        ("arc", vec![("start", num_str(self.start)), ("sweep", num_str(self.sweep)), ("value", num_str(self.value)), ("width", num_str(self.width)), ("color", self.color.to_hex()), ("track", self.track.to_hex())])
     }
 
     fn emit(&self, cx: &ShapeCx, out: &mut Vec<Inst>) {

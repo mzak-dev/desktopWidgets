@@ -45,7 +45,7 @@ impl App {
             let label = format!("{}, {}   {}x{}", cfg.x as i32, cfg.y as i32, cw as i32, ch as i32);
             let armed = remove_armed.as_deref() == Some(cfg.id.as_str());
             let ov = edit::overlay(&cfg.id, size, card.gutter, &label, chrome, iw.drag.as_ref().map(|d| d.handle), armed);
-            let mut env = Env { text, anim: &mut iw.ov_anim, hover: None, now, scale };
+            let mut env = Env { text, anim: &mut iw.ov_anim, hover: None, now, scale, trace: false };
             let of = ui::layout(&ov, size, &mut env);
             p.frame.list.put_on_top(of.list);
             p.frame.animating |= of.animating;

@@ -141,7 +141,7 @@ fn main() {
                 let ov = wayfinder::edit::overlay(&cfg.id, size, card.gutter, "60, 60   200x120", &theme, None, tiles.len() % 2 == 1);
                 let mut ov_anim = Anim::default();
                 for at in [base, now] {
-                    let mut env = wayfinder::ui::Env { text: &mut text, anim: &mut ov_anim, hover: None, now: at, scale };
+                    let mut env = wayfinder::ui::Env { text: &mut text, anim: &mut ov_anim, hover: None, now: at, scale, trace: false };
                     let of = wayfinder::ui::layout(&ov, size, &mut env);
                     if at == now {
                         p.frame.list.put_on_top(of.list);

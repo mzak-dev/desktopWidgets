@@ -9,6 +9,8 @@ mod registry;
 #[cfg(test)]
 pub(crate) mod safety_net;
 mod toml_widget;
+#[cfg(test)]
+mod trace;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -156,7 +158,7 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
         }
         Err(e) => (format::error_card(&e, v.window_size, v.theme), BTreeSet::new(), vec![], None, Some(e)),
     };
-    let mut env = Env { text: sv.text, anim: sv.anim, hover: v.hover, now: v.now, scale: v.scale };
+    let mut env = Env { text: sv.text, anim: sv.anim, hover: v.hover, now: v.now, scale: v.scale, trace: false };
     let frame = ui::layout(&root, v.window_size, &mut env);
     Prepared { frame, deps, warnings, expand, error, images_changed }
 }

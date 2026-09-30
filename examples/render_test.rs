@@ -99,7 +99,7 @@ fn main() {
         .justify(taffy::JustifyContent::SPACE_EVENLY)
         .child(clock(300.0, 60.5, 132.0))
         .child(digital());
-    let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale };
+    let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale, trace: false };
     let frame = layout(&root, (lw, lh), &mut env);
     println!(
         "content {:?}, shapes {}, texts {}, hits {}",

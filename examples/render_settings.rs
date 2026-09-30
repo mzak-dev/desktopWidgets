@@ -124,7 +124,7 @@ fn main() {
             for id in &wanted {
                 images.ensure(id);
             }
-            let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now, scale: 1.0 };
+            let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now, scale: 1.0, trace: false };
             let frame = ui::layout(&root, size, &mut env);
             ui.record_anchors(&frame);
             ui.record_preview(&frame);
