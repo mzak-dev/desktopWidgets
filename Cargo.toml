@@ -49,6 +49,8 @@ windows = { version = "0.62.2", features = [
 rustfft = "6"
 taffy = "0.14.0"
 glyphon = "0.12.0"
+# shaping in `text`; glyphon 0.12 draws its buffers, so this stays on the 0.19 line it uses
+cosmic-text = "0.19"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 toml = { version = "1.1.6", features = ["preserve_order"] }

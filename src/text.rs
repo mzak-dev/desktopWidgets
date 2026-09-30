@@ -1,5 +1,5 @@
-//! Text over glyphon (decision 25): one buffer per node key, re-shaped only when
-//! its text, style or width changes.
+//! Text shaping over cosmic-text (decision 25): one buffer per node key, re-shaped only
+//! when its text, style or width changes. Drawing the buffers is `gfx`'s job.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -7,60 +7,29 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use glyphon::cosmic_text::fontdb::{ID, Source};
-use glyphon::cosmic_text::{Align, Wrap};
-use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
+use cosmic_text::fontdb::{Database, ID, Source};
+use cosmic_text::{Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap};
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct TextSpec {
-    pub text: String,
-    pub size: f32,
-    pub family: String,
-    pub weight: u16,
-    pub align: TextAlign,
-    pub wrap: bool,
-    pub line_height: f32,
-    pub color: crate::color::Color,
-    /// Caret byte offset, drawn by the UI layer for focused inputs.
-    pub caret: Option<usize>,
+pub use crate::textspec::{TextAlign, TextSpec};
+
+/// The fonts a `TextEngine` shapes with: a font database and the locale used to pick
+/// fallback faces.
+pub struct FontSet {
+    db: Database,
+    locale: String,
 }
 
-impl Default for TextSpec {
-    fn default() -> Self {
-        Self {
-            text: String::new(),
-            size: 14.0,
-            family: String::new(),
-            weight: 400,
-            align: TextAlign::Left,
-            wrap: false,
-            line_height: 1.25,
-            color: crate::color::Color([1.0; 4]),
-            caret: None,
-        }
+impl FontSet {
+    /// The installed system fonts and the system locale, exactly what `FontSystem::new`
+    /// builds (the machine-dependent set the app uses).
+    pub fn system() -> Self {
+        let (locale, db) = FontSystem::new().into_locale_and_db();
+        Self { db, locale }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub enum TextAlign {
-    #[default]
-    Left,
-    Center,
-    Right,
-}
-
-impl TextAlign {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "center" => Self::Center,
-            "right" | "end" => Self::Right,
-            _ => Self::Left,
-        }
-    }
-}
-
-pub(crate) struct Slot {
-    pub(crate) buf: Buffer,
+struct Slot {
+    buf: Buffer,
     sig: u64,
     /// Width the buffer is currently shaped for.
     shaped_w: Option<u32>,
@@ -69,9 +38,9 @@ pub(crate) struct Slot {
 }
 
 pub struct TextEngine {
-    pub fs: FontSystem,
-    pub swash: SwashCache,
-    pub(crate) slots: HashMap<String, Slot>,
+    fs: FontSystem,
+    swash: SwashCache,
+    slots: HashMap<String, Slot>,
     frame: u64,
     /// Font files registered by `sync_fonts`, with the size and time they were read at.
     files: HashMap<PathBuf, (FileStamp, Vec<ID>)>,
@@ -98,7 +67,6 @@ fn family(name: &str) -> Family<'_> {
         n => Family::Name(n),
     }
 }
-
 
 fn slot<'a>(
     slots: &'a mut HashMap<String, Slot>,
@@ -134,9 +102,29 @@ fn slot<'a>(
     slot
 }
 
+/// The shaped buffers by node key, for the renderer to draw.
+pub struct Buffers<'a>(&'a HashMap<String, Slot>);
+
+impl Buffers<'_> {
+    pub fn get(&self, key: &str) -> Option<&Buffer> {
+        self.0.get(key).map(|s| &s.buf)
+    }
+}
+
 impl TextEngine {
     pub fn new() -> Self {
-        Self { fs: FontSystem::new(), swash: SwashCache::new(), slots: HashMap::new(), frame: 0, files: HashMap::new() }
+        Self::with_fonts(FontSet::system())
+    }
+
+    pub fn with_fonts(fonts: FontSet) -> Self {
+        let fs = FontSystem::new_with_locale_and_db(fonts.locale, fonts.db);
+        Self { fs, swash: SwashCache::new(), slots: HashMap::new(), frame: 0, files: HashMap::new() }
+    }
+
+    /// What the renderer draws text with: the font system, the glyph cache and the shaped
+    /// buffers (read after `prepare`).
+    pub fn render_parts(&mut self) -> (&mut FontSystem, &mut SwashCache, Buffers<'_>) {
+        (&mut self.fs, &mut self.swash, Buffers(&self.slots))
     }
 
     /// Makes the registered font files exactly `files`: new and changed ones are read in,
@@ -299,6 +287,13 @@ mod tests {
         let p = dir.join("Mine.ttf");
         std::fs::copy(src, &p).unwrap();
         p
+    }
+
+    #[test]
+    fn the_lockfile_holds_one_cosmic_text() {
+        // the renderer draws the buffers cosmic-text shapes: two versions would not unify.
+        let lock = include_str!("../Cargo.lock");
+        assert_eq!(lock.matches("name = \"cosmic-text\"").count(), 1, "cargo tree -d must list no second cosmic-text");
     }
 
     #[test]

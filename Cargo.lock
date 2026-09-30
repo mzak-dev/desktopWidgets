@@ -3271,6 +3271,7 @@ name = "wayfinder"
 version = "0.5.0"
 dependencies = [
  "bytemuck",
+ "cosmic-text",
  "global-hotkey",
  "glyphon",
  "image",

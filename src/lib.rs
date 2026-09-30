@@ -26,6 +26,7 @@ pub mod settings;
 pub mod shortcut;
 pub mod suggest;
 pub mod text;
+pub mod textspec;
 pub mod theme;
 pub mod thumbs;
 pub mod ui;

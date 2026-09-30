@@ -519,14 +519,14 @@ impl Gpu {
         self.queue.write_buffer(&t.globals, 0, bytemuck::cast_slice(&[w as f32, h as f32, 0.0, 0.0]));
         t.viewport.update(&self.queue, Resolution { width: w, height: h });
 
-        let TextEngine { fs, swash, slots, .. } = text;
+        let (fs, swash, buffers) = text.render_parts();
         for i in 0..2 {
             let layer = &list.layers[i];
             let areas: Vec<TextArea> = layer
                 .texts
                 .iter()
                 .filter_map(|it| {
-                    let buffer = &slots.get(&it.key)?.buf;
+                    let buffer = buffers.get(&it.key)?;
                     let c = it.color;
                     Some(TextArea {
                         buffer,

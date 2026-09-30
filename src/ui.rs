@@ -9,7 +9,8 @@ use crate::anim::{Anim, Ease, Pic};
 use crate::color::Color;
 use crate::draw::*;
 use crate::elements::{ShapeCx, rgba_with_opacity};
-use crate::text::{TextEngine, TextSpec};
+use crate::text::TextEngine;
+use crate::textspec::TextSpec;
 
 pub use crate::elements::{ArcSpec, Fit, HandSpec, ImageSpec, Kind, TicksSpec};
 

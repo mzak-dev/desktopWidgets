@@ -2118,7 +2118,7 @@ impl UiState {
         let step = self.step.min(SETUP_STEPS - 1);
         let (accent, text, dim) = (k.c("accent"), k.c("text"), k.c("text-dim"));
         let title = |key: &str, s: &str| k.bold(key.into(), s, 30.0, text).with_text(|t| t.weight = 700);
-        let sub = |key: &str, s: &str| k.txt(key.into(), s, 15.0, dim).wrap_text().with_text(|t| t.align = crate::text::TextAlign::Center).max_w(500.0);
+        let sub = |key: &str, s: &str| k.txt(key.into(), s, 15.0, dim).wrap_text().with_text(|t| t.align = crate::textspec::TextAlign::Center).max_w(500.0);
         let wide = (size.0 - 2.0 * PAGE_PAD).min(840.0);
         let content = match step {
             0 => Node::new("ob/0")

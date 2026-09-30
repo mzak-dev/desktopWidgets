@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use super::Shape;
 use crate::color::Color;
-use crate::text::TextSpec;
+use crate::textspec::TextSpec;
 
 #[derive(Clone, Debug)]
 pub enum Kind {

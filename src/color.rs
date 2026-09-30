@@ -64,7 +64,7 @@ impl Color {
         Self(c)
     }
 
-    /// Text colour for glyphon.
+    /// Text colour as 8-bit RGBA.
     pub fn to_u8(self) -> [u8; 4] {
         self.0.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8)
     }
