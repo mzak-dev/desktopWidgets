@@ -645,4 +645,32 @@ mod tests {
         assert_eq!(src.value("weather", &cx).and_then(|v| v.get("temp").cloned()), Some(Value::Num(21.0)));
         assert_eq!(wake(&src, &deps(&["weather.temp"]), tm(12, 0, 0, 0)), Some(Duration::from_millis(60_002)));
     }
+    /// The built-in sources over `fixed_with(pins)`, read by one cx at one instant.
+    fn read_pinned(pins: &crate::ambient::Pins, at: Instant) -> (Tm, Vec<Option<Value>>) {
+        let ambient = Ambient::fixed_with(pins);
+        let (src, saved, params) = (DataSources::from(&ambient), BTreeMap::new(), BTreeMap::new());
+        let now = ambient.calendar.now();
+        let cx = SourceCx::new(InstanceRef::new("w-1", &saved), &params, now, "Default").with_now(at);
+        (now, ["clock", "sys", "media", "audio"].iter().map(|n| src.value(n, &cx)).collect())
+    }
+
+    #[test]
+    fn two_sources_over_equal_pins_read_equal_values_and_the_overrides_show() {
+        let mut pins = crate::ambient::Pins::default();
+        for (k, v) in [("now", "2026-03-08T15:42:10"), ("zone", "Eastern Standard Time"), ("sys.cpu", "42"), ("sys.ram", "71"), ("media.title", "Blue in Green"), ("media.position", "100"), ("audio", "silence")] {
+            pins.set(k, &serde_json::from_str(v).unwrap_or_else(|_| serde_json::Value::String(v.into()))).unwrap();
+        }
+        let at = Instant::now();
+        let (now, a) = read_pinned(&pins, at);
+        let (_, b) = read_pinned(&pins, at);
+        assert_eq!(a, b, "every value, the same in two separate sources");
+        assert_eq!((now.month, now.day, now.hour, now.minute), (3, 8, 15, 42));
+        let [Some(clock), Some(sys), Some(media), Some(audio)] = &a[..] else { panic!("a source is missing") };
+        assert_eq!((clock.get("hour"), clock.get("minute")), (Some(&Value::Num(15.0)), Some(&Value::Num(42.0))));
+        assert_eq!((sys.get("cpu"), sys.get("ram")), (Some(&Value::Num(42.0)), Some(&Value::Num(71.0))));
+        assert_eq!((media.get("title"), media.get("clock")), (Some(&Value::Str("Blue in Green".into())), Some(&Value::Str("1:40".into()))));
+        assert!(matches!(audio.get("bands"), Some(Value::List(bars)) if bars.iter().all(|b| b.as_f64() == Some(0.0))), "silence draws flat bars: {audio:?}");
+        // the defaults differ from the overrides, so the test could fail
+        assert_ne!(read_pinned(&crate::ambient::Pins::default(), at).1, a);
+    }
 }

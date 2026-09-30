@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use crate::ambient::Pins;
 use crate::anim::Anim;
 use crate::card::Card;
 use crate::code::runtime::Limits;
@@ -60,6 +61,8 @@ pub struct Render {
     pub wait: f32,
     pub data: PathBuf,
     pub gpu: String,
+    /// The environment pins from `--env key=value`; parsed and checked, not yet applied.
+    pub pins: Pins,
 }
 
 /// `v` as JSON when it is (numbers, booleans, lists), else as text.
@@ -85,7 +88,7 @@ pub fn command(args: &[String]) -> Option<Command> {
     let i = args.iter().position(|a| a == "--render-widget")?;
     let parse = || -> Result<Render, String> {
         let widget = args.get(i + 1).filter(|w| !w.starts_with("--")).ok_or("--render-widget needs a widget id or file")?.clone();
-        let mut r = Render { widget, png: PathBuf::new(), size: None, params: vec![], state: vec![], palette: None, scale: 1.25, time: None, transparent: false, wait: 5.0, data: workspace::data_dir(), gpu: "software".into() };
+        let mut r = Render { widget, png: PathBuf::new(), size: None, params: vec![], state: vec![], palette: None, scale: 1.25, time: None, transparent: false, wait: 5.0, data: workspace::data_dir(), gpu: "software".into(), pins: Pins::default() };
         let mut it = args.iter().enumerate().filter(|(j, _)| *j != i && *j != i + 1).map(|(_, a)| a);
         while let Some(a) = it.next() {
             let mut val = || it.next().cloned().ok_or_else(|| format!("{a} needs a value"));
@@ -109,12 +112,17 @@ pub fn command(args: &[String]) -> Option<Command> {
                 "--wait" => r.wait = val()?.parse().map_err(|_| "--wait is seconds")?,
                 "--data" => r.data = val()?.into(),
                 "--gpu" => r.gpu = val()?,
+                "--env" => {
+                    let (k, v) = pair(&val()?, "--env")?;
+                    r.pins.set(&k, &v).map_err(|e| format!("--env {e}"))?;
+                }
                 other => return Err(format!("unknown option `{other}`")),
             }
         }
         if r.png.as_os_str().is_empty() {
             return Err("--render-widget needs --png <out.png>".into());
         }
+        r.pins.check().map_err(|e| format!("--env {e}"))?;
         Ok(r)
     };
     Some(parse().map_or_else(usage, Command::Render))
@@ -196,6 +204,9 @@ fn attach_console() {
 /// Renders one widget as the desktop would and writes a PNG. Returns whether the widget
 /// showed an error.
 fn render(r: &Render) -> Result<bool, String> {
+    if r.pins != Pins::default() {
+        println!("warning: --env pins are checked but not applied to this render yet");
+    }
     let plugin_list = PluginStore::new(&r.data).list();
     let mut roots = plugins::roots(&plugin_list, &Default::default());
     roots.push(Root::user(&r.data));
@@ -347,11 +358,26 @@ mod tests {
     }
 
     #[test]
+    fn env_pins_parse_with_loose_values_and_bad_ones_are_usage_errors() {
+        let render = |extra: &[&str]| command(&args(&[&["--render-widget", "clock", "--png", "o.png"][..], extra].concat()));
+        let Some(Command::Render(r)) = render(&["--env", "sys.cpu=42", "--env", "media.playing=true", "--env", "now=2026-03-08T15:42:00", "--env", "media.title=Blue in Green", "--env", "sys.gpus=[5,6]"]) else { panic!() };
+        assert_eq!((r.pins.sys.cpu, r.pins.media.playing, r.pins.media.title.as_str(), r.pins.sys.gpus.clone()), (42, true, "Blue in Green", vec![5, 6]));
+        assert_eq!((r.pins.now.month, r.pins.now.day, r.pins.now.hour, r.pins.now.minute), (3, 8, 15, 42));
+        // an unknown key names the nearest, a bad value says what was expected; both come back as Usage, which exits 2
+        let Some(Command::Usage(e)) = render(&["--env", "sys.cpo=42"]) else { panic!() };
+        assert!(e.contains("unknown pin `sys.cpo` (did you mean `sys.cpu`?)"), "{e}");
+        for bad in [&["--env", "sys.cpu=lots"][..], &["--env", "sys.cpu"], &["--env"], &["--env", "real=sys", "--env", "sys.cpu=1"], &["--env", "sys.charging=true"]] {
+            assert!(matches!(render(bad), Some(Command::Usage(_))), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn render_options_parse() {
         let Some(Command::Render(r)) = command(&args(&["--render-widget", "clock", "--png", "o.png", "--size", "300x200", "--param", "title=Quick launch", "--param", "smooth=true", "--state", "selected=2", "--time", "15:42", "--transparent"])) else { panic!() };
         assert_eq!((r.widget.as_str(), r.png, r.size, r.time, r.transparent), ("clock", PathBuf::from("o.png"), Some((300.0, 200.0)), Some((15, 42)), true));
         assert_eq!(r.params, [("title".to_string(), serde_json::json!("Quick launch")), ("smooth".to_string(), serde_json::json!(true))]);
         assert_eq!(r.state, [("selected".to_string(), serde_json::json!(2))]);
+        assert_eq!(r.pins, Pins::default(), "without --env the environment is the default");
         for bad in [&["--render-widget", "clock"][..], &["--render-widget", "clock", "--png", "o.png", "--size", "big"], &["--render-widget", "clock", "--png", "o.png", "--nope"], &["--render-widget", "--png", "o.png"]] {
             assert!(matches!(command(&args(bad)), Some(Command::Usage(_))), "{bad:?}");
         }

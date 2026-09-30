@@ -10,9 +10,11 @@ use std::sync::{Arc, Mutex};
 use super::capture::Capture;
 use super::icon::IconSource;
 use super::media::{Control, MediaBackend, Notify, Track};
-use super::sys::{Reading, SysProbe};
+use super::pins::{Canned, SysPins};
+use super::sys::{Battery, GpuLoad, Memory, Reading, SysProbe};
 use super::{Calendar, DateStyle, Tm, civil_from_days, days_from_civil};
 use crate::images::Decoded;
+use crate::net::{Fetch, Request, Response, Target};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Dst {
@@ -190,6 +192,7 @@ impl Calendar for FixedCalendar {
 pub struct ScriptedProbe {
     script: Mutex<VecDeque<Reading>>,
     advance: (u64, u64),
+    steady: Option<usize>,
 }
 
 impl ScriptedProbe {
@@ -197,7 +200,7 @@ impl ScriptedProbe {
     pub fn new(script: impl IntoIterator<Item = Reading>) -> Self {
         let script: VecDeque<Reading> = script.into_iter().collect();
         assert!(!script.is_empty(), "a scripted probe needs a reading");
-        Self { script: Mutex::new(script), advance: (0, 0) }
+        Self { script: Mutex::new(script), advance: (0, 0), steady: None }
     }
 
     /// Adds `(idle, total)` CPU ticks to the repeated reading on every read.
@@ -212,7 +215,69 @@ impl ScriptedProbe {
     }
 }
 
+/// Readings the pinned desktop is rolled through before the first ask: the 60 samples the
+/// graphs keep, and the one before them that the first delta is taken from.
+pub const PREROLL: usize = 61;
+
+/// `k` of `n` steps along a triangle wave of period 16 that is 0 at the last step, in -4 to 4.
+fn wave(k: usize, n: usize) -> i32 {
+    match (n - 1 - k) % 16 {
+        p @ 0..=4 => p as i32,
+        p @ 5..=12 => 8 - p as i32,
+        p => p as i32 - 16,
+    }
+}
+
+impl ScriptedProbe {
+    /// A desktop that ends on the values in `pins` after `PREROLL` readings, each a second
+    /// on from the last, with the CPU, memory, network and GPU loads swinging around them
+    /// on the way so the graphs have a shape. Whoever reads it `steady` gets the end state.
+    pub fn rolled(pins: &SysPins) -> Self {
+        const GB: u64 = 1 << 30;
+        const SECOND: u64 = 10_000_000; // in 100 ns ticks
+        let pct = |v: u8, d: i32, step: i32| (i32::from(v) + d * step).clamp(0, 100) as u64;
+        let (down, up) = ((pins.net_down * 1_048_576.0).round(), (pins.net_up * 1_048_576.0).round());
+        let (mut idle, mut total, mut rx, mut tx) = (0u64, SECOND, 1_000_000_000u64, 200_000_000u64);
+        let script = (0..PREROLL).map(|k| {
+            let d = wave(k, PREROLL);
+            if k > 0 {
+                let cpu = pct(pins.cpu, d, 3);
+                total += SECOND;
+                idle += SECOND / 100 * (100 - cpu);
+                rx += (down * (1.0 + f64::from(d) * 0.1)).round() as u64;
+                tx += (up * (1.0 + f64::from(d) * 0.1)).round() as u64;
+            }
+            let ram = pct(pins.ram, d, 2);
+            let phys = 16 * GB;
+            let gpus = pins.gpus.iter().enumerate().map(|(i, g)| GpuLoad {
+                label: if pins.gpus.len() > 1 { format!("GPU {}", i + 1) } else { "GPU".into() },
+                id: "gpu",
+                key: if i == 0 { "gpu".into() } else { format!("gpu{}", i + 1) },
+                name: "8 GB VRAM".into(),
+                load: pct(*g, d, 2) as f64,
+            });
+            Reading {
+                cpu: (idle, total),
+                mem: Memory { load_pct: ram as u32, total_phys: phys, avail_phys: phys - (u128::from(phys) * u128::from(ram) / 100) as u64, total_page: 32 * GB, avail_page: 18 * GB },
+                drives: vec![("C:".into(), (u128::from(931 * GB) * u128::from(pins.disk) / 100) as u64, 931 * GB), ("D:".into(), 1100 * GB, 1800 * GB)],
+                net: Some((rx, tx)),
+                processes: pins.processes,
+                battery: pins.battery.map(|percent| Battery { percent, charging: pins.charging }),
+                uptime_ms: pins.uptime * 1000,
+                gpus: gpus.collect(),
+            }
+        });
+        let mut probe = Self::new(script);
+        probe.steady = Some(PREROLL);
+        probe
+    }
+}
+
 impl SysProbe for ScriptedProbe {
+    fn steady(&self) -> Option<usize> {
+        self.steady
+    }
+
     fn read(&self) -> Reading {
         let mut s = self.script.lock().unwrap_or_else(|e| e.into_inner());
         if s.len() > 1 {
@@ -221,6 +286,27 @@ impl SysProbe for ScriptedProbe {
         let out = s[0].clone();
         s[0].cpu = (out.cpu.0 + self.advance.0, out.cpu.1 + self.advance.1);
         out
+    }
+}
+
+/// A transport with no network: every request fails, as a render with nothing to reach would.
+pub struct OfflineFetch;
+
+impl Fetch for OfflineFetch {
+    fn fetch(&self, _to: &Target, _req: &Request) -> Result<Response, String> {
+        Err("offline (render environment)".into())
+    }
+}
+
+/// A transport that answers exactly the URLs it was given, and is offline for any other.
+pub struct CannedFetch(pub Vec<Canned>);
+
+impl Fetch for CannedFetch {
+    fn fetch(&self, _to: &Target, req: &Request) -> Result<Response, String> {
+        match self.0.iter().find(|c| c.url == req.url) {
+            Some(c) => Ok(Response { status: c.status, content_type: c.content_type.clone(), location: None, body: c.body.clone() }),
+            None => Err(format!("offline (render environment): no canned answer for {}", req.url)),
+        }
     }
 }
 

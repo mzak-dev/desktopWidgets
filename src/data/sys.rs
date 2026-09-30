@@ -36,15 +36,31 @@ struct Sampled {
 pub struct Sys {
     probe: Arc<dyn SysProbe>,
     last: Mutex<Option<Sampled>>,
+    /// The probe is a script that has reached its end state: the last sample stays for good.
+    frozen: bool,
 }
 
 impl Sys {
+    /// A probe that is `steady` is read to its end state now, a second of its own time per
+    /// reading, so the history is full before the first widget asks and no later ask moves it.
     pub fn new(probe: Arc<dyn SysProbe>) -> Sys {
-        Sys { probe, last: Mutex::new(None) }
+        let mut last = None;
+        if let Some(n) = probe.steady().filter(|n| *n > 0) {
+            let t0 = Instant::now();
+            let (mut state, mut value) = (State::default(), Value::Nil);
+            for k in 0..n {
+                (state, value) = sample_sys(state, &probe.read(), t0 + Duration::from_secs(k as u64));
+            }
+            last = Some(Sampled { at: t0 + Duration::from_secs(n as u64 - 1), state, value });
+        }
+        Sys { frozen: last.is_some(), probe, last: Mutex::new(last) }
     }
 
     pub fn sample(&self, now: Instant) -> Value {
         let mut g = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if let (true, Some(s)) = (self.frozen, g.as_ref()) {
+            return s.value.clone();
+        }
         if let Some(s) = g.as_ref().filter(|s| now.saturating_duration_since(s.at) < Duration::from_millis(800)) {
             return s.value.clone();
         }
@@ -289,6 +305,28 @@ mod tests {
         assert_eq!(g.last().unwrap().get("detail"), Some(&Value::Str("Charging".into())));
         let v = sample_sys(State::default(), &Reading::demo(), Instant::now()).1;
         assert_eq!((v.get("has_battery"), v.get("charging"), num(&v, "battery")), (Some(&Value::Bool(false)), Some(&Value::Bool(false)), 0.0));
+    }
+
+    #[test]
+    fn a_rolled_desktop_starts_with_a_full_history_ending_on_its_pins_and_stays() {
+        use crate::ambient::{PREROLL, SysPins};
+        assert_eq!(PREROLL, HISTORY + 1, "the graphs keep 60 samples and the first reading only gives the delta");
+        let pins = SysPins { cpu: 42, ram: 71, net_down: 3.0, gpus: vec![55, 10], ..SysPins::default() };
+        let sys = Sys::new(Arc::new(ScriptedProbe::rolled(&pins)));
+        let t0 = Instant::now();
+        let v = sys.sample(t0);
+        let last = |k: &str| match v.get(k) {
+            Some(Value::List(h)) => (h.len(), h.last().and_then(|x| x.as_f64())),
+            other => panic!("{k}: {other:?}"),
+        };
+        assert_eq!((last("cpu_history"), last("ram_history")), ((HISTORY, Some(42.0)), (HISTORY, Some(71.0))));
+        assert_eq!((num(&v, "cpu"), num(&v, "ram"), num(&v, "gpu_count")), (42.0, 71.0, 2.0));
+        assert_eq!(v.get("net_down"), Some(&Value::Str("3.0 MB/s".into())));
+        let Some(Value::List(h)) = v.get("cpu_history") else { panic!() };
+        assert!(h.iter().any(|x| x.as_f64() != Some(42.0)), "the graph has a shape, not a flat line");
+        assert!(h.iter().all(|x| x.as_f64().is_some_and(|c| c > 0.0)), "the first reading's zero load fell off the front");
+        assert_eq!(sys.sample(t0 + Duration::from_secs(5)), v, "a fixed desktop does not move on");
+        assert_eq!(Sys::new(Arc::new(ScriptedProbe::rolled(&pins))).sample(t0), v, "and is the same every time");
     }
 
     #[test]

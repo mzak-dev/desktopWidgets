@@ -72,4 +72,11 @@ impl Reading {
 /// samples.
 pub trait SysProbe: Send + Sync {
     fn read(&self) -> Reading;
+
+    /// `Some(n)` for a probe that is a script of `n` readings ending in a state that stays: the
+    /// `sys` source takes all `n` when it is built, so its graphs start full, and keeps the
+    /// last sample (a fixed desktop does not change). `None` for a machine.
+    fn steady(&self) -> Option<usize> {
+        None
+    }
 }
