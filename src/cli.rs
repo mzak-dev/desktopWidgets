@@ -214,18 +214,18 @@ fn render(r: &Render) -> Result<bool, String> {
     }
 
     let mut gpu = Gpu::new_headless(Power::parse(&r.gpu))?;
-    let mut text = TextEngine::new();
+    // plugin code runs as in the app, without the user's saved data
+    let mut ambient = crate::ambient::Ambient::windows(&r.data);
+    let mut text = TextEngine::with_fonts((ambient.fonts)());
     for e in text.sync_fonts(&cat.font_files) {
         println!("warning: {e}");
     }
-    let mut images = ImageStore::new(cat.icon_packs.clone());
+    let mut images = ImageStore::new(ambient.icons.clone(), cat.icon_packs.clone());
     images.set_cache(r.data.join(".cache").join("thumbs"));
     let sel = Selection { palette: r.palette.clone().unwrap_or_default(), ..Default::default() };
     let theme = Theme::compose(&cat.library, &sel, &[]);
     let card = Card::new(&theme);
 
-    // plugin code runs as in the app, without the user's saved data
-    let ambient = crate::ambient::Ambient::windows(&r.data);
     let mut sources = DataSources::from(&ambient);
     let (news_tx, news) = mpsc::channel();
     let news_tx = Mutex::new(news_tx);
@@ -234,10 +234,10 @@ fn render(r: &Render) -> Result<bool, String> {
     });
     sources.set_waker(notify.clone());
     let (specs, _) = plugins::code_specs(&plugin_list, &Default::default());
-    let fetch: Option<Arc<dyn crate::net::Fetch>> = match specs.iter().any(|(_, s)| !s.hosts.is_empty()) {
-        true => crate::platform::winhttp::WinHttp::new().ok().map(|w| Arc::new(w) as Arc<dyn crate::net::Fetch>),
-        false => None,
-    };
+    if specs.iter().any(|(_, s)| !s.hosts.is_empty()) {
+        ambient.fetch = crate::platform::winhttp::WinHttp::new().ok().map(|w| Arc::new(w) as Arc<dyn crate::net::Fetch>);
+    }
+    let fetch = ambient.fetch.clone();
     let places = crate::code::fs::Places { home: std::env::var_os("USERPROFILE").map(PathBuf::from), private: vec![r.data.clone()] };
     let mut code = CodeSources::default();
     code.sync(&mut sources, specs, |spec| WasmSource::start(spec, Deps { fetch: fetch.clone(), store: None, notify: notify.clone(), limits: Limits::default(), places: places.clone(), calendar: ambient.calendar.clone() }));

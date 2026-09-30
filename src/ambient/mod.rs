@@ -1,24 +1,35 @@
 //! Everything the engine reads from the machine it runs on, behind traits, so a render can be
 //! repeated: the Windows Ambient reads the real machine, the Fixed one returns the same
-//! values every time (research/12). Calendar, system probe and media session so far; the
-//! other seams join the bundle later.
+//! values every time (research/12). Calendar, system probe, media session, audio capture,
+//! icon source, fonts and the network.
 
+mod capture;
 mod fixed;
+mod icon;
 mod media;
 mod sys;
 mod win;
+mod win_audio;
+mod win_icon;
 mod win_media;
 mod win_sys;
 
 use std::path::Path;
 use std::sync::Arc;
 
-pub use fixed::{FixedCalendar, FixedMedia, ScriptedProbe};
+pub use capture::{Capture, to_mono};
+pub use fixed::{FixedCalendar, FixedMedia, ScriptedProbe, Silence, TileIcons, Tone};
+pub use icon::IconSource;
 pub use media::{Control, MediaBackend, Notify, Track};
 pub use sys::{Battery, GpuLoad, Memory, Reading, SysProbe};
 pub use win::WinCalendar;
+pub use win_audio::Wasapi;
+pub use win_icon::ShellIcons;
 pub use win_media::WinMedia;
 pub use win_sys::WinProbe;
+
+use crate::net::Fetch;
+use crate::text::FontSet;
 
 /// A calendar time: local wall time, or UTC where a method says so.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,19 +131,46 @@ pub struct Ambient {
     pub calendar: Arc<dyn Calendar>,
     pub sys: Arc<dyn SysProbe>,
     pub media: Arc<dyn MediaBackend>,
+    pub capture: Arc<dyn Capture>,
+    pub icons: Arc<dyn IconSource>,
+    /// Builds the fonts a `TextEngine` shapes with: the system's for now, a fixed bundled
+    /// set once there is one. Called where an engine is made, so a `fixed` Ambient reads
+    /// no fonts until then.
+    pub fonts: fn() -> FontSet,
+    /// The transport for plugin code's network, `None` until something needs it: the app
+    /// opens it when a Plugin lists hosts.
+    pub fetch: Option<Arc<dyn Fetch>>,
 }
 
 impl Ambient {
     /// The real machine; album art is cached under `<data>/.cache/media` (a dot-folder never
     /// reloads content). Nothing is read and no thread starts until a source is asked.
     pub fn windows(data: &Path) -> Ambient {
-        Ambient { calendar: Arc::new(WinCalendar), sys: Arc::new(WinProbe::default()), media: Arc::new(WinMedia::new(data.join(".cache").join("media"))) }
+        Ambient {
+            calendar: Arc::new(WinCalendar),
+            sys: Arc::new(WinProbe::default()),
+            media: Arc::new(WinMedia::new(data.join(".cache").join("media"))),
+            capture: Arc::new(Wasapi::default()),
+            icons: Arc::new(ShellIcons),
+            fonts: FontSet::system,
+            fetch: None,
+        }
     }
 
-    /// A fixed instant and English names, the demo desktop's readings and a paused track:
-    /// no machine reads, no files, no threads.
+    /// A fixed instant and English names, the demo desktop's readings, a paused track, a
+    /// steady tone and a tile per app icon: no machine reads, no files, no threads. The fonts
+    /// are still the machine's (`fonts` is the system set until a bundled one exists) and
+    /// there is no network.
     pub fn fixed() -> Ambient {
-        Ambient { calendar: Arc::new(FixedCalendar::default()), sys: Arc::new(ScriptedProbe::demo()), media: Arc::new(FixedMedia::default()) }
+        Ambient {
+            calendar: Arc::new(FixedCalendar::default()),
+            sys: Arc::new(ScriptedProbe::demo()),
+            media: Arc::new(FixedMedia::default()),
+            capture: Arc::new(Tone::default()),
+            icons: Arc::new(TileIcons),
+            fonts: FontSet::system,
+            fetch: None,
+        }
     }
 }
 

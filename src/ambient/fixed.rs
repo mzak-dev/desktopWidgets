@@ -1,14 +1,18 @@
 //! A calendar that never reads the machine: a fixed instant, English names and an embedded
 //! table of the zones the clock's city list names, with the US, EU, Australian and New
 //! Zealand daylight rules as they stand since 2008. Not valid for earlier years. Beside it,
-//! the system probe and media session that answer the same every time.
+//! the system probe, media session, capture and icon source that answer the same every time.
 
 use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use super::capture::Capture;
+use super::icon::IconSource;
 use super::media::{Control, MediaBackend, Notify, Track};
 use super::sys::{Reading, SysProbe};
 use super::{Calendar, DateStyle, Tm, civil_from_days, days_from_civil};
+use crate::images::Decoded;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Dst {
@@ -256,6 +260,103 @@ impl MediaBackend for FixedMedia {
     fn attach(&self, _notify: Arc<dyn Notify>) {}
 }
 
+/// A capture that plays a sum of steady sine tones, `amp` each, without a device: by default
+/// 110, 440 and 1760 Hz at 48 kHz, a spectrum that never changes. It is read on demand, and
+/// each read carries the tones on from where the last one stopped.
+pub struct Tone {
+    hz: Vec<f32>,
+    amp: f32,
+    played: Mutex<u64>,
+}
+
+impl Tone {
+    pub const RATE: u32 = 48_000;
+
+    pub fn new(hz: impl IntoIterator<Item = f32>, amp: f32) -> Self {
+        Self { hz: hz.into_iter().collect(), amp, played: Mutex::new(0) }
+    }
+}
+
+impl Default for Tone {
+    fn default() -> Self {
+        Self::new([110.0, 440.0, 1760.0], 0.3)
+    }
+}
+
+impl Capture for Tone {
+    fn open(&self) -> Result<u32, String> {
+        Ok(Self::RATE)
+    }
+
+    /// The next 10 ms.
+    fn read(&self, out: &mut Vec<f32>) -> Result<(), String> {
+        let mut played = self.played.lock().unwrap_or_else(|e| e.into_inner());
+        let rate = Self::RATE as f64;
+        out.extend((*played..*played + u64::from(Self::RATE / 100)).map(|n| self.hz.iter().map(|hz| self.amp * (std::f64::consts::TAU * f64::from(*hz) * n as f64 / rate).sin() as f32).sum::<f32>()));
+        *played += u64::from(Self::RATE / 100);
+        Ok(())
+    }
+
+    fn realtime(&self) -> bool {
+        false
+    }
+}
+
+/// A capture that hears nothing, without a device.
+pub struct Silence;
+
+impl Capture for Silence {
+    fn open(&self) -> Result<u32, String> {
+        Ok(Tone::RATE)
+    }
+
+    fn read(&self, out: &mut Vec<f32>) -> Result<(), String> {
+        out.extend(std::iter::repeat_n(0.0, (Tone::RATE / 100) as usize));
+        Ok(())
+    }
+
+    fn realtime(&self) -> bool {
+        false
+    }
+}
+
+/// An icon source with no files and no shell: every file stem gets a 48 px rounded tile of
+/// its own colour (so two apps look different), and a target resolves to itself.
+pub struct TileIcons;
+
+/// FNV-1a, so a stem's colour is the same on every machine and build.
+fn stem_hash(stem: &str) -> u32 {
+    stem.to_lowercase().bytes().fold(0x811c_9dc5, |h, b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193))
+}
+
+/// The tile for `stem`: a rounded square, opaque inside with an antialiased edge.
+pub(super) fn tile(stem: &str) -> Decoded {
+    let h = stem_hash(stem);
+    let rgb = [(h & 0xff) as u8, (h >> 8 & 0xff) as u8, (h >> 16 & 0xff) as u8].map(|c| 64 + c / 2);
+    let n = 48u32;
+    let mut px = vec![0u8; (n * n * 4) as usize];
+    for y in 0..n {
+        for x in 0..n {
+            let (fx, fy) = (x as f32 + 0.5 - 24.0, y as f32 + 0.5 - 24.0);
+            let q = (fx.abs() - 19.0 + 8.0, fy.abs() - 19.0 + 8.0);
+            let d = (q.0.max(0.0).powi(2) + q.1.max(0.0).powi(2)).sqrt() + q.0.max(q.1).min(0.0) - 8.0;
+            let i = ((y * n + x) * 4) as usize;
+            px[i..i + 4].copy_from_slice(&[rgb[0], rgb[1], rgb[2], ((0.5 - d).clamp(0.0, 1.0) * 255.0) as u8]);
+        }
+    }
+    Decoded { px, w: n, h: n, frames: None }
+}
+
+impl IconSource for TileIcons {
+    fn shell_icon(&self, path: &Path) -> Option<Decoded> {
+        Some(tile(&crate::shortcut::file_stem(&path.to_string_lossy())))
+    }
+
+    fn resolve_path(&self, target: &str) -> Option<PathBuf> {
+        (!target.is_empty() && !target.contains("://")).then(|| PathBuf::from(target))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,5 +467,41 @@ mod tests {
         let t = Tm::new(2026, 9, 21, 1, 0, 0, 0, 0);
         let all = [DateStyle::Weekday, DateStyle::WeekdayShort, DateStyle::Month, DateStyle::Date, DateStyle::DateShort].map(|s| c.date_text(&t, s));
         assert_eq!(all, ["Monday", "Mon", "September", "Monday, 21 September", "21 Sep"]);
+    }
+
+    #[test]
+    fn the_tone_is_steady_and_carries_on_between_reads() {
+        let t = Tone::new([480.0], 0.5);
+        assert_eq!(t.open(), Ok(48_000));
+        let (mut a, mut b) = (vec![], vec![]);
+        t.read(&mut a).unwrap();
+        t.read(&mut b).unwrap();
+        assert_eq!((a.len(), b.len()), (480, 480), "10 ms a read");
+        assert!(a.iter().all(|s| s.abs() <= 0.5) && a.iter().any(|s| s.abs() > 0.49));
+        // 480 Hz at 48 kHz repeats every 100 samples, so the second read (from sample 480) starts where sample 80 was
+        assert!((b[0] - a[80]).abs() < 1e-5, "{} {}", b[0], a[80]);
+        let fresh = Tone::new([480.0], 0.5);
+        let mut c = vec![];
+        fresh.read(&mut c).unwrap();
+        assert_eq!(a, c, "a new tone starts the same way");
+        assert!(!t.realtime() && !Silence.realtime());
+        let mut s = vec![];
+        Silence.read(&mut s).unwrap();
+        assert!(s.len() == 480 && s.iter().all(|x| *x == 0.0));
+    }
+
+    #[test]
+    fn a_tile_is_a_rounded_square_coloured_by_the_file_stem() {
+        let icons = TileIcons;
+        let a = icons.shell_icon(Path::new(r"C:\Apps\Chrome.exe")).unwrap();
+        assert_eq!((a.w, a.h, a.px.len()), (48, 48, 48 * 48 * 4));
+        let alpha = |d: &Decoded, x: usize, y: usize| d.px[(y * 48 + x) * 4 + 3];
+        assert_eq!((alpha(&a, 0, 0), alpha(&a, 24, 24)), (0, 255), "transparent corner, opaque middle");
+        let same = icons.shell_icon(Path::new("/elsewhere/chrome.lnk")).unwrap();
+        let other = icons.shell_icon(Path::new(r"C:\Apps\Firefox.exe")).unwrap();
+        assert_eq!(a.px, same.px, "the stem decides, not the folder, extension or case");
+        assert_ne!(a.px[..3], other.px[..3], "two apps get two colours");
+        assert_eq!(icons.resolve_path("chrome"), Some(PathBuf::from("chrome")), "a target resolves to itself");
+        assert_eq!((icons.resolve_path("https://example.com"), icons.resolve_path("")), (None, None));
     }
 }

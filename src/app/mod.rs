@@ -43,7 +43,6 @@ use crate::draw::DrawList;
 use crate::edit::{self, Handle, Rect, Snap};
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::ImageStore;
-use crate::net::Fetch;
 use crate::platform::win32::{self, ZMode};
 use crate::plugins::{self, Plugin, PluginRow, PluginStore};
 use crate::settings::{self, Cmd, Scope, SettingsWin};
@@ -215,8 +214,6 @@ pub struct App {
     plugin_note: String,
     /// Each code Plugin's saved data, shared by every generation of its Code Source.
     stores: BTreeMap<String, Arc<KvStore>>,
-    /// The network for plugin code, opened the first time a Plugin lists hosts.
-    fetch: Option<Arc<dyn Fetch>>,
     /// Which exe double-clicking a `.wfplugin` runs, for Settings.
     plugin_files: win32::FileOwner,
 }
@@ -243,8 +240,8 @@ impl App {
         PluginStore::new(&dir).sweep();
         let (ws, ws_err) = Workspace::load(&dir);
         let theme = Theme::default(); // composed by `rebuild_theme` below
-        let text = TextEngine::new();
-        let mut images = ImageStore::default();
+        let text = TextEngine::with_fonts((ambient.fonts)());
+        let mut images = ImageStore::new(ambient.icons.clone(), BTreeMap::new());
         images.set_cache(dir.join(".cache").join("thumbs"));
         let waker = Mutex::new(proxy.clone());
         images.set_waker(Arc::new(move || {
@@ -295,7 +292,6 @@ impl App {
             plugin_rows: Vec::new(),
             plugin_note: String::new(),
             stores: BTreeMap::new(),
-            fetch: None,
             plugin_files: win32::FileOwner::Nobody,
         };
         app.load_content();
@@ -571,9 +567,10 @@ impl App {
     /// Starts the Code Sources of enabled Plugins and stops the rest; unchanged ones keep running.
     fn sync_code(&mut self) {
         let (specs, _) = plugins::code_specs(&self.plugins, &self.ws.disabled_plugins);
-        if self.fetch.is_none() && specs.iter().any(|(_, s)| !s.hosts.is_empty()) {
+        // the network is opened the first time a Plugin lists hosts
+        if self.ambient.fetch.is_none() && specs.iter().any(|(_, s)| !s.hosts.is_empty()) {
             match crate::platform::winhttp::WinHttp::new() {
-                Ok(w) => self.fetch = Some(Arc::new(w)),
+                Ok(w) => self.ambient.fetch = Some(Arc::new(w)),
                 Err(e) => self.log(format!("plugins cannot use the network: {e}")),
             }
         }
@@ -585,7 +582,7 @@ impl App {
         let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let _ = proxy.lock().unwrap().send_event(UserEvent::SourceNews);
         });
-        let (fetch, stores) = (self.fetch.clone(), &self.stores);
+        let (fetch, stores) = (self.ambient.fetch.clone(), &self.stores);
         let places = crate::code::fs::Places { home: std::env::var_os("USERPROFILE").map(PathBuf::from), private: vec![self.opts.dir.clone()] };
         self.code.sync(&mut self.sources, specs, |spec| {
             let deps = Deps { fetch: fetch.clone(), store: stores.get(&spec.plugin).cloned(), notify: notify.clone(), limits: Limits::default(), places: places.clone(), calendar: self.ambient.calendar.clone() };

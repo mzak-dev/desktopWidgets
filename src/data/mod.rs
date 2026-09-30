@@ -235,7 +235,7 @@ impl Default for DataSources {
 /// The built-in sources over `ambient`. The app builds them over `Ambient::windows`.
 impl From<&Ambient> for DataSources {
     fn from(ambient: &Ambient) -> Self {
-        Self::new(vec![Box::new(Clock::new(ambient.calendar.clone())), Box::new(Sys::new(ambient.sys.clone())), Box::new(Shortcuts::default()), Box::new(Media::new(ambient.media.clone())), Box::new(Audio::default())])
+        Self::new(vec![Box::new(Clock::new(ambient.calendar.clone())), Box::new(Sys::new(ambient.sys.clone())), Box::new(Shortcuts::default()), Box::new(Media::new(ambient.media.clone())), Box::new(Audio::new(ambient.capture.clone()))])
     }
 }
 

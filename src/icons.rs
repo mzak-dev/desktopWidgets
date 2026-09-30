@@ -1,27 +1,17 @@
 //! Icon sourcing (decision 22): explicit path -> Icon Pack by app name -> the
-//! target's own icon -> a generic one. Each image id is decoded once; the store asks the
-//! renderer to upload it with an `ImageOp` and keeps only its size, never a device.
+//! target's own icon (from the Ambient's `IconSource`) -> a generic one. Each image id is
+//! decoded once; the store asks the renderer to upload it with an `ImageOp` and keeps only
+//! its size, never a device.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
-use windows::Win32::Graphics::Gdi::{BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, DeleteObject, GetDC, GetDIBits, ReleaseDC};
-use windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES;
-use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
-use windows::Win32::UI::Shell::{SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGFI_SYSICONINDEX, SHGetFileInfoW, SHGetImageList, SHIL_EXTRALARGE};
-use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
-use windows::core::HSTRING;
-
-use crate::images::{Decoded, ImageOp};
+use crate::ambient::{IconSource, TileIcons};
+use crate::images::{Decoded, ImageOp, load_image};
 use crate::shortcut::ID_SEP;
 
 pub const GENERIC: &str = "icon:generic";
-
-fn load_image(p: &Path) -> Option<Decoded> {
-    let img = image::open(p).ok()?.to_rgba8();
-    let (w, h) = img.dimensions();
-    Some(Decoded { px: img.into_raw(), w, h, frames: None })
-}
 
 /// A neutral rounded tile for anything with no icon at all.
 pub fn generic() -> Decoded {
@@ -43,124 +33,6 @@ pub fn generic() -> Decoded {
     Decoded { px, w: n, h: n, frames: None }
 }
 
-fn resolve_path(target: &str) -> Option<PathBuf> {
-    if target.contains("://") {
-        return None;
-    }
-    let p = Path::new(target);
-    if p.exists() {
-        return Some(p.to_path_buf());
-    }
-    if p.components().count() == 1 {
-        let name = if p.extension().is_some() { target.to_string() } else { format!("{target}.exe") };
-        for dir in std::env::split_paths(&std::env::var_os("PATH")?) {
-            let c = dir.join(&name);
-            if c.exists() {
-                return Some(c);
-            }
-        }
-    }
-    None
-}
-
-/// Where a `.lnk` points, and the file it takes its icon from if it names one.
-fn link_target(lnk: &Path) -> Option<(PathBuf, Option<PathBuf>)> {
-    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, IPersistFile, STGM_READ};
-    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink, SLR_NO_UI};
-    use windows::core::Interface;
-    unsafe {
-        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
-        link.cast::<IPersistFile>().ok()?.Load(&HSTRING::from(lnk.as_os_str()), STGM_READ).ok()?;
-        let _ = link.Resolve(windows::Win32::Foundation::HWND::default(), SLR_NO_UI.0 as u32);
-        let mut buf = [0u16; 520];
-        link.GetPath(&mut buf, std::ptr::null_mut(), 0).ok()?;
-        let path = String::from_utf16_lossy(&buf[..buf.iter().position(|c| *c == 0).unwrap_or(buf.len())]);
-        let mut icon = [0u16; 520];
-        let mut idx = 0;
-        let _ = link.GetIconLocation(&mut icon, &mut idx);
-        let icon = String::from_utf16_lossy(&icon[..icon.iter().position(|c| *c == 0).unwrap_or(icon.len())]);
-        // an icon file is used only when it is a plain image; `.exe` and `.dll` icons go through the shell
-        let icon = (!icon.is_empty() && idx == 0).then(|| PathBuf::from(icon)).filter(|p| p.exists());
-        (!path.is_empty()).then(|| (PathBuf::from(path), icon))
-    }
-}
-
-/// 48px via the system image list, falling back to the classic 32px icon. A shortcut shows
-/// what it opens, so a `.lnk` to a document or folder has that icon, not a blank page.
-fn shell_icon(path: &Path) -> Option<Decoded> {
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("lnk")) {
-        if let Some((target, icon)) = link_target(path) {
-            if let Some(i) = icon.as_deref().and_then(load_image) {
-                return Some(i);
-            }
-            if target.exists() {
-                if let Some(i) = shell_icon(&target) {
-                    return Some(i);
-                }
-            }
-        }
-    }
-    unsafe {
-        let wide = HSTRING::from(path.as_os_str());
-        let mut sfi = SHFILEINFOW::default();
-        let size = size_of::<SHFILEINFOW>() as u32;
-        if SHGetFileInfoW(&wide, FILE_FLAGS_AND_ATTRIBUTES(0), Some(&mut sfi), size, SHGFI_SYSICONINDEX) != 0 {
-            if let Ok(list) = SHGetImageList::<IImageList>(SHIL_EXTRALARGE as i32) {
-                if let Ok(h) = list.GetIcon(sfi.iIcon, ILD_TRANSPARENT.0 as u32) {
-                    let out = hicon_to_rgba(h);
-                    let _ = DestroyIcon(h);
-                    if out.is_some() {
-                        return out;
-                    }
-                }
-            }
-        }
-        let mut sfi = SHFILEINFOW::default();
-        if SHGetFileInfoW(&wide, FILE_FLAGS_AND_ATTRIBUTES(0), Some(&mut sfi), size, SHGFI_ICON | SHGFI_LARGEICON) == 0 || sfi.hIcon.is_invalid() {
-            return None;
-        }
-        let out = hicon_to_rgba(sfi.hIcon);
-        let _ = DestroyIcon(sfi.hIcon);
-        out
-    }
-}
-
-unsafe fn hicon_to_rgba(hicon: HICON) -> Option<Decoded> {
-    unsafe {
-        let mut info = ICONINFO::default();
-        GetIconInfo(hicon, &mut info).ok()?;
-        let hdc = GetDC(None);
-        let mut probe = BITMAPINFO::default();
-        probe.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-        GetDIBits(hdc, info.hbmColor, 0, 0, None, &mut probe, DIB_RGB_COLORS);
-        let (w, h) = (probe.bmiHeader.biWidth.unsigned_abs(), probe.bmiHeader.biHeight.unsigned_abs());
-        let mut out = None;
-        if w > 0 && h > 0 && w <= 512 && h <= 512 {
-            let mut bmi = BITMAPINFO::default();
-            bmi.bmiHeader.biSize = size_of::<BITMAPINFOHEADER>() as u32;
-            bmi.bmiHeader.biWidth = w as i32;
-            bmi.bmiHeader.biHeight = -(h as i32); // top-down
-            bmi.bmiHeader.biPlanes = 1;
-            bmi.bmiHeader.biBitCount = 32;
-            bmi.bmiHeader.biCompression = BI_RGB.0;
-            let mut px = vec![0u8; (w * h * 4) as usize];
-            if GetDIBits(hdc, info.hbmColor, 0, h, Some(px.as_mut_ptr().cast()), &mut bmi, DIB_RGB_COLORS) != 0 {
-                for p in px.chunks_exact_mut(4) {
-                    p.swap(0, 2); // BGRA -> RGBA
-                }
-                if px.chunks_exact(4).all(|p| p[3] == 0) {
-                    px.chunks_exact_mut(4).for_each(|p| p[3] = 255); // old icons without alpha
-                }
-                out = Some(Decoded { px, w, h, frames: None });
-            }
-        }
-        ReleaseDC(None, hdc);
-        let _ = DeleteObject(info.hbmColor.into());
-        let _ = DeleteObject(info.hbmMask.into());
-        out
-    }
-}
-
 /// Icon Pack lookup: `<pack>/<name>.png` where name is the target's file
 /// stem, lowercased (`Chrome.lnk` -> `chrome.png`), or its full file name.
 fn from_pack(pack_dir: &Path, target: &str) -> Option<Decoded> {
@@ -169,7 +41,7 @@ fn from_pack(pack_dir: &Path, target: &str) -> Option<Decoded> {
     [format!("{stem}.png"), format!("{file}.png")].iter().find_map(|n| load_image(&pack_dir.join(n)))
 }
 
-pub fn resolve(target: &str, explicit: &str, pack_dir: Option<&Path>) -> Decoded {
+pub fn resolve(target: &str, explicit: &str, pack_dir: Option<&Path>, source: &dyn IconSource) -> Decoded {
     if !explicit.is_empty() {
         if let Some(i) = load_image(Path::new(explicit)) {
             return i;
@@ -178,7 +50,7 @@ pub fn resolve(target: &str, explicit: &str, pack_dir: Option<&Path>) -> Decoded
     if let Some(i) = pack_dir.and_then(|d| from_pack(d, target)) {
         return i;
     }
-    resolve_path(target).and_then(|p| shell_icon(&p)).unwrap_or_else(generic)
+    source.resolve_path(target).and_then(|p| source.shell_icon(&p)).unwrap_or_else(generic)
 }
 
 /// A `file:` image, or an app icon that may come from an Icon Pack.
@@ -232,8 +104,9 @@ struct Loaded {
 /// Decodes images on demand and remembers which ids the renderer has. It never touches a
 /// device: what to upload or drop is queued as `ImageOp`s, and `Gpu::apply` takes them
 /// (`drain`) once before each render.
-#[derive(Default)]
 pub struct ImageStore {
+    /// Where a target's own icon comes from.
+    icons: Arc<dyn IconSource>,
     /// Icon Pack name to its folder, from every content root.
     packs: BTreeMap<String, PathBuf>,
     seen: HashSet<String>,
@@ -245,9 +118,16 @@ pub struct ImageStore {
     thumbs: crate::thumbs::Thumbs,
 }
 
+/// Tile icons and no Icon Packs: what a test or a headless render wants.
+impl Default for ImageStore {
+    fn default() -> Self {
+        Self::new(Arc::new(TileIcons), BTreeMap::new())
+    }
+}
+
 impl ImageStore {
-    pub fn new(packs: BTreeMap<String, PathBuf>) -> Self {
-        Self { packs, ..Default::default() }
+    pub fn new(icons: Arc<dyn IconSource>, packs: BTreeMap<String, PathBuf>) -> Self {
+        Self { icons, packs, seen: HashSet::new(), loaded: HashMap::new(), ops: Vec::new(), residency: Residency::default(), thumbs: crate::thumbs::Thumbs::default() }
     }
 
     pub fn set_packs(&mut self, packs: BTreeMap<String, PathBuf>) {
@@ -329,7 +209,7 @@ impl ImageStore {
         } else if let Some(rest) = id.strip_prefix("icon:") {
             let mut it = rest.split(ID_SEP);
             let (pack, target, explicit) = (it.next().unwrap_or(""), it.next().unwrap_or(""), it.next().unwrap_or(""));
-            resolve(target, explicit, self.packs.get(pack).map(PathBuf::as_path))
+            resolve(target, explicit, self.packs.get(pack).map(PathBuf::as_path), self.icons.as_ref())
         } else {
             generic()
         };
@@ -479,17 +359,22 @@ mod tests {
         let mut px = image::RgbaImage::new(8, 8);
         px.put_pixel(0, 0, image::Rgba([1, 2, 3, 255]));
         px.save(dir.join("notepad.png")).unwrap();
-        let hit = resolve("C:\\Windows\\notepad.exe", "", Some(&dir));
+        let hit = resolve(r"C:\Windows\notepad.exe", "", Some(&dir), &TileIcons);
         assert_eq!((hit.w, hit.px[0]), (8, 1), "pack icon used");
         // step 1: an explicit path beats the pack
         let explicit = dir.join("mine.png");
         image::RgbaImage::new(4, 4).save(&explicit).unwrap();
-        assert_eq!(resolve("notepad", explicit.to_str().unwrap(), Some(&dir)).w, 4);
-        // step 3: no pack entry -> the shell icon (sized by the system, not 8/4)
-        let shell = resolve("C:\\Windows\\notepad.exe", "", None);
-        assert!(shell.w >= 32, "shell icon, got {}", shell.w);
+        assert_eq!(resolve("notepad", explicit.to_str().unwrap(), Some(&dir), &TileIcons).w, 4);
+        // step 3: no pack entry -> the source's icon for what the target names
+        let tile = |target: &str| resolve(target, "", None, &TileIcons);
+        let (notepad, calc) = (tile(r"C:\Windows\notepad.exe"), tile(r"C:\Windows\calc.exe"));
+        assert_eq!((notepad.w, notepad.h), (48, 48));
+        assert_ne!(notepad.px, generic().px, "a tile, not the generic one");
+        assert_ne!(notepad.px, calc.px, "two apps look different");
+        assert_eq!(notepad.px, tile(r"D:\Other\NOTEPAD.lnk").px, "the colour follows the file stem");
         // step 4: nothing resolvable -> generic
-        assert_eq!(resolve("definitely-not-a-real-app-xyz", "", None).w, 48);
+        assert_eq!(tile("https://example.com/app").px, generic().px);
+        assert_eq!(tile("").px, generic().px);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

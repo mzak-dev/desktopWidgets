@@ -49,6 +49,14 @@ pub enum ImageOp {
     Drop(String),
 }
 
+/// A still picture read with the `image` crate as it is, no orientation and no animation:
+/// an explicit icon file, an Icon Pack entry.
+pub fn load_image(p: &Path) -> Option<Decoded> {
+    let img = image::open(p).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    Some(Decoded { px: img.into_raw(), w, h, frames: None })
+}
+
 pub fn decode_file(p: &Path) -> Option<Decoded> {
     decode_bytes(&std::fs::read(p).ok()?)
 }
