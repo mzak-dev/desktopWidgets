@@ -1,6 +1,6 @@
 needs = ["audio"]
 name = "Audio Visualizer"
-description = "Whatever your PC is playing, live: a spectrum as bars, 3D bars, mirrored bars, a line or an area with falling peak markers, an oscilloscope of the waveform, or a level meter. Small, it is only the picture; wider, a frequency or time scale under it; large, a header with the level and bass. It dims while nothing plays."
+description = "Whatever your PC is playing, live: a spectrum as bars, 3D bars, mirrored bars, a line or an area with falling peak markers, a 3D waterfall of the last second or so, an oscilloscope of the waveform, or a level meter. Small, it is only the picture; wider, a frequency or time scale under it; large, a header with the level and bass. It dims while nothing plays."
 category = "Media"
 icon = "audio"
 size = [340, 160]
@@ -10,7 +10,7 @@ max_size = [1000, 500]
 [params.mode]
 group = "Look"
 type = "enum"
-choices = [{ value = "bars", label = "Bars" }, { value = "bars3d", label = "3D bars" }, { value = "mirror", label = "Mirrored bars" }, { value = "line", label = "Line" }, { value = "area", label = "Filled area" }, { value = "scope", label = "Oscilloscope" }, { value = "level", label = "Level meter" }]
+choices = [{ value = "bars", label = "Bars" }, { value = "bars3d", label = "3D bars" }, { value = "waterfall", label = "3D waterfall" }, { value = "mirror", label = "Mirrored bars" }, { value = "line", label = "Line" }, { value = "area", label = "Filled area" }, { value = "scope", label = "Oscilloscope" }, { value = "level", label = "Level meter" }]
 default = "bars"
 label = "Style"
 
@@ -406,6 +406,45 @@ transition = 600
       max = 1
       stroke = 1
       color = "{param.peak_color}"
+
+    # 3D waterfall: the last second or so of spectra going back into the distance, oldest
+    # first so the nearer rows, drawn later, hide the ones behind (with the card's colour
+    # under each line). Rows z = 0 (now) to 1 (oldest) close up toward the back: they rise
+    # by half the height, narrow by a tenth on each side, and shrink and fade by half.
+    [[root.children.children]]
+    when = "{param.mode == 'waterfall'}"
+    grow = 1
+      [[root.children.children.children]]
+      type = "repeat"
+      for = "{audio.history}"
+      as = "row"
+        [[root.children.children.children.children]]
+        when = "{self.h >= 160 || index % 2 == 1}"
+        type = "graph"
+        left = "{(((len(audio.history) - index) / max(1, len(audio.history))) * (1.5 - 0.5 * ((len(audio.history) - index) / max(1, len(audio.history))))) * self.w * 0.1}"
+        right = "{(((len(audio.history) - index) / max(1, len(audio.history))) * (1.5 - 0.5 * ((len(audio.history) - index) / max(1, len(audio.history))))) * self.w * 0.1}"
+        bottom = "{(((len(audio.history) - index) / max(1, len(audio.history))) * (1.5 - 0.5 * ((len(audio.history) - index) / max(1, len(audio.history))))) * (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) * 0.5}"
+        height = "{(self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) * 0.55 * (1 - 0.5 * (((len(audio.history) - index) / max(1, len(audio.history))) * (1.5 - 0.5 * ((len(audio.history) - index) / max(1, len(audio.history)))))) + param.stroke}"
+        values = "{row}"
+        max = 1
+        stroke = "{max(1, param.stroke * (1 - 0.5 * (((len(audio.history) - index) / max(1, len(audio.history))) * (1.5 - 0.5 * ((len(audio.history) - index) / max(1, len(audio.history)))))))}"
+        color = "{param.color_low}"
+        area = "{param.background ? '$surface' : nil}"
+        area_opacity = 1
+        opacity = "{1 - 0.75 * (((len(audio.history) - index) / max(1, len(audio.history))) * (1.5 - 0.5 * ((len(audio.history) - index) / max(1, len(audio.history)))))}"
+      # now, in front
+      [[root.children.children.children]]
+      type = "graph"
+      left = 0
+      right = 0
+      bottom = 0
+      height = "{(self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) * 0.55 + param.stroke}"
+      values = "{audio.bands}"
+      max = 1
+      stroke = "{param.stroke}"
+      color = "{param.color_high}"
+      area = "{param.background ? '$surface' : nil}"
+      area_opacity = 1
 
     # oscilloscope: the waveform on a faint grid, a soft glow under the trace
     [[root.children.children]]
