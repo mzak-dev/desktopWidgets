@@ -140,6 +140,9 @@ pub struct TextFacts {
     pub caret: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_height: Option<f64>,
+    /// Glyphs no face had: drawn as the missing-glyph box (the TOFU flag).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub tofu: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -304,6 +307,7 @@ fn node(p: &Placed, parent_key: Option<&str>, s: &Settled) -> Node {
             nat: run.as_ref().map(|r| [r2(r.natural_w), r2(r.natural_h)]),
             caret: spec.caret,
             line_height: ((spec.line_height - 1.25).abs() > 1e-6).then(|| r2(spec.line_height)),
+            tofu: run.as_ref().map_or(0, |r| r.missing),
         }),
         PlacedKind::Image { spec, shown } => Kind::Image(ImageFacts {
             natural: s.images.size(&spec.id).map(|(w, h)| [w, h]),
@@ -383,7 +387,7 @@ pub fn build(id: &str, s: &Settled) -> SceneDump {
     let facts = env::Facts { widget: &s.content.id, size: (0, 0), pins: &s.pins, real: &s.real, installed: s.content.installed, roots: &s.content.roots, faces: &faces, adapter: None, deps: &s.prepared.deps, code_sources: &s.code_sources, rounds: s.rounds };
     let because = env::leaks(&facts);
     let pins_json = serde_json::to_string(&pins).unwrap_or_default();
-    SceneDump {
+    let mut dump = SceneDump {
         format: FORMAT,
         header: Header {
             id: id.to_string(),
@@ -414,7 +418,9 @@ pub fn build(id: &str, s: &Settled) -> SceneDump {
             .collect(),
         draw: frame.list.layers.iter().enumerate().map(|(layer, l)| LayerCount { layer, shapes: l.shapes.len(), images: l.images.len(), texts: l.texts.len() }).collect(),
         flags: Vec::new(),
-    }
+    };
+    super::flags::apply(&mut dump);
+    dump
 }
 
 impl Node {
@@ -500,6 +506,9 @@ impl Node {
                 }
                 if let Some(lh) = t.line_height {
                     put(format!("lh={}", n(lh)));
+                }
+                if t.tofu > 0 {
+                    put(format!("tofu={}", t.tofu));
                 }
             }
             Kind::Image(i) => {
@@ -673,7 +682,7 @@ pub(crate) mod fixtures {
     }
 
     pub fn text(key: &str, depth: u32, s: &str) -> Node {
-        Node { kind: Kind::Text(TextFacts { text: s.into(), size: 12.0, weight: 400, want: String::new(), got: vec![], color: "#ffffff".into(), align: "left".into(), wrap: false, lines: Some(1), nat: None, caret: None, line_height: None }), ..plain(key, depth) }
+        Node { kind: Kind::Text(TextFacts { text: s.into(), size: 12.0, weight: 400, want: String::new(), got: vec![], color: "#ffffff".into(), align: "left".into(), wrap: false, lines: Some(1), nat: None, caret: None, line_height: None, tofu: 0 }), ..plain(key, depth) }
     }
 
     pub fn dump(nodes: Vec<Node>) -> SceneDump {
@@ -715,7 +724,7 @@ mod tests {
             key: "w/c/date".into(),
             name: "date".into(),
             depth: 2,
-            kind: Kind::Text(TextFacts { text: text.into(), size: 12.0, weight: 400, want: String::new(), got: vec!["Open Sans".into()], color: "#ffffffb0".into(), align: "center".into(), wrap: false, lines: Some(1), nat: Some([71.0, 16.0]), caret: None, line_height: None }),
+            kind: Kind::Text(TextFacts { text: text.into(), size: 12.0, weight: 400, want: String::new(), got: vec!["Open Sans".into()], color: "#ffffffb0".into(), align: "center".into(), wrap: false, lines: Some(1), nat: Some([71.0, 16.0]), caret: None, line_height: None, tofu: 0 }),
             rect: [60.0, 150.0, 90.0, 18.0],
             layer: 0,
             op: None,
@@ -748,6 +757,10 @@ mod tests {
         t.layer = 1;
         t.flags = vec!["TRUNCATED".into()];
         assert_eq!(t.line(false), "date text 60,150 90x18 key=weird layer=1 op=0.35 \"x\" 12px w400 want=theme got=\"Open Sans\" #ffffffb0 center nowrap lines=1 nat=71x16 TRUNCATED");
+        if let Kind::Text(f) = &mut t.kind {
+            f.tofu = 2;
+        }
+        assert!(t.line(false).ends_with(" nat=71x16 tofu=2 TRUNCATED"), "the missing glyphs print before the flags: {}", t.line(false));
     }
 
     #[test]

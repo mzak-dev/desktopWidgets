@@ -38,6 +38,8 @@ pub struct Outcome {
     pub error: Option<String>,
     /// Notices and warnings from the run.
     pub notes: Vec<String>,
+    /// What the widget warned of while it was built (a binding that did not resolve...).
+    pub warnings: Vec<String>,
 }
 
 /// The render request a scene stands for.
@@ -111,7 +113,7 @@ pub fn run(s: &Scene, o: &Overrides) -> Result<Outcome, Failure> {
     let sidecar = env::sidecar(&facts);
     let unmet = unmet(&s.expect, &dump);
     let error = settled.prepared.error.clone();
-    Ok(Outcome { dump, sidecar, unmet, error, notes: settled.notes.clone() })
+    Ok(Outcome { dump, sidecar, unmet, error, notes: settled.notes.clone(), warnings: settled.prepared.warnings.clone() })
 }
 
 impl Outcome {

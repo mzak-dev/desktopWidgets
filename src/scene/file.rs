@@ -25,7 +25,7 @@ const SET_KEYS: &[&str] = &["format", "defaults", "scene"];
 const SCENE_KEYS: &[&str] = &["name", "tags", "widget", "settings", "look", "env", "expect", "sweep"];
 const WIDGET_KEYS: &[&str] = &["id", "file", "plugin", "size", "tier", "params", "state", "hide", "items", "hover", "hover_at", "edit"];
 const LOOK_KEYS: &[&str] = &["scale", "palette", "transparent"];
-const EXPECT_KEYS: &[&str] = &["flags", "text", "no_text"];
+const EXPECT_KEYS: &[&str] = &["flags", "allow", "text", "no_text"];
 const SWEEP_KEYS: &[&str] = &["sizes", "variants", "at", "hide"];
 const VARIANT_KEYS: &[&str] = &["params", "state", "hide", "size", "tier", "items", "env"];
 const ITEM_KEYS: &[&str] = &["name", "target", "icon"];
@@ -42,6 +42,9 @@ pub enum FlagLevel {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Expect {
     pub flags: FlagLevel,
+    /// Flags (`OVERFLOW-Y`...) this scene is known to have: they stay in the dump but are
+    /// neither findings nor warnings.
+    pub allow: Vec<String>,
     /// Each must appear as (part of) a text run.
     pub text: Vec<String>,
     /// None may appear in any text run.
@@ -181,6 +184,7 @@ struct RawLook {
 #[serde(default, deny_unknown_fields)]
 struct RawExpect {
     flags: Option<String>,
+    allow: Vec<String>,
     text: Vec<String>,
     no_text: Vec<String>,
 }
@@ -441,6 +445,9 @@ fn build(t: &toml::Table, file: &Path, root: &Path, id: String, name: String, so
         Some("ignore") => FlagLevel::Ignore,
         Some(other) => return Err(format!("{shown}: [expect] flags is error, warn or ignore, not `{other}`{}", suggest(other, &[&["error", "warn", "ignore"]]))),
     };
+    if let Some(bad) = raw.expect.allow.iter().find(|a| !super::flags::ALL.contains(&a.as_str())) {
+        return Err(format!("{shown}: [expect] allow lists flags ({}), not `{bad}`{}", super::flags::ALL.join(", "), suggest(bad, &[super::flags::ALL])));
+    }
     let sizes = match raw.sweep.sizes {
         None => None,
         Some(RawSizes::Name(n)) => Some(match n.as_str() {
@@ -474,7 +481,7 @@ fn build(t: &toml::Table, file: &Path, root: &Path, id: String, name: String, so
             Some(other) => return Err(format!("{shown}: [sweep] hide is \"each\" (one variant per Module), not `{other}`")),
         };
     let target = Target { widget, plugin, size, params: pairs(&w.params), state: pairs(&w.state), hide, items, hover: w.hover, hover_at: w.hover_at.map(|[x, y]| (x, y)) };
-    let scene = Scene { id, name, tags: raw.tags, file: file.to_path_buf(), root: root.to_path_buf(), target, pins, expect: Expect { flags, text: raw.expect.text, no_text: raw.expect.no_text }, source_hash };
+    let scene = Scene { id, name, tags: raw.tags, file: file.to_path_buf(), root: root.to_path_buf(), target, pins, expect: Expect { flags, allow: raw.expect.allow, text: raw.expect.text, no_text: raw.expect.no_text }, source_hash };
     Ok(Base { scene, sweep: Sweep { sizes, variants, at: raw.sweep.at, each_module } })
 }
 
@@ -660,6 +667,14 @@ mod tests {
         assert!(e.contains("`look.scael` (did you mean `scale`?)"), "{e}");
         let e = one("format = 1\n[widget]\nid = \"clock\"\n[sweep]\nsize = \"tiers\"\n").unwrap_err();
         assert!(e.contains("`sweep.size` (did you mean `sizes`?)"), "{e}");
+    }
+
+    #[test]
+    fn expect_allow_names_flags_and_a_misspelled_one_gets_a_suggestion() {
+        let s = one("format = 1\n[widget]\nid = \"clock\"\n[expect]\nallow = [\"OVERFLOW-X\", \"TOFU\"]\n").unwrap();
+        assert_eq!(s.expect.allow, ["OVERFLOW-X", "TOFU"]);
+        let e = one("format = 1\n[widget]\nid = \"clock\"\n[expect]\nallow = [\"OVERFLOW\"]\n").unwrap_err();
+        assert!(e.contains("`OVERFLOW`") && e.contains("did you mean `OVERFLOW-X`") && e.contains("TRUNCATED"), "{e}");
     }
 
     #[test]

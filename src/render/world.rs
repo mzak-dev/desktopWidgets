@@ -29,8 +29,11 @@ pub(super) struct Scratch(pub PathBuf);
 
 impl Scratch {
     pub(super) fn new() -> Result<Scratch, String> {
+        static COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos());
-        let dir = std::env::temp_dir().join(format!("wayfinder-render-{}-{nanos}", std::process::id()));
+        // runs may share a process and a clock tick (a scene set on several threads)
+        let n = COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("wayfinder-render-{}-{nanos}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         Ok(Scratch(dir))
     }

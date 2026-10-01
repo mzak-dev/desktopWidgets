@@ -152,3 +152,57 @@ fn an_unwritable_output_folder_is_exit_3() {
     assert_eq!(o.status.code(), Some(3), "{}", text(&o.stderr));
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// A scenes folder with a widget whose text is 20 px wide on one line: it can only be cut off,
+/// whatever the machine's fonts are.
+fn narrow(name: &str, expect: &str) -> (PathBuf, PathBuf) {
+    let dir = temp(name).join("scenes");
+    write_scene(&dir.join("widget"), "narrow.toml", "name = 'Narrow'\nsize = [120, 60]\nmin_size = [48, 48]\n[root]\npadding = 8\n  [[root.children]]\n  type = 'text'\n  text = 'Wednesday 23 September'\n  size = 14\n  width = 20\n");
+    let f = write_scene(&dir, "narrow.scene.toml", &format!("format = 1\n[widget]\nfile = \"widget/narrow.toml\"\n[expect]\n{expect}\n"));
+    (dir, f)
+}
+
+#[test]
+fn check_exits_1_for_an_error_level_flag_and_keeps_the_dump_with_the_flag_in_it() {
+    let (dir, f) = narrow("check-error", "flags = \"error\"");
+    let out = dir.join("out");
+    let o = scene(&["check", f.to_str().unwrap(), "--out", out.to_str().unwrap()]);
+    let shown = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{shown}{}", text(&o.stderr));
+    assert!(shown.contains("narrow (120x60): TRUNCATED narrow-1/0") && shown.contains("> box 20"), "{shown}");
+    assert!(shown.contains("1 scene, 0 ok, 1 need a look. exit 1"), "{shown}");
+    assert!(read(&out.join("summary.txt")).contains("FLAGS"), "{}", read(&out.join("summary.txt")));
+    let dump = read(&out.join("narrow.dump.txt"));
+    assert!(dump.contains("--- flags (1)\nTRUNCATED  narrow-1/0") && dump.lines().any(|l| l.contains("\"Wednesday 23 September\"") && l.ends_with(" TRUNCATED")), "the trailer and the node line both carry it: {dump}");
+    let o = scene(&["dump", f.to_str().unwrap(), "--view", "flags", "--out", out.to_str().unwrap(), "-q"]);
+    assert_eq!(o.status.code(), Some(1), "dump judges flags the same way");
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
+
+#[test]
+fn a_warn_level_flag_is_shown_and_passes_and_an_ignored_or_allowed_one_is_quiet() {
+    for (name, expect, shows) in [("check-warn", "flags = \"warn\"", true), ("check-ignore", "flags = \"ignore\"", false), ("check-allow", "flags = \"error\"\nallow = [\"TRUNCATED\", \"OVERFLOW-X\"]", false)] {
+        let (dir, f) = narrow(name, expect);
+        let out = dir.join("out");
+        let o = scene(&["check", f.to_str().unwrap(), "--out", out.to_str().unwrap()]);
+        let shown = text(&o.stdout);
+        assert_eq!(o.status.code(), Some(0), "{name}: {shown}{}", text(&o.stderr));
+        assert_eq!(shown.contains("warning: TRUNCATED"), shows, "{name}: {shown}");
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+}
+
+#[test]
+fn check_of_a_clean_set_is_exit_0_and_a_bad_scene_is_exit_2() {
+    let out = temp("check-clean");
+    let o = scene(&["check", "fixtures/plain", "fixtures/clock", "fits/digital_clock", "--out", out.to_str().unwrap(), "-q"]);
+    let shown = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(0), "{shown}{}", text(&o.stderr));
+    assert!(shown.contains("36 scenes, 36 ok, 0 need a look. exit 0"), "the digital clock's 34 fit cases and two fixtures: {shown}");
+    let last: serde_json::Value = serde_json::from_str(&read(&out.join("last.json"))).unwrap();
+    assert_eq!((last["exit"].as_u64(), last["scenes"].as_array().map(Vec::len)), (Some(0), Some(36)));
+    let o = scene(&["check", "fits/digital_clok", "--out", out.to_str().unwrap()]);
+    assert_eq!(o.status.code(), Some(2));
+    assert!(text(&o.stderr).contains("did you mean `fits/digital_clock`"), "{}", text(&o.stderr));
+    let _ = std::fs::remove_dir_all(out);
+}

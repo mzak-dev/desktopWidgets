@@ -198,7 +198,7 @@ impl Ambient {
             capture,
             icons: Arc::new(TileIcons),
             fonts: match pins.fonts {
-                FontMode::System => FontSet::system,
+                FontMode::System => FontSet::system_shared,
             },
             fetch,
         }
@@ -312,7 +312,7 @@ mod tests {
     fn icons_are_tiles_and_fonts_are_the_systems() {
         let a = pinned(|p| p.set("fonts", &serde_json::json!("system")).unwrap());
         assert!(a.icons.shell_icon(std::path::Path::new("x.exe")).is_some());
-        assert_eq!(a.fonts as usize, FontSet::system as usize);
+        assert_eq!(a.fonts as *const () as usize, FontSet::system_shared as *const () as usize);
     }
 
     #[test]

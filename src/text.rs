@@ -26,6 +26,16 @@ impl FontSet {
         let (locale, db) = FontSystem::new().into_locale_and_db();
         Self { db, locale }
     }
+
+    /// `system`, read once per process: a run of many scenes shares one scan of the fonts.
+    pub fn system_shared() -> Self {
+        static SYSTEM: std::sync::OnceLock<(String, Database)> = std::sync::OnceLock::new();
+        let (locale, db) = SYSTEM.get_or_init(|| {
+            let s = Self::system();
+            (s.locale, s.db)
+        });
+        Self { db: db.clone(), locale: locale.clone() }
+    }
 }
 
 /// What shaping made of one text node: the facts the UI trace records beside its rect.
@@ -39,6 +49,8 @@ pub struct RunInfo {
     /// The first family name of each face the glyphs were shaped with, in order of first use:
     /// more than one when the requested family lacked a glyph and a fallback face was taken.
     pub faces: Vec<String>,
+    /// Glyphs no face had (drawn as the missing-glyph box).
+    pub missing: usize,
 }
 
 struct Slot {
@@ -267,10 +279,11 @@ impl TextEngine {
     pub fn describe(&mut self, key: &str, spec: &TextSpec) -> Option<RunInfo> {
         let slot = self.slots.get(key)?;
         let prev = slot.shaped_w;
-        let (mut lines, mut faces) = (0, Vec::<String>::new());
+        let (mut lines, mut missing, mut faces) = (0, 0, Vec::<String>::new());
         for run in slot.buf.layout_runs() {
             lines += 1;
             for g in run.glyphs {
+                missing += usize::from(g.glyph_id == 0);
                 let name = self.fs.db().face(g.font_id).and_then(|f| f.families.first()).map_or("?", |(n, _)| n.as_str());
                 if !faces.iter().any(|f| f == name) {
                     faces.push(name.to_string());
@@ -285,7 +298,7 @@ impl TextEngine {
             slot.buf.shape_until_scroll(&mut self.fs, false);
             slot.shaped_w = prev;
         }
-        Some(RunInfo { lines, natural_w, natural_h, faces })
+        Some(RunInfo { lines, natural_w, natural_h, faces, missing })
     }
 
     pub fn buffer(&self, key: &str) -> Option<&Buffer> {
@@ -373,8 +386,19 @@ mod tests {
         assert_eq!((info.natural_w, info.natural_h), t.measure("k", &spec, None));
         assert!(info.natural_w > 60.0 && info.natural_h < 2.0 * 14.0 * 1.25 * 1.5, "one unwrapped line: {info:?}");
         assert!(!info.faces.is_empty() && info.faces.iter().all(|f| !f.is_empty()), "{:?}", info.faces);
+        assert_eq!(info.missing, 0, "every glyph of plain words has a face");
         assert_eq!(t.describe("k", &spec), Some(info), "asking again gives the same answer");
         assert_eq!(t.describe("never-shaped", &spec), None);
+    }
+
+    #[test]
+    fn describe_counts_the_glyphs_no_face_has() {
+        let mut t = TextEngine::new();
+        // a noncharacter: no installed font draws it, so the shaper falls back to a missing-glyph box
+        let spec = TextSpec { text: "a\u{10FFFF}\u{10FFFF}".into(), ..Default::default() };
+        t.begin_frame();
+        t.prepare("k", &spec, 100.0);
+        assert_eq!(t.describe("k", &spec).map(|i| i.missing), Some(2));
     }
 
     #[test]

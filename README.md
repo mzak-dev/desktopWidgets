@@ -422,9 +422,12 @@ wayfinder scene list [set|glob] [--sets]                     # ids, from ./scene
 wayfinder scene dump fixtures/clock --view full               # outline (default, 200 lines) | full | texts | hits | flags
 wayfinder scene dump fixtures/monitor-tiers* --find CPU --format json
 wayfinder scene dump --widget clock --under clock-1/0 --depth 2   # one widget, one subtree
+wayfinder scene check fits                                    # layout flags and [expect] for a set: exit 1 on findings
 ```
 
-Each run writes `<scenes folder>\.look\summary.txt`, `last.json` and, per scene, `<id>.dump.txt` and `<id>.env.json`, so the result survives a lost console. Exit codes: 0 clean, 1 findings (an error card, a failed `[expect]`, a code source that never answered), 2 bad arguments or scene file (an unknown key suggests the nearest), 3 the output could not be written. The scene file, the dump and these commands are tooling (`format = 1`), not a frozen interface. Text is measured with the machine's fonts, so a dump is exact on the same machine and font set; its header carries a hash of the font set to say which.
+`scene check` runs the scenes and reads only the **layout flags**: `TRUNCATED` (one-line text wider than its box), `CLIPPED`, `OUTSIDE` (past the card), `SQUASHED`, `OVERFLOW-X`/`-Y`, `ZERO`, `EMPTY-TEXT-BOX`, `NO-IMAGE` and `TOFU` (a glyph no installed font has), computed outside scroll containers and printed at the end of a node's line and in the `--- flags` trailer of every dump. A scene's `[expect] flags` is `error` (a finding, exit 1), `warn` (the default: shown, exit 0) or `ignore`, and `allow = ["OVERFLOW-Y"]` names flags the scene is known to have. The built-in widgets are checked at their default size and a 4x4 grid from their smallest to their largest, with and without every switch on, by the `fits` set (`scenes/fits/`), which `cargo test` runs too.
+
+Each run writes `<scenes folder>\.look\summary.txt`, `last.json` and, per scene, `<id>.dump.txt` and `<id>.env.json`, so the result survives a lost console. Exit codes: 0 clean, 1 findings (an error card, a failed `[expect]`, an error-level flag, a code source that never answered), 2 bad arguments or scene file (an unknown key suggests the nearest), 3 the output could not be written. The scene file, the dump and these commands are tooling (`format = 1`), not a frozen interface. Text is measured with the machine's fonts, so a dump is exact on the same machine and font set; its header carries a hash of the font set to say which.
 
 > [!WARNING]
 > `examples/phase0_spike.rs` is kept only as the record of the early measurements. **Do not run it**: it stress-tests multi-window swapchains and, together with the bug fixed in ADR-006, crashed an AMD driver during development.
