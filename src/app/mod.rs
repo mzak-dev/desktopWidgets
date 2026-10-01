@@ -568,6 +568,7 @@ impl App {
         }
         let font_problems = self.text.sync_fonts(&cat.font_files);
         self.families = self.text.family_names();
+        self.lib.set_installed_fonts(&self.families);
         for e in self.lib.errors.clone().into_iter().chain(self.reg.errors()).chain(font_problems) {
             self.log(e);
         }

@@ -1794,7 +1794,7 @@ impl UiState {
             "Typography & icons",
             vec![
                 k.row("ap/fonts", "Font set", "Body, display and monospace faces", k.dropdown("th:fonts", &ctx.ws.theme.fonts, CONTROL_W, f("th:fonts"))),
-                k.row_with("ap/glyphs-row", k.bold("ap/glyphs-row/lt".into(), "Glyph set", 13.5, k.c("text")), "", Some(gl), k.dropdown("th:glyphs", &ctx.ws.theme.glyphs, CONTROL_W, f("th:glyphs"))),
+                k.row_with("ap/glyphs-row", k.bold("ap/glyphs-row/lt".into(), "Glyph set", 13.5, k.c("text")), if ctx.lib.glyph_stand_in(&ctx.ws.theme.glyphs).is_some() { "Segoe Fluent Icons is not installed, so these are MDL2's." } else { "" }, Some(gl), k.dropdown("th:glyphs", &ctx.ws.theme.glyphs, CONTROL_W, f("th:glyphs"))),
                 k.row_with("ap/pack", k.bold("ap/pack/lt".into(), "App icon pack", 13.5, k.c("text")), "Replaces icons in Drawer and Icon List.", Some(k.link("ap/pack/open", "Open icon packs folder", "openpacks".into())), k.dropdown("th:pack", &ctx.ws.theme.icon_pack, CONTROL_W, f("th:pack"))),
             ],
         );
