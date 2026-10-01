@@ -398,18 +398,25 @@ impl Workspace {
     /// The last Workspace stays. Removing the one on screen brings up its neighbour first,
     /// whose name is returned so the app can show it.
     pub fn delete_workspace(&mut self, name: &str) -> Result<Option<String>, String> {
-        let i = self.workspaces.iter().position(|w| w.name == name).ok_or_else(|| format!("no Workspace called {name}"))?;
+        self.saved(name).ok_or_else(|| format!("no Workspace called {name}"))?;
         if self.workspaces.len() == 1 {
             return Err("the last Workspace cannot go".into());
         }
         let mut shown = None;
         if name == self.active {
-            let next = self.workspaces[if i + 1 < self.workspaces.len() { i + 1 } else { i - 1 }].name.clone();
+            let next = self.neighbour(name).expect("more than one");
             self.switch_to(&next);
             shown = Some(next);
         }
         self.workspaces.retain(|w| w.name != name);
         Ok(shown)
+    }
+
+    /// The one after `name`, or before it when it is last: what shows when `name` goes.
+    pub fn neighbour(&self, name: &str) -> Option<String> {
+        let i = self.workspaces.iter().position(|w| w.name == name)?;
+        let j = if i + 1 < self.workspaces.len() { i + 1 } else { i.checked_sub(1)? };
+        Some(self.workspaces[j].name.clone())
     }
 
     pub fn rules_mut(&mut self, name: &str) -> Option<&mut Rules> {
