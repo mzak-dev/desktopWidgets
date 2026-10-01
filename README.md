@@ -150,7 +150,7 @@ Your arrangement is saved to `workspace.json`. Unplug a monitor and its widgets 
 <td width="50%"><img src="docs/img/photos.png" alt="Photo frame small and large, photo gallery, gallery with a photo open" width="100%"></td>
 </tr>
 <tr>
-<td align="center"><sub>Clocks and launchers, rendered on Windows 11</sub></td>
+<td align="center"><sub>Clocks and launchers, rendered on Windows</sub></td>
 <td align="center"><sub>Photo Frame and Photo Gallery at different sizes</sub></td>
 </tr>
 </table>
