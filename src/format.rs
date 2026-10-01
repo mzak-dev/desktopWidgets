@@ -752,9 +752,10 @@ impl<'a> TreeBuilder<'a> {
         }
     }
 
+    /// `nil` leaves it out, as if it were not set: `area = "{on ? '$accent' : nil}"`.
     fn color(&mut self, e: &Elem, k: &str, path: &str) -> Result<Option<Color>, String> {
         let ctx = format!("{path}.{k}");
-        Ok(self.get(e, k, path)?.map(|v| self.color_of(&v, &ctx)))
+        Ok(self.get(e, k, path)?.filter(|v| *v != Value::Nil).map(|v| self.color_of(&v, &ctx)))
     }
 
     fn dimension(v: &Value) -> Option<Dimension> {
