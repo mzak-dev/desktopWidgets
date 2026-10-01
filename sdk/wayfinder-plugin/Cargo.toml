@@ -2,6 +2,7 @@
 name = "wayfinder-plugin"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 description = "Write the code of a Wayfinder plugin (a Code Source) in Rust"
 publish = false
 

@@ -19,6 +19,7 @@ Move and resize them in real time, restyle everything, and pay nothing while the
 ![Idle](https://img.shields.io/badge/idle_CPU-0%25-2EA44F?style=flat-square)
 ![Widgets](https://img.shields.io/badge/built--in_widgets-13-8A63D2?style=flat-square)
 ![Palettes](https://img.shields.io/badge/palettes-7-3B82F6?style=flat-square)
+[![License](https://img.shields.io/badge/license-MIT-2EA44F?style=flat-square)](LICENSE)
 
 <br>
 
@@ -608,7 +609,13 @@ Inspired by [Rainmeter](https://www.rainmeter.net) and the Windows Vista and 7 s
 [global-hotkey](https://github.com/tauri-apps/global-hotkey), [rustfft](https://github.com/ejmahler/RustFFT) and
 [wasmi](https://github.com/wasmi-labs/wasmi).
 
+<br>
+
+## 📜 License
+
+Wayfinder is released under the [MIT License](LICENSE). You may use, copy, change and share it, in your own projects and commercially, as long as you **credit it**: keep the copyright notice and the license text with every copy or substantial part of it.
+
 <div align="center">
 <br>
-<sub>No license has been chosen yet. Until one is added, all rights are reserved.</sub>
+<sub>Copyright © 2026 Mateusz Żak</sub>
 </div>
