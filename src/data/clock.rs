@@ -29,7 +29,7 @@ pub fn now_local() -> Tm {
     }
 }
 
-fn localized_date(tm: &Tm, pattern: &str) -> String {
+pub(crate) fn localized_date(tm: &Tm, pattern: &str) -> String {
     use windows::Win32::Foundation::SYSTEMTIME;
     use windows::Win32::Globalization::{ENUM_DATE_FORMATS_FLAGS, GetDateFormatEx};
     use windows::core::{HSTRING, PCWSTR};

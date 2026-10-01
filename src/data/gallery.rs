@@ -2,8 +2,9 @@
 //! GIF player. The folder is watched, not polled, and a file or folder dropped on a widget
 //! (`on_drop = "gallery.drop"`) becomes its setting, so dropping a photo picks its folder.
 //!
-//! Fields: `items` (name, path, ext, size, modified_ms), `count`, `folder`, `truncated`,
-//! `error`, and the slide a frame shows: `index` and `current`. Slides move on every
+//! Fields: `items` (name, path, ext, size, modified_ms, and `date`, when it was last changed,
+//! in the user's own date format), `count`, `folder`, `folder_name`, `truncated`, `error`, and
+//! the slide a frame shows: `index` and `current`. Slides move on every
 //! `interval` seconds, and by hand with `gallery.next` / `gallery.prev`.
 //! Params: `folder`, `sort` (name · newest · oldest), `kinds` (all · animated), `interval`,
 //! `shuffle`.
@@ -13,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 
-use super::clock::days_from_civil;
+use super::clock::{days_from_civil, localized_date};
 use super::{Cadence, DataSource, Notifier, SourceCx, Tm};
 use crate::value::Value;
 
@@ -34,10 +35,36 @@ pub struct Picture {
     pub modified_ms: i64,
 }
 
+/// When a file was changed, as the user writes dates ("3 Mar 2024"), on this PC's clock.
+/// The local time comes from `FileTimeToLocalFileTime`, which Wine has too.
+pub fn local_date(modified_ms: i64) -> String {
+    use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows::Win32::Storage::FileSystem::FileTimeToLocalFileTime;
+    use windows::Win32::System::Time::FileTimeToSystemTime;
+    if modified_ms <= 0 {
+        return String::new();
+    }
+    // 100 ns steps since 1601
+    let t = (modified_ms as u64 + 11_644_473_600_000) * 10_000;
+    let utc = FILETIME { dwLowDateTime: t as u32, dwHighDateTime: (t >> 32) as u32 };
+    let (mut local, mut st) = (FILETIME::default(), SYSTEMTIME::default());
+    if unsafe { FileTimeToLocalFileTime(&utc, &mut local) }.is_err() || unsafe { FileTimeToSystemTime(&local, &mut st) }.is_err() {
+        return String::new();
+    }
+    let tm = Tm { year: st.wYear as i32, month: st.wMonth as u32, day: st.wDay as u32, dow: st.wDayOfWeek as u32, hour: st.wHour as u32, minute: st.wMinute as u32, second: st.wSecond as u32, ms: 0 };
+    localized_date(&tm, "d MMM yyyy")
+}
+
+/// The last part of a folder's path: `Holidays` for `D:\Photos\Holidays\`.
+pub fn leaf(folder: &str) -> String {
+    folder.trim_end_matches(['\\', '/']).rsplit(['\\', '/']).next().unwrap_or(folder).to_string()
+}
+
 impl Picture {
     fn to_value(&self) -> Value {
         Value::obj([
             ("name", self.name.as_str().into()),
+            ("date", local_date(self.modified_ms).into()),
             ("path", self.path.as_str().into()),
             ("ext", self.ext.as_str().into()),
             ("size", (self.size as f64).into()),
@@ -209,6 +236,7 @@ impl DataSource for Gallery {
             ("index", index.map_or(-1, |i| i as i32).into()),
             ("current", index.map_or(Value::Nil, |i| items[i].clone())),
             ("items", Value::List(items)),
+            ("folder_name", leaf(&folder).into()),
             ("folder", folder.into()),
             ("truncated", l.truncated.into()),
             ("error", l.error.into()),
@@ -321,6 +349,14 @@ mod tests {
         let moving = list(&d.to_string_lossy(), "name", "animated");
         assert_eq!(moving.items.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["b", "c"], "a JPEG never moves");
         std::fs::remove_dir_all(&d).ok();
+    }
+
+    #[test]
+    fn a_picture_says_when_it_changed_and_a_folder_its_own_name() {
+        let d = local_date(1_700_000_000_000); // 14 November 2023, 22:13 UTC
+        assert!(d.contains("2023") && (d.contains("14") || d.contains("15")), "{d}");
+        assert_eq!(local_date(0), "");
+        assert_eq!((leaf("D:\\Photos\\Holidays\\"), leaf("C:/x/y"), leaf("")), ("Holidays".to_string(), "y".to_string(), String::new()));
     }
 
     #[test]
