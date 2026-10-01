@@ -1,6 +1,6 @@
 needs = ["gallery"]
 name = "GIF Player"
-description = "Plays an animated GIF, WebP or APNG. Pick one file, or pick a folder and choose from its animations in a strip below. Drop a file on the card to play it, or a folder to choose from."
+description = "Plays an animated GIF, WebP or APNG, from one file or a folder. Small, it is only the animation; large, its name and a strip of the folder's animations to choose from. Click it to pause. Drop a file on the card to play it, or a folder to choose from."
 category = "Photos"
 icon = "play"
 size = [280, 280]
@@ -35,6 +35,7 @@ label = "Fit"
 type = "bool"
 default = true
 label = "Show the folder strip"
+help = "On a large card, under the animation."
 
 [params.playing]
 type = "bool"
@@ -49,7 +50,7 @@ help = "Off leaves just the animation on the desktop."
 
 [params.rounded]
 type = "number"
-default = 14
+default = 22
 min = 0
 max = 60
 step = 1
@@ -57,50 +58,49 @@ label = "Corner radius"
 
 [state]
 paused = false
-pick = ""
+# which of the folder's animations plays
+at = 0
 scroll_x = 0
 
+# Sizes, as on macOS, with the same breakpoints in every media, photo and agent widget:
+#   small and medium               just the animation
+#   large (260+ wide and high)     its name and place in the folder, and the folder's strip
 [root]
 direction = "column"
 fill = "{param.card ? '$surface' : '#00000000'}"
 radius = "{param.rounded}"
 border = "{param.card ? 1 : 0}"
-padding = "{param.card ? 8 : 0}"
-gap = 6
+shadow = "{param.card ? 14 : 0}"
+padding = "{param.card ? (self.w >= 260 && self.h >= 260 ? 14 : 8) : 0}"
+gap = 10
 clip = true
 on_drop = "gallery.drop"
 
-  # what is shown: the single file, else the pick from the strip, else the folder's first image
+  # ================= nothing to play: the glyph and why =================
   [[root.children]]
-  type = "text"
-  when = "{param.path == '' && param.folder == ''}"
-  text = "{self.w < 200 || self.h < 160 ? 'Drop a GIF here' : 'Choose a file or a folder in Settings, or drop an animation here.'}"
-  text_wrap = true
-  text_align = "center"
-  size = "{self.w < 200 || self.h < 160 ? 11 : 13}"
-  color = "$text-dim"
-  padding = "{self.w < 200 || self.h < 160 ? 4 : 12}"
+  when = "{param.path == '' && gallery.count == 0}"
+  grow = 1
+  direction = "column"
+  align = "center"
+  justify = "center"
+  gap = 6
+  padding = 6
+    [[root.children.children]]
+    when = "{self.h >= 110}"
+    type = "text"
+    text = "$glyph-play"
+    font = "$font-glyph"
+    size = 24
+    color = "$text-dim"
+    [[root.children.children]]
+    type = "text"
+    text = "{gallery.error != '' ? gallery.error : (param.folder != '' ? 'No animations in this folder.' : (self.w < 200 || self.h < 160 ? 'Drop a GIF here' : 'Choose a file or a folder in Settings, or drop an animation here.'))}"
+    text_wrap = true
+    text_align = "center"
+    size = "{self.w < 200 || self.h < 160 ? 11 : 12}"
+    color = "$text-dim"
 
-  [[root.children]]
-  type = "text"
-  when = "{param.path == '' && gallery.error != ''}"
-  text = "{gallery.error}"
-  text_wrap = true
-  text_align = "center"
-  size = 13
-  color = "$text-dim"
-  padding = 12
-
-  [[root.children]]
-  type = "text"
-  when = "{param.path == '' && param.folder != '' && gallery.error == '' && gallery.count == 0}"
-  text = "No animations in this folder."
-  text_wrap = true
-  text_align = "center"
-  size = 13
-  color = "$text-dim"
-  padding = 12
-
+  # ================= the animation: click to pause =================
   [[root.children]]
   when = "{param.path != '' || gallery.count > 0}"
   grow = 1
@@ -108,21 +108,42 @@ on_drop = "gallery.drop"
   direction = "column"
   align = "center"
   justify = "center"
+  radius = "{max(0, param.rounded - (param.card ? 8 : 0))}"
   on_click = "toggle paused"
   clip = true
     [[root.children.children]]
     type = "image"
-    src = "file:{param.path != '' ? param.path : (state.pick != '' ? state.pick : (gallery.count > 0 ? at(gallery.items, 0).path : ''))}"
+    src = "file:{param.path != '' ? param.path : (gallery.count > 0 ? at(gallery.items, clamp(state.at, 0, max(0, gallery.count - 1))).path : '')}"
     anim = "{param.playing && !state.paused}"
     fit = "{param.fit}"
     width = "100%"
     height = "100%"
-    radius = "{param.rounded}"
+    radius = "{max(0, param.rounded - (param.card ? 8 : 0))}"
 
-  # the folder's images, scrolling sideways; click one to play it
+  # ================= large: which one, of how many =================
   [[root.children]]
-  when = "{param.path == '' && param.folder != '' && param.strip && gallery.count > 1}"
-  height = 56
+  when = "{self.w >= 260 && self.h >= 260 && param.path == '' && gallery.count > 0}"
+  direction = "row"
+  align = "end"
+  gap = 8
+    [[root.children.children]]
+    grow = 1
+    min_width = 0
+    type = "text"
+    text = "{at(gallery.items, clamp(state.at, 0, max(0, gallery.count - 1))).name}"
+    size = 13
+    weight = 600
+    color = "$text"
+    [[root.children.children]]
+    type = "text"
+    text = "{state.paused || !param.playing ? 'Paused  ·  ' : ''}{clamp(state.at, 0, gallery.count - 1) + 1} of {gallery.count}"
+    size = 11
+    color = "$text-dim"
+
+  # large: the folder's animations, scrolling sideways; click one to play it
+  [[root.children]]
+  when = "{self.w >= 260 && self.h >= 260 && param.path == '' && param.strip && gallery.count > 1}"
+  height = 48
   shrink = 0
   direction = "row"
   gap = 4
@@ -138,11 +159,11 @@ on_drop = "gallery.drop"
       max = 128
       anim = false
       fit = "cover"
-      width = 56
-      height = 56
+      width = 48
+      height = 48
       shrink = 0
-      radius = "$radius-sm"
-      opacity = "{(state.pick == g.path || (state.pick == '' && index == 0)) ? 1 : 0.55}"
-      on_click = "set pick {g.path}"
-      hover = { fill = "$surface-hover" }
+      radius = 8
+      opacity = "{index == clamp(state.at, 0, gallery.count - 1) ? 1 : 0.5}"
+      on_click = "set at {index}"
+      hover = { opacity = 1 }
       transition = 140

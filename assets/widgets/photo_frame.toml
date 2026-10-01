@@ -1,6 +1,6 @@
 needs = ["gallery"]
 name = "Photo Frame"
-description = "One photo at a time from a folder, crossfading to the next every few minutes, in order or shuffled. Click it for the next one, or the arrows that show on hover. Drop a folder, or a photo from it, on it to show that folder."
+description = "One photo at a time from a folder, crossfading to the next every few minutes, in order or shuffled. Just the photo at first; large, a caption with its name, date and place in the folder. Click it for the next one, or the arrows that show on hover. Drop a folder, or a photo from it, on it to show that folder."
 category = "Photos"
 icon = "image"
 size = [320, 240]
@@ -49,6 +49,7 @@ label = "Crossfade (ms)"
 type = "bool"
 default = false
 label = "Show file name"
+help = "A large frame shows it anyway, with the date and where the photo is in the folder."
 
 [params.card]
 type = "bool"
@@ -58,12 +59,15 @@ help = "Off shows just the photo, with rounded corners."
 
 [params.rounded]
 type = "number"
-default = 14
+default = 22
 min = 0
 max = 80
 step = 1
 label = "Corner radius"
 
+# Sizes, as on macOS, with the same breakpoints in every media, photo and agent widget:
+#   small and medium   just the photo, edge to edge
+#   large (260+ wide and high)   a caption: name, date, and which photo of how many
 [root]
 direction = "column"
 fill = "{param.card ? '$surface' : '#00000000'}"
@@ -74,19 +78,31 @@ padding = "{param.card ? 8 : 0}"
 clip = true
 on_drop = "gallery.drop"
 
+  # nothing to show yet: the picture glyph and one line saying why
   [[root.children]]
-  type = "text"
   when = "{gallery.count == 0}"
-  text = "{gallery.error != '' ? gallery.error : (gallery.folder == '' ? (self.w < 220 || self.h < 140 ? 'Drop photos here' : 'Drop a photo folder here, or choose one in Settings.') : 'No photos in this folder.')}"
-  text_wrap = true
-  text_align = "center"
-  size = "{self.w < 220 || self.h < 140 ? 11 : 13}"
-  color = "$text-dim"
-  padding = "{self.w < 220 || self.h < 140 ? 4 : 12}"
+  grow = 1
+  direction = "column"
+  align = "center"
+  justify = "center"
+  gap = 6
+  padding = 10
   fill = "$surface"
   radius = "{param.rounded}"
-  grow = 1
-  justify = "center"
+    [[root.children.children]]
+    when = "{self.h >= 110}"
+    type = "text"
+    text = "$glyph-image"
+    font = "$font-glyph"
+    size = 26
+    color = "$text-dim"
+    [[root.children.children]]
+    type = "text"
+    text = "{gallery.error != '' ? gallery.error : (gallery.folder == '' ? (self.w < 220 || self.h < 140 ? 'Drop photos here' : 'Drop a photo folder here, or choose one in Settings.') : 'No photos in this folder.')}"
+    text_wrap = true
+    text_align = "center"
+    size = "{self.w < 220 || self.h < 140 ? 11 : 12}"
+    color = "$text-dim"
 
   # the photo: a new one fades in over the last once it has loaded
   [[root.children]]
@@ -102,26 +118,37 @@ on_drop = "gallery.drop"
     max = 2048
     fit = "{param.fit}"
     fade = "{param.fade}"
+    radius = "{max(0, param.rounded - (param.card ? 8 : 0))}"
     position = "absolute"
     left = 0
     top = 0
     width = "100%"
     height = "100%"
 
-    # its name, on a dark band along the bottom
+    # its name and, large, its date and place in the folder, on a dark band along the bottom
     [[root.children.children]]
-    when = "{param.show_name}"
+    when = "{param.show_name || (self.w >= 260 && self.h >= 260)}"
     position = "absolute"
     left = 0
     right = 0
     bottom = 0
-    padding = [16, 12, 8, 12]
-    fill = ["#00000000", "#0000008c"]
+    padding = [28, 16, 14, 16]
+    fill = ["#00000000", "#000000a6"]
+    radius = "{max(0, param.rounded - (param.card ? 8 : 0))}"
+    direction = "column"
+    gap = 2
       [[root.children.children.children]]
       type = "text"
       text = "{gallery.current.name}"
-      size = 12
+      size = 13
+      weight = 600
       color = "#ffffffff"
+      [[root.children.children.children]]
+      when = "{self.w >= 260 && self.h >= 260}"
+      type = "text"
+      text = "{gallery.current.date}{gallery.current.date != '' ? '  ·  ' : ''}{gallery.index + 1} of {gallery.count}"
+      size = 11
+      color = "#ffffffbf"
 
     # previous / next, faint until the pointer is over them
     [[root.children.children]]

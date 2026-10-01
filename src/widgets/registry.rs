@@ -133,6 +133,19 @@ mod tests {
     }
 
     #[test]
+    fn every_when_in_a_builtin_is_an_expression() {
+        // `when = "self.w > 9"` without braces is a non-empty string, so always true
+        for (id, src) in BUILTIN {
+            for (n, line) in src.lines().enumerate() {
+                let t = line.trim_start();
+                if let Some(v) = t.strip_prefix("when = \"") {
+                    assert!(v.starts_with('{') && v.trim_end().ends_with("}\""), "{id}.toml:{}: `{t}` is not an expression", n + 1);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_photo_frame_wakes_for_its_next_slide_and_a_gallery_does_not() {
         let dir = std::env::temp_dir().join(format!("wf-frame-wake-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -165,22 +178,22 @@ mod tests {
     fn media_photo_and_agent_widgets_build_at_every_size_full_or_empty() {
         let r = Registry::load(Path::new("no-such-dir"));
         let theme = Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[]);
-        let pic = |n: &str| Value::obj([("name", n.into()), ("path", format!("C:\\Photos\\{n}.jpg").into()), ("ext", "jpg".into()), ("size", 10.0.into()), ("modified_ms", 0.0.into())]);
+        let pic = |n: &str| Value::obj([("name", n.into()), ("path", format!("C:\\Photos\\{n}.jpg").into()), ("ext", "jpg".into()), ("size", 2_400_000.0.into()), ("modified_ms", 0.0.into()), ("date", "3 Mar 2024".into())]);
         let list = |v: &[f64]| Value::List(v.iter().map(|x| Value::Num(*x)).collect());
         let full = |name: &str| -> Option<Value> {
             Some(match name {
                 "media" => Value::obj([("active", true.into()), ("title", "Song".into()), ("artist", "Band".into()), ("album", "LP".into()), ("source", "Spotify".into()), ("playing", true.into()), ("can_seek", true.into()), ("art", "file:C:\\cover.png".into()), ("position", 30.0.into()), ("duration", 200.0.into()), ("progress", 0.15.into()), ("clock", "0:30".into()), ("length", "3:20".into())]),
                 "audio" => Value::obj([("bands", list(&[0.2, 1.0, 0.5, 0.0])), ("peaks", list(&[0.4, 1.0, 0.6, 0.1])), ("level", 0.7.into()), ("bass", 0.9.into()), ("active", true.into())]),
-                "gallery" => Value::obj([("count", 2.into()), ("index", 1.into()), ("current", pic("b")), ("items", Value::List(vec![pic("a"), pic("b")])), ("folder", "C:\\Photos".into()), ("truncated", true.into()), ("error", "".into())]),
+                "gallery" => Value::obj([("count", 2.into()), ("index", 1.into()), ("current", pic("b")), ("items", Value::List(vec![pic("a"), pic("b")])), ("folder", "C:\\Photos".into()), ("folder_name", "Photos".into()), ("truncated", true.into()), ("error", "".into())]),
                 "agents" => Value::obj([("items", Value::List(vec![Value::obj([("name", "app".into()), ("cwd", "C:\\dev\\app".into()), ("tool", "Claude Code".into()), ("state", "done".into()), ("label", "Done".into()), ("working", false.into()), ("done", true.into()), ("age", "5s".into())])])), ("count", 1.into()), ("working", 0.into()), ("provider", "all".into()), ("note", "".into())]),
                 _ => return None,
             })
         };
         let empty = |name: &str| -> Option<Value> {
             Some(match name {
-                "media" => Value::obj([("active", false.into()), ("title", "".into()), ("artist", "".into()), ("source", "".into()), ("playing", false.into()), ("can_seek", false.into()), ("art", "".into()), ("duration", 0.0.into()), ("progress", 0.0.into()), ("clock", "".into()), ("length", "".into())]),
+                "media" => Value::obj([("active", false.into()), ("title", "".into()), ("artist", "".into()), ("album", "".into()), ("source", "".into()), ("playing", false.into()), ("can_seek", false.into()), ("art", "".into()), ("position", 0.0.into()), ("duration", 0.0.into()), ("progress", 0.0.into()), ("clock", "".into()), ("length", "".into())]),
                 "audio" => Value::obj([("bands", Value::List(vec![])), ("peaks", Value::List(vec![])), ("level", 0.0.into()), ("bass", 0.0.into()), ("active", false.into())]),
-                "gallery" => Value::obj([("count", 0.into()), ("index", (-1).into()), ("current", Value::Nil), ("items", Value::List(vec![])), ("folder", "".into()), ("truncated", false.into()), ("error", "".into())]),
+                "gallery" => Value::obj([("count", 0.into()), ("index", (-1).into()), ("current", Value::Nil), ("items", Value::List(vec![])), ("folder", "".into()), ("folder_name", "".into()), ("truncated", false.into()), ("error", "".into())]),
                 "agents" => Value::obj([("items", Value::List(vec![])), ("count", 0.into()), ("working", 0.into()), ("provider", "claude".into()), ("note", "".into())]),
                 _ => return None,
             })
@@ -201,11 +214,14 @@ mod tests {
             let Some(Ok(w)) = r.get(id) else { panic!("{id} is not built in") };
             let m = w.meta();
             let max = m.max_card_size.unwrap_or(m.default_card_size);
-            let sizes = [m.min_card_size, m.default_card_size, (m.min_card_size.0, max.1), max];
+            // the corners, and either side of each size family's edge (100 and 260 px)
+            let edges = [(170.0, 170.0), (340.0, 340.0), (259.0, 150.0), (261.0, 150.0), (200.0, 259.0), (200.0, 261.0), (300.0, 99.0), (300.0, 101.0), (240.0, 129.0), (600.0, 300.0)];
+            let fit = |(w, h): (f32, f32)| (w.clamp(m.min_card_size.0, max.0), h.clamp(m.min_card_size.1, max.1));
+            let sizes: Vec<(f32, f32)> = [m.min_card_size, m.default_card_size, (m.min_card_size.0, max.1), max].into_iter().chain(edges.into_iter().map(fit)).collect();
             let params: BTreeMap<String, Value> = set.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
             for read in [&full as &dyn Fn(&str) -> Option<Value>, &empty] {
                 for states in [BTreeMap::new(), BTreeMap::from([("index".to_string(), Value::Num(1.0)), ("sliding".to_string(), Value::Bool(true))])] {
-                    for size in sizes {
+                    for &size in &sizes {
                         let inp = Inputs { params: &params, state: &states, card_size: size, key_prefix: "t", read_source: read, arrange: None };
                         let b = w.build(&inp, &theme, &|_| None).unwrap_or_else(|e| panic!("{id} {params:?} at {size:?}: {e}"));
                         assert!(b.warnings.is_empty(), "{id} {params:?} at {size:?}: {:?}", b.warnings);

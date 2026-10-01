@@ -1,9 +1,9 @@
 needs = ["agents"]
 name = "Agent Status"
-description = "Live sessions of Claude Code, GitHub Copilot CLI and Antigravity CLI, with what each is doing and which just finished. Low, it is a single line: how many work."
+description = "Live sessions of Claude Code, GitHub Copilot CLI and Antigravity CLI. Small, one big number: how many work; wider, a list of sessions and what each is doing; large, where each runs and which just finished."
 category = "Developer"
 icon = "terminal"
-size = [280, 220]
+size = [340, 160]
 min_size = [150, 52]
 max_size = [560, 700]
 
@@ -43,67 +43,117 @@ label = "Idle colour"
 [state]
 scroll = 0
 
-# Under 110 px high only the header shows: the name and how many work.
+# Sizes, as on macOS, with the same breakpoints in every media, photo and agent widget:
+#   row     under 100 high              the tool and how many work, on one line
+#   small   under 260 wide and high     one big number: how many work, and the latest session
+#   medium  260+ wide                   a list: each session and what it is doing
+#   large   260+ high                   each with its folder (and tool), and the note
 [root]
 direction = "column"
-justify = "{self.h < 110 ? 'center' : 'start'}"
+justify = "{self.h < 100 ? 'center' : 'start'}"
 fill = ["$surface", "$surface-2"]
 radius = "$radius-lg"
 border = 1
 shadow = { blur = 14, dy = 5 }
-padding = 12
-gap = 8
+padding = ["{self.h < 100 ? 8 : 16}", "{self.h < 100 ? 14 : 16}"]
+gap = 10
 clip = true
 
-  # ---- header: name of the tool and how many are busy ----
+  # ================= row, medium and large: the tool, and how many work =================
   [[root.children]]
+  when = "{!(self.h >= 100 && self.w < 260 && self.h < 260)}"
   direction = "row"
   align = "center"
   gap = 8
-  padding = [0, 4]
-
     [[root.children.children]]
     type = "text"
     text = "{param.title != '' ? param.title : (param.provider == 'claude' ? 'Claude Code' : (param.provider == 'copilot' ? 'Copilot CLI' : (param.provider == 'all' ? 'Coding agents' : 'Antigravity CLI')))}"
-    size = 13
+    size = "{self.h < 100 ? 13 : 14}"
     weight = 600
     color = "$text"
     grow = 1
-
+    min_width = 0
     [[root.children.children]]
-    when = "{agents.working > 0}"
-    # [vertical, horizontal]: room at the round ends
-    padding = [4, 10]
+    when = "{agents.working > 0 && self.w >= 220}"
+    padding = [3, 9]
     radius = 99
     fill = "{param.working_color}"
-    fill_alpha = 0.22
+    fill_alpha = 0.2
       [[root.children.children.children]]
       type = "text"
       text = "{agents.working} working"
       size = 11
       weight = 600
       color = "{param.working_color}"
-
     [[root.children.children]]
-    when = "{agents.working == 0 && agents.count > 0}"
+    when = "{agents.working == 0 && self.w >= 220}"
     type = "text"
-    text = "{agents.count} idle"
+    text = "{agents.count > 0 ? agents.count : 'none'}{agents.count > 0 ? ' idle' : ''}"
     size = 11
     color = "$text-dim"
-
+    # narrow: just how many work, or how many there are
     [[root.children.children]]
-    when = "{agents.count == 0 && self.h < 110}"
+    when = "{self.w < 220}"
     type = "text"
-    text = "none"
-    size = 11
-    color = "$text-dim"
+    text = "{agents.working > 0 ? agents.working : agents.count}"
+    size = 12
+    weight = 600
+    color = "{agents.working > 0 ? param.working_color : '$text-dim'}"
 
-  # ---- the sessions, scrolling when they overflow ----
+  # ================= small: one big number =================
   [[root.children]]
-  when = "{self.h >= 110}"
+  when = "{self.h >= 100 && self.w < 260 && self.h < 260}"
   grow = 1
   direction = "column"
+  justify = "between"
+    [[root.children.children]]
+    type = "text"
+    text = "{param.title != '' ? param.title : (param.provider == 'claude' ? 'Claude Code' : (param.provider == 'copilot' ? 'Copilot CLI' : (param.provider == 'all' ? 'Coding agents' : 'Antigravity CLI')))}"
+    size = 11
+    weight = 600
+    color = "$accent"
+    [[root.children.children]]
+    direction = "row"
+    align = "end"
+    gap = 6
+      [[root.children.children.children]]
+      type = "text"
+      text = "{agents.working > 0 ? agents.working : agents.count}"
+      font = "$font-display"
+      size = "{min(48, self.h * 0.3)}"
+      weight = 600
+      color = "{agents.working > 0 ? param.working_color : '$text'}"
+      [[root.children.children.children]]
+      type = "text"
+      text = "{agents.working > 0 ? 'working' : (agents.count == 1 ? 'session, idle' : (agents.count > 0 ? 'sessions, idle' : 'sessions'))}"
+      size = 12
+      color = "$text-dim"
+      # sit on the number's baseline, not under its descent
+      margin = [0, 0, "{min(48, self.h * 0.3) * 0.2}", 0]
+    [[root.children.children]]
+    when = "{agents.count > 0}"
+    direction = "column"
+    gap = 1
+      [[root.children.children.children]]
+      type = "text"
+      text = "{at(agents.items, 0).name}"
+      size = 12
+      weight = 600
+      color = "$text"
+      [[root.children.children.children]]
+      type = "text"
+      text = "{at(agents.items, 0).label}  ·  {at(agents.items, 0).age}{agents.count > 1 ? '  ·  ' : ''}{agents.count > 1 ? agents.count - 1 : ''}{agents.count > 1 ? ' more' : ''}"
+      size = 11
+      color = "$text-dim"
+
+  # ================= medium and large: the sessions, scrolling when they overflow =================
+  [[root.children]]
+  when = "{self.h >= 100 && (self.w >= 260 || self.h >= 260)}"
+  grow = 1
+  min_height = 0
+  direction = "column"
   gap = 2
+  margin = [0, -8, 0, -8]
   scroll = "{state.scroll}"
   hit = true
 
@@ -111,33 +161,30 @@ clip = true
     type = "text"
     when = "{agents.count == 0}"
     text = "No live sessions."
-    size = 13
+    size = 12
     color = "$text-dim"
-    padding = 6
+    padding = [6, 8]
 
     [[root.children.children]]
     type = "repeat"
     for = "{agents.items}"
     as = "a"
-
       [[root.children.children.children]]
       direction = "row"
       align = "center"
       gap = 10
-      padding = [8, 7]
+      padding = ["{self.h >= 260 ? 8 : 5}", 8]
       radius = "$radius-sm"
       hover = { fill = "$surface-hover" }
       transition = 140
       enter = { ms = 240, dy = 6, stagger = 22 }
-
-        # status dot
+        # what it is doing, as a dot
         [[root.children.children.children.children]]
-        width = 9
-        height = 9
+        width = 8
+        height = 8
         shrink = 0
         radius = 99
         fill = "{a.working ? param.working_color : (a.done ? param.done_color : param.idle_color)}"
-
         [[root.children.children.children.children]]
         direction = "column"
         grow = 1
@@ -150,18 +197,16 @@ clip = true
           size = 13
           weight = 500
           color = "$text"
-          # the folder and, when it lists every tool, which one
+          # large: the folder and, listing every tool, which one
           [[root.children.children.children.children.children]]
           type = "text"
-          when = "{self.w > 200 && ((param.show_cwd && a.cwd != '') || param.provider == 'all')}"
+          when = "{self.h >= 260 && ((param.show_cwd && a.cwd != '') || param.provider == 'all')}"
           text = "{param.provider == 'all' ? a.tool : ''}{param.provider == 'all' && param.show_cwd && a.cwd != '' ? '  ·  ' : ''}{param.show_cwd ? a.cwd : ''}"
           size = 10
           color = "$text-dim"
-
         [[root.children.children.children.children]]
         direction = "column"
         align = "end"
-        min_width = 44
         shrink = 0
           [[root.children.children.children.children.children]]
           type = "text"
@@ -170,6 +215,7 @@ clip = true
           weight = 600
           color = "{a.working ? param.working_color : (a.done ? param.done_color : param.idle_color)}"
           [[root.children.children.children.children.children]]
+          when = "{self.h >= 260}"
           type = "text"
           text = "{a.age}"
           size = 10
@@ -177,8 +223,7 @@ clip = true
 
   [[root.children]]
   type = "text"
-  when = "{agents.note != '' && self.h >= 110}"
+  when = "{agents.note != '' && self.h >= 260}"
   text = "{agents.note}"
   size = 10
   color = "$text-dim"
-  padding = [4, 0]
