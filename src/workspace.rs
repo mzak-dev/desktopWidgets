@@ -479,6 +479,11 @@ pub enum SetupFit {
     Same,
 }
 
+/// The same monitors connected, by name and size, in any order.
+pub fn same_setup(a: &[MonitorRef], b: &[MonitorRef]) -> bool {
+    setup_fit(a, b) == SetupFit::Same
+}
+
 pub fn setup_fit(saved: &[MonitorRef], now: &[MonitorRef]) -> SetupFit {
     let sorted = |v: &[MonitorRef]| {
         let mut v = v.to_vec();
@@ -785,6 +790,8 @@ mod tests {
         assert_eq!(ws.pick(Some("{AAAA}"), &dock).as_deref(), Some("Desk focus"), "both beat either");
         let renamed = vec![mref("\\\\.\\DISPLAY3", 1920, 1080), mref("\\\\.\\DISPLAY4", 2560, 1440)];
         assert_eq!(setup_fit(&dock, &renamed), SetupFit::Renamed);
+        let swapped: Vec<MonitorRef> = dock.iter().rev().cloned().collect();
+        assert!(same_setup(&dock, &swapped) && !same_setup(&dock, &renamed) && !same_setup(&dock, &laptop), "order does not matter, names and sizes do");
         assert_eq!(ws.pick(None, &renamed).as_deref(), Some("Desk"), "a dock that renumbered its monitors still counts");
         assert_eq!(ws.pick(Some("{CCCC}"), &[mref("x", 800, 600)]), None, "nothing fits: stay where you are");
         assert!(Rules::default().score(Some("{AAAA}"), &dock).is_none(), "no rules: only picked by hand");

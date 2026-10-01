@@ -941,9 +941,13 @@ impl ApplicationHandler<UserEvent> for App {
         }
         if self.display_at.is_some_and(|t| t <= now) {
             self.display_at = None;
+            let before = self.monitor_setup();
             self.monitors = win32::monitors(el);
             self.log(format!("displays changed: {} monitor(s)", self.monitors.len()));
-            self.follow_rules(el, " (fits these monitors)");
+            // a new scale or monitors waking up leave the same setup: a pick by hand stays
+            if !workspace::same_setup(&before, &self.monitor_setup()) {
+                self.follow_rules(el, " (fits these monitors)");
+            }
             self.sync_windows(el);
             for i in 0..self.wins.len() {
                 if let (Some(p), Some(w)) = (workspace::resolve(&self.ws.instances[i], &self.monitors), self.wins[i].window.clone()) {

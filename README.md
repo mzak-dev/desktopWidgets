@@ -129,7 +129,7 @@ Keep several sets of widgets, each with its own positions, settings and look, an
 - **virtual desktops** (Win+Ctrl+D): going to one of them brings that Workspace up;
 - **a monitor setup**: connecting those monitors brings it up, so a laptop can have one set alone and another docked. A dock that renumbers its monitors still counts.
 
-The most specific match wins, a Workspace with no ties only comes up when you pick it, and one you pick stays until the desktop or the monitors change. Virtual desktops are read from where Explorer keeps them, as PowerToys does; see [ADR-011](docs/adr/0011-workspaces-follow-desktops-and-monitors.md).
+The most specific match wins, a Workspace with no ties only comes up when you pick it, and one you pick stays until you go to another desktop or connect other monitors. Virtual desktops are read from where Explorer keeps them, as PowerToys does; see [ADR-011](docs/adr/0011-workspaces-follow-desktops-and-monitors.md).
 
 <br>
 
