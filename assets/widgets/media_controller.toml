@@ -1,0 +1,549 @@
+needs = ["media"]
+name = "Media Controller"
+description = "What is playing in any app that reports to Windows. Small, it is the cover and the title; wider, a bar you drag to seek and the controls; large, the album, time left and where it plays."
+category = "Media"
+icon = "media"
+size = [340, 160]
+min_size = [170, 56]
+max_size = [640, 720]
+
+[params.show_source]
+type = "bool"
+default = true
+label = "Show source app"
+
+[params.show_progress]
+type = "bool"
+default = true
+label = "Progress bar and time"
+
+[params.show_art]
+type = "bool"
+default = true
+label = "Cover art"
+
+[params.art_radius]
+type = "number"
+default = 12
+min = 0
+max = 40
+step = 1
+label = "Cover corner radius"
+
+[params.art_fade]
+type = "number"
+default = 350
+min = 0
+max = 1000
+step = 50
+label = "Cover crossfade (ms)"
+
+[params.bar_color]
+type = "color"
+default = "$accent"
+label = "Progress colour"
+
+[params.card]
+type = "bool"
+default = true
+label = "Card background"
+help = "Off leaves the cover, text and buttons on the desktop."
+
+# while a progress bar is held, Wayfinder writes where (0-1) to `slide` and sets `sliding`
+[state]
+slide = 0
+sliding = false
+
+# Sizes, as on macOS, with the same breakpoints in every media, photo and agent widget:
+#   row     under 100 high                  one line: title and play (here also under 260
+#                                           wide and 130 high: too short for a cover on top)
+#   small   under 260 wide and high         the cover, the title, play
+#   medium  260+ wide, under 260 high       cover beside title, seek bar and controls
+#   large   260+ high                       cover on top (or beside, when much wider),
+#                                           album, time left and where it plays
+[root]
+direction = "column"
+fill = ["{param.card ? '$surface' : '#00000000'}", "{param.card ? '$surface-2' : '#00000000'}"]
+radius = "$radius-lg"
+border = "{param.card ? 1 : 0}"
+shadow = "{param.card ? 14 : 0}"
+padding = "{self.h < 100 || (self.w < 260 && self.h < 130) ? 10 : 16}"
+clip = true
+
+  # ================= row: one line =================
+  [[root.children]]
+  when = "{self.h < 100 || (self.w < 260 && self.h < 130)}"
+  grow = 1
+  direction = "row"
+  align = "center"
+  gap = 10
+    [[root.children.children]]
+    when = "{param.show_art && self.w >= 240}"
+    width = "{min(self.h - 20, 52)}"
+    height = "{min(self.h - 20, 52)}"
+    shrink = 0
+    radius = "{min(param.art_radius, 8)}"
+    fill = "$face"
+    clip = true
+      [[root.children.children.children]]
+      when = "{media.art != ''}"
+      type = "image"
+      src = "{media.art}"
+      fade = "{param.art_fade}"
+      width = "100%"
+      height = "100%"
+    [[root.children.children]]
+    grow = 1
+    shrink = 1
+    min_width = 0
+    direction = "column"
+    justify = "center"
+    gap = 1
+      [[root.children.children.children]]
+      type = "text"
+      text = "{media.active ? media.title : 'Not playing'}"
+      size = 13
+      weight = 600
+      color = "$text"
+      [[root.children.children.children]]
+      type = "text"
+      when = "{media.artist != ''}"
+      text = "{media.artist}"
+      size = 11
+      color = "$text-dim"
+    [[root.children.children]]
+    width = 32
+    height = 32
+    shrink = 0
+    radius = 99
+    align = "center"
+    justify = "center"
+    fill = "$face"
+    on_click = "media.play_pause"
+    hover = { fill = "$surface-hover" }
+    transition = 140
+      [[root.children.children.children]]
+      type = "text"
+      text = "{media.playing ? '$glyph-pause' : '$glyph-play'}"
+      font = "$font-glyph"
+      size = 13
+      color = "$text"
+    [[root.children.children]]
+    when = "{self.w >= 300}"
+    width = 28
+    height = 28
+    shrink = 0
+    radius = 99
+    align = "center"
+    justify = "center"
+    on_click = "media.next"
+    hover = { fill = "$surface-hover" }
+    transition = 140
+      [[root.children.children.children]]
+      type = "text"
+      text = "$glyph-next"
+      font = "$font-glyph"
+      size = 13
+      color = "$text"
+
+  # ================= small: cover and play on top, title below =================
+  [[root.children]]
+  when = "{self.w < 260 && self.h >= 130 && self.h < 260}"
+  grow = 1
+  direction = "column"
+  justify = "between"
+    [[root.children.children]]
+    direction = "row"
+    align = "start"
+    justify = "between"
+      [[root.children.children.children]]
+      width = "{param.show_art ? min(88, self.h - 76) : 0}"
+      height = "{param.show_art ? min(88, self.h - 76) : 0}"
+      radius = "{param.art_radius}"
+      fill = "$face"
+      align = "center"
+      justify = "center"
+      clip = true
+        [[root.children.children.children.children]]
+        when = "{media.art == ''}"
+        type = "text"
+        text = "$glyph-media"
+        font = "$font-glyph"
+        size = 20
+        color = "$text-dim"
+        [[root.children.children.children.children]]
+        when = "{media.art != ''}"
+        type = "image"
+        src = "{media.art}"
+        fade = "{param.art_fade}"
+        position = "absolute"
+        left = 0
+        top = 0
+        width = "100%"
+        height = "100%"
+      [[root.children.children.children]]
+      width = 34
+      height = 34
+      radius = 99
+      align = "center"
+      justify = "center"
+      fill = "$face"
+      on_click = "media.play_pause"
+      hover = { fill = "$surface-hover" }
+      transition = 140
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{media.playing ? '$glyph-pause' : '$glyph-play'}"
+        font = "$font-glyph"
+        size = 14
+        color = "$text"
+    [[root.children.children]]
+    direction = "column"
+    gap = 2
+      [[root.children.children.children]]
+      type = "text"
+      text = "{media.active ? media.title : 'Not playing'}"
+      size = 14
+      weight = 600
+      color = "$text"
+      [[root.children.children.children]]
+      type = "text"
+      when = "{media.artist != ''}"
+      text = "{media.artist}"
+      size = 12
+      color = "$text-dim"
+
+  # ================= medium, and large when much wider than tall: cover beside =================
+  [[root.children]]
+  when = "{self.h >= 100 && self.w >= 260 && (self.h < 260 || self.w >= self.h * 1.4)}"
+  grow = 1
+  direction = "row"
+  align = "stretch"
+  gap = "{self.h >= 260 ? 20 : 14}"
+    [[root.children.children]]
+    when = "{param.show_art}"
+    width = "{min(self.h - 32, self.w * 0.42)}"
+    height = "{min(self.h - 32, self.w * 0.42)}"
+    shrink = 0
+    align_self = "center"
+    radius = "{param.art_radius}"
+    fill = "$face"
+    align = "center"
+    justify = "center"
+    clip = true
+      [[root.children.children.children]]
+      when = "{media.art == ''}"
+      type = "text"
+      text = "$glyph-media"
+      font = "$font-glyph"
+      size = 26
+      color = "$text-dim"
+      [[root.children.children.children]]
+      when = "{media.art != ''}"
+      type = "image"
+      src = "{media.art}"
+      fade = "{param.art_fade}"
+      enter = { ms = "{param.art_fade}", dy = 0 }
+      position = "absolute"
+      left = 0
+      top = 0
+      width = "100%"
+      height = "100%"
+    [[root.children.children]]
+    grow = 1
+    shrink = 1
+    min_width = 0
+    direction = "column"
+    justify = "between"
+      # the words
+      [[root.children.children.children]]
+      direction = "column"
+      gap = 2
+        [[root.children.children.children.children]]
+        type = "text"
+        when = "{param.show_source && media.active && self.h >= 130}"
+        text = "{media.source}"
+        size = 11
+        weight = 600
+        color = "$accent"
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{media.active ? media.title : 'Not playing'}"
+        size = "{self.h >= 260 ? 18 : 15}"
+        weight = 600
+        color = "$text"
+        [[root.children.children.children.children]]
+        type = "text"
+        when = "{media.artist != ''}"
+        text = "{media.artist}"
+        size = "{self.h >= 260 ? 14 : 12}"
+        color = "$text-dim"
+        [[root.children.children.children.children]]
+        type = "text"
+        when = "{self.h >= 200 && media.album != ''}"
+        text = "{media.album}"
+        size = 12
+        color = "$text-dim"
+      # seek bar and controls, together at the bottom
+      [[root.children.children.children]]
+      direction = "column"
+      gap = "{self.h >= 200 ? 10 : 6}"
+      # seek bar: press or drag to seek, when the playing app allows it
+      [[root.children.children.children.children]]
+      when = "{self.h >= 150 && param.show_progress && media.active && media.duration > 0}"
+      direction = "column"
+      gap = 3
+        [[root.children.children.children.children.children]]
+        height = 12
+        margin = [-4, 0, -4, 0]
+        direction = "column"
+        justify = "center"
+        on_slide = "{media.can_seek ? 'media.seek' : ''}"
+          [[root.children.children.children.children.children.children]]
+          height = 4
+          radius = 99
+          fill = "$track"
+            # absolute, so it follows the pointer instead of easing after it
+            [[root.children.children.children.children.children.children.children]]
+            position = "absolute"
+            left = 0
+            top = 0
+            width = "{(state.sliding ? state.slide : media.progress) * 100}%"
+            height = "100%"
+            radius = 99
+            fill = "{param.bar_color}"
+              [[root.children.children.children.children.children.children.children.children]]
+              when = "{state.sliding}"
+              position = "absolute"
+              right = -5
+              top = -3
+              width = 10
+              height = 10
+              radius = 99
+              fill = "{param.bar_color}"
+              shadow = { blur = 4, dy = 1 }
+        [[root.children.children.children.children.children]]
+        direction = "row"
+        justify = "between"
+          [[root.children.children.children.children.children.children]]
+          type = "text"
+          text = "{state.sliding ? clock(state.slide * media.duration) : media.clock}"
+          size = 10
+          color = "$text-dim"
+          [[root.children.children.children.children.children.children]]
+          type = "text"
+          text = "{self.h >= 200 ? '-' : ''}{self.h >= 200 ? clock(media.duration - (state.sliding ? state.slide * media.duration : media.position)) : media.length}"
+          size = 10
+          color = "$text-dim"
+      # controls
+      [[root.children.children.children.children]]
+      direction = "row"
+      align = "center"
+      gap = 4
+        [[root.children.children.children.children.children]]
+        width = "{self.h < 130 ? 26 : 30}"
+        height = "{self.h < 130 ? 26 : 30}"
+        radius = 99
+        align = "center"
+        justify = "center"
+        on_click = "media.prev"
+        hover = { fill = "$surface-hover" }
+        transition = 140
+          [[root.children.children.children.children.children.children]]
+          type = "text"
+          text = "$glyph-previous"
+          font = "$font-glyph"
+          size = 14
+          color = "$text"
+        [[root.children.children.children.children.children]]
+        width = "{self.h < 130 ? 30 : 36}"
+        height = "{self.h < 130 ? 30 : 36}"
+        radius = 99
+        align = "center"
+        justify = "center"
+        fill = "$face"
+        on_click = "media.play_pause"
+        hover = { fill = "$surface-hover" }
+        transition = 140
+          [[root.children.children.children.children.children.children]]
+          type = "text"
+          text = "{media.playing ? '$glyph-pause' : '$glyph-play'}"
+          font = "$font-glyph"
+          size = 15
+          color = "$text"
+        [[root.children.children.children.children.children]]
+        width = "{self.h < 130 ? 26 : 30}"
+        height = "{self.h < 130 ? 26 : 30}"
+        radius = 99
+        align = "center"
+        justify = "center"
+        on_click = "media.next"
+        hover = { fill = "$surface-hover" }
+        transition = 140
+          [[root.children.children.children.children.children.children]]
+          type = "text"
+          text = "$glyph-next"
+          font = "$font-glyph"
+          size = 14
+          color = "$text"
+
+  # ================= large: cover on top, everything under it =================
+  [[root.children]]
+  when = "{self.h >= 260 && self.w < self.h * 1.4}"
+  grow = 1
+  direction = "column"
+  align = "center"
+  gap = 12
+    [[root.children.children]]
+    when = "{param.show_art}"
+    width = "{max(48, min(self.w - 32, self.h - 200))}"
+    height = "{max(48, min(self.w - 32, self.h - 200))}"
+    shrink = 0
+    radius = "{param.art_radius}"
+    fill = "$face"
+    align = "center"
+    justify = "center"
+    clip = true
+      [[root.children.children.children]]
+      when = "{media.art == ''}"
+      type = "text"
+      text = "$glyph-media"
+      font = "$font-glyph"
+      size = 34
+      color = "$text-dim"
+      [[root.children.children.children]]
+      when = "{media.art != ''}"
+      type = "image"
+      src = "{media.art}"
+      fade = "{param.art_fade}"
+      enter = { ms = "{param.art_fade}", dy = 0 }
+      position = "absolute"
+      left = 0
+      top = 0
+      width = "100%"
+      height = "100%"
+    # title, then artist and album
+    [[root.children.children]]
+    align_self = "stretch"
+    direction = "column"
+    align = "center"
+    gap = 2
+      [[root.children.children.children]]
+      type = "text"
+      text = "{media.active ? media.title : 'Not playing'}"
+      size = 17
+      weight = 600
+      color = "$text"
+      text_align = "center"
+      [[root.children.children.children]]
+      type = "text"
+      when = "{media.artist != '' || media.album != ''}"
+      text = "{media.artist}{media.artist != '' && media.album != '' ? '  ·  ' : ''}{media.album}"
+      size = 13
+      color = "$text-dim"
+      text_align = "center"
+    # seek bar with time gone and time left
+    [[root.children.children]]
+    when = "{param.show_progress && media.active && media.duration > 0}"
+    align_self = "stretch"
+    direction = "column"
+    gap = 3
+      [[root.children.children.children]]
+      height = 12
+      margin = [-4, 0, -4, 0]
+      direction = "column"
+      justify = "center"
+      on_slide = "{media.can_seek ? 'media.seek' : ''}"
+        [[root.children.children.children.children]]
+        height = 4
+        radius = 99
+        fill = "$track"
+          [[root.children.children.children.children.children]]
+          position = "absolute"
+          left = 0
+          top = 0
+          width = "{(state.sliding ? state.slide : media.progress) * 100}%"
+          height = "100%"
+          radius = 99
+          fill = "{param.bar_color}"
+            [[root.children.children.children.children.children.children]]
+            when = "{state.sliding}"
+            position = "absolute"
+            right = -5
+            top = -3
+            width = 10
+            height = 10
+            radius = 99
+            fill = "{param.bar_color}"
+            shadow = { blur = 4, dy = 1 }
+      [[root.children.children.children]]
+      direction = "row"
+      justify = "between"
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{state.sliding ? clock(state.slide * media.duration) : media.clock}"
+        size = 11
+        color = "$text-dim"
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "-{clock(media.duration - (state.sliding ? state.slide * media.duration : media.position))}"
+        size = 11
+        color = "$text-dim"
+    # controls, a little bigger
+    [[root.children.children]]
+    direction = "row"
+    align = "center"
+    gap = 14
+      [[root.children.children.children]]
+      width = 36
+      height = 36
+      radius = 99
+      align = "center"
+      justify = "center"
+      on_click = "media.prev"
+      hover = { fill = "$surface-hover" }
+      transition = 140
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "$glyph-previous"
+        font = "$font-glyph"
+        size = 16
+        color = "$text"
+      [[root.children.children.children]]
+      width = 46
+      height = 46
+      radius = 99
+      align = "center"
+      justify = "center"
+      fill = "$face"
+      on_click = "media.play_pause"
+      hover = { fill = "$surface-hover" }
+      transition = 140
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{media.playing ? '$glyph-pause' : '$glyph-play'}"
+        font = "$font-glyph"
+        size = 18
+        color = "$text"
+      [[root.children.children.children]]
+      width = 36
+      height = 36
+      radius = 99
+      align = "center"
+      justify = "center"
+      on_click = "media.next"
+      hover = { fill = "$surface-hover" }
+      transition = 140
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "$glyph-next"
+        font = "$font-glyph"
+        size = 16
+        color = "$text"
+    # where it plays
+    [[root.children.children]]
+    when = "{param.show_source && media.active}"
+    type = "text"
+    text = "{media.playing ? 'Playing' : 'Paused'} in {media.source}"
+    size = 11
+    color = "$text-dim"
