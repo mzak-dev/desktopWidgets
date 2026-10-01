@@ -8,7 +8,7 @@ use crate::value::Value;
 /// A line through `values`, newest on the right, scaled so `min` sits on the bottom and `max`
 /// touches the top. With `span` slots across (e.g. a minute of samples) a short history fills
 /// in from the right.
-pub const KIND: ElementKind = ElementKind { name: "graph", own_attrs: &["values", "min", "max", "span", "stroke", "color", "area"], fills_parent_when_unsized: false, build };
+pub const KIND: ElementKind = ElementKind { name: "graph", own_attrs: &["values", "min", "max", "span", "stroke", "color", "area", "area_opacity"], fills_parent_when_unsized: false, build };
 
 #[derive(Clone, Debug)]
 pub struct GraphSpec {
@@ -22,6 +22,9 @@ pub struct GraphSpec {
     pub color: Color,
     /// Fills under the line, fading from 35% to 5% of this colour; `None` draws the line only.
     pub area: Option<Color>,
+    /// The area's opacity at the top and the bottom, instead of 35% and 5%. 1 hides what is
+    /// behind it, as a waterfall's nearer rows hide the ones farther back.
+    pub area_opacity: [f32; 2],
 }
 
 fn build(a: &mut Attrs) -> Result<Kind, String> {
@@ -39,6 +42,11 @@ fn build(a: &mut Attrs) -> Result<Kind, String> {
         stroke: a.num("stroke")?.unwrap_or(2.0).max(0.5),
         color: a.color("color")?.unwrap_or(a.theme().color("accent")),
         area: a.color("area")?,
+        area_opacity: match a.value("area_opacity")? {
+            Some(Value::List(l)) if l.len() == 2 => [0, 1].map(|i| l[i].as_f64().unwrap_or(1.0).clamp(0.0, 1.0) as f32),
+            Some(v) => [v.as_f64().unwrap_or(1.0).clamp(0.0, 1.0) as f32; 2],
+            None => [0.35, 0.05],
+        },
     }))
 }
 
@@ -79,8 +87,8 @@ impl Shape for GraphSpec {
                     a: [x + slice / 2.0, (y + bottom) / 2.0],
                     b: [slice / 2.0, ((bottom - y) / 2.0).max(0.0)],
                     kind: KIND_RECT,
-                    fill_top: rgba_with_opacity(area.mul_alpha(0.35), op),
-                    fill_bot: rgba_with_opacity(area.mul_alpha(0.05), op),
+                    fill_top: rgba_with_opacity(area.mul_alpha(self.area_opacity[0]), op),
+                    fill_bot: rgba_with_opacity(area.mul_alpha(self.area_opacity[1]), op),
                     clip: cx.clip_px,
                     ..Default::default()
                 });
@@ -116,7 +124,7 @@ mod tests {
 
     #[test]
     fn a_line_segment_per_step_scaled_to_max_and_inside_the_box() {
-        let g = GraphSpec { values: vec![0.0, 50.0, 100.0], min: 0.0, max: 100.0, span: 3, stroke: 2.0, color: Color([1.0; 4]), area: None };
+        let g = GraphSpec { values: vec![0.0, 50.0, 100.0], min: 0.0, max: 100.0, span: 3, stroke: 2.0, color: Color([1.0; 4]), area: None, area_opacity: [0.35, 0.05] };
         let out = emit(&g);
         assert_eq!(out.len(), 2, "one capsule per step");
         assert_eq!((out[0].a, out[1].b), ([1.0, 49.0], [99.0, 1.0]), "0 sits on the bottom, max on the top, inset by the stroke");
@@ -124,6 +132,9 @@ mod tests {
         let filled = emit(&GraphSpec { area: Some(Color([1.0, 0.0, 0.0, 0.5])), ..g.clone() });
         assert_eq!(filled.len(), 2 + 49, "plus a 2 px slice every 2 px across the 98 px span");
         assert!(filled[2..].iter().all(|i| i.a[1] - i.b[1] >= 1.0 - 1e-3), "slices start on the line: the middle one at 25 px");
+        assert_eq!((filled[2].fill_top[3], filled[2].fill_bot[3]), (0.5 * 0.35, 0.5 * 0.05), "fading from 35% to 5% of the colour");
+        let solid = emit(&GraphSpec { area: Some(Color([1.0, 0.0, 0.0, 1.0])), area_opacity: [1.0, 1.0], ..g.clone() });
+        assert_eq!((solid[2].fill_top[3], solid[2].fill_bot[3]), (1.0, 1.0), "or solid, hiding what is behind");
         assert!(emit(&GraphSpec { values: vec![42.0], ..g.clone() }).is_empty(), "a single sample draws nothing");
         let young = emit(&GraphSpec { values: vec![10.0, 20.0], span: 60, ..g });
         assert_eq!((young.len(), young[0].b[0]), (1, 99.0), "a short history hugs the right edge");
@@ -132,7 +143,7 @@ mod tests {
 
     #[test]
     fn a_signed_wave_centres_on_zero_between_min_and_max() {
-        let g = GraphSpec { values: vec![-1.0, 0.0, 1.0, 3.0], min: -1.0, max: 1.0, span: 4, stroke: 2.0, color: Color([1.0; 4]), area: None };
+        let g = GraphSpec { values: vec![-1.0, 0.0, 1.0, 3.0], min: -1.0, max: 1.0, span: 4, stroke: 2.0, color: Color([1.0; 4]), area: None, area_opacity: [0.35, 0.05] };
         let out = emit(&g);
         assert_eq!((out[0].a[1], out[0].b[1], out[1].b[1]), (49.0, 25.0, 1.0), "min on the bottom, 0 in the middle, max on the top");
         assert_eq!(out[2].b[1], 1.0, "beyond max stays inside the box");
