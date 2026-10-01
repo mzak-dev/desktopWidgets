@@ -40,7 +40,7 @@ fn main() {
     ws.onboarded = true;
     ws.theme.palette = std::env::var("WAYFINDER_PALETTE").unwrap_or_else(|_| "Aurora".into());
     let mon = MonitorRef { name: "\\\\.\\DISPLAY1".into(), width: 1920, height: 1080 };
-    for (id, w, sz) in [("clock-1", "clock", (260.0, 260.0)), ("digital_clock-1", "digital_clock", (340.0, 172.0)), ("system_monitor-1", "system_monitor", (340.0, 190.0)), ("drawer-1", "drawer", (260.0, 220.0)), ("icon_list-1", "icon_list", (280.0, 360.0)), ("icon_folder-1", "icon_folder", (132.0, 152.0))] {
+    for (id, w, sz) in [("clock-1", "clock", (260.0, 260.0)), ("digital_clock-1", "digital_clock", (340.0, 172.0)), ("system_monitor-1", "system_monitor", (340.0, 190.0)), ("drawer-1", "drawer", (260.0, 220.0)), ("icon_list-1", "icon_list", (280.0, 360.0)), ("icon_folder-1", "icon_folder", (132.0, 152.0)), ("media_controller-1", "media_controller", (340.0, 160.0)), ("photo_frame-1", "photo_frame", (320.0, 240.0)), ("agent_status-1", "agent_status", (340.0, 160.0))] {
         let mut c = InstanceCfg { id: id.into(), widget: w.into(), monitor: mon.clone(), w: sz.0, h: sz.1, ..Default::default() };
         if w.starts_with("icon_") {
             c.set_items(&items);
@@ -104,6 +104,9 @@ fn main() {
         ("setup_4", vec!["ob:next", "ob:next", "ob:next"], (1180.0, 780.0)),
         ("widgets_gallery", vec!["gallery:open"], (1180.0, 780.0)),
         ("widgets_gallery_narrow", vec!["gallery:open", "cat:Launchers"], (860.0, 560.0)),
+        ("widgets_gallery_photos", vec!["gallery:open", "cat:Photos"], (1180.0, 780.0)),
+        ("widgets_media", vec!["sel:media_controller-1"], (1180.0, 780.0)),
+        ("widgets_frame", vec!["sel:photo_frame-1"], (1180.0, 780.0)),
         ("widgets_folder", vec!["sel:icon_folder-1"], (1180.0, 780.0)),
         ("widgets_monitor", vec!["sel:system_monitor-1"], (1180.0, 780.0)),
         ("widgets_monitor_large", vec!["sel:system_monitor-1", "tier:large"], (1180.0, 780.0)),
