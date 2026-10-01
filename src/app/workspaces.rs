@@ -45,7 +45,7 @@ impl App {
         self.sync_windows(el);
         self.sync_watchers();
         if let Some(s) = &mut self.settings {
-            s.invalidate();
+            s.workspace_changed();
         }
         self.refresh_tray();
         self.mark_save();
@@ -69,15 +69,15 @@ impl App {
                 self.log(format!("added workspace {name}"));
                 self.switch_workspace(el, &name, " (new)");
             }
-            WsCmd::Rename(old, new) => match self.ws.rename_workspace(&old, &new) {
-                Ok(n) if n != old => {
-                    self.log(format!("workspace {old} is now {n}"));
-                    self.refresh_tray();
-                    self.mark_save();
+            // sent at every keystroke: an empty or taken name on the way to a good one is no news
+            WsCmd::Rename(old, new) => {
+                if let Ok(n) = self.ws.rename_workspace(&old, &new) {
+                    if n != old {
+                        self.refresh_tray();
+                        self.mark_save();
+                    }
                 }
-                Ok(_) => {}
-                Err(e) => self.log(e),
-            },
+            }
             WsCmd::Delete(name) => {
                 // the one on screen goes: show its neighbour first, so the windows follow
                 if name == self.ws.active {

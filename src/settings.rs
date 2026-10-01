@@ -2425,7 +2425,11 @@ const PREVIEW_W: f32 = 290.0;
 /// The width a page's column gets in a window `size` wide.
 /// A virtual desktop's name as Task View shows it, or that it is gone.
 fn desktop_label(ctx: &Ctx, id: &str) -> String {
-    ctx.desktops.iter().find(|d| d.id.eq_ignore_ascii_case(id)).map_or_else(|| "a removed desktop".into(), |d| d.name.clone())
+    match ctx.desktops.iter().find(|d| d.id.eq_ignore_ascii_case(id)) {
+        Some(d) => d.name.clone(),
+        None if ctx.desktop.is_some_and(|c| c.eq_ignore_ascii_case(id)) => "this desktop".into(),
+        None => "a removed desktop".into(),
+    }
 }
 
 /// "2 monitors: 2560×1440, 1920×1080".
@@ -3366,6 +3370,15 @@ pub struct SettingsWin {
 impl SettingsWin {
     /// Rebuild on the next frame, e.g. after a change made outside the window.
     pub fn invalidate(&mut self) {
+        self.redraw = true;
+    }
+
+    /// Another Workspace came up: its widgets are not the ones selected, armed or being typed in.
+    pub fn workspace_changed(&mut self) {
+        self.ui.selected = None;
+        self.ui.confirm_del = None;
+        self.ui.focus = None;
+        self.ui.sel_module = None;
         self.redraw = true;
     }
 
