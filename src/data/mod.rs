@@ -3,6 +3,7 @@
 
 mod audio;
 mod clock;
+mod gallery;
 pub(crate) mod media;
 mod shortcuts;
 mod sys;
@@ -18,6 +19,7 @@ use crate::workspace::InstanceCfg;
 
 pub use audio::Audio;
 pub use clock::{Clock, Tm, clock_value, now_local};
+pub use gallery::Gallery;
 pub use media::Media;
 pub use shortcuts::{ID_SEP, Shortcut, Shortcuts, file_stem, folder_items, icon_id, shortcuts_value, starter_apps};
 pub use sys::Sys;
@@ -171,7 +173,7 @@ impl DataSources {
     /// The built-in sources, caching under `<data>/.cache` (a dot-folder never reloads content).
     pub fn builtin_in(data: &Path) -> Self {
         let cache = data.join(".cache");
-        Self::new(vec![Box::new(Clock), Box::new(Sys::default()), Box::new(Shortcuts::default()), Box::new(Media::new(cache.join("media"))), Box::new(Audio::default())])
+        Self::new(vec![Box::new(Clock), Box::new(Sys::default()), Box::new(Shortcuts::default()), Box::new(Media::new(cache.join("media"))), Box::new(Audio::default()), Box::new(Gallery::default())])
     }
 
     pub fn new(list: Vec<Box<dyn DataSource>>) -> Self {

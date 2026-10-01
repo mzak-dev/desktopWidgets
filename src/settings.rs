@@ -3509,13 +3509,13 @@ mod tests {
     fn a_widget_missing_a_data_source_says_so() {
         let dir = std::env::temp_dir().join(format!("wf-settings-needs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("agents.toml"), "name = 'Agents'\nneeds = ['agents', 'clock']\n[root]\ntype = 'box'").unwrap();
+        std::fs::write(dir.join("notes.toml"), "name = 'Notes'\nneeds = ['notes', 'clock']\n[root]\ntype = 'box'").unwrap();
         let mut w = world();
         w.reg.load_dir(&dir);
         let s = UiState::default();
-        assert_eq!(s.needs_note(&ctx(&w), "agents").as_deref(), Some("  ·  needs agents"));
-        w.sources.push("agents".into());
-        assert_eq!(s.needs_note(&ctx(&w), "agents"), None);
+        assert_eq!(s.needs_note(&ctx(&w), "notes").as_deref(), Some("  ·  needs notes"));
+        w.sources.push("notes".into());
+        assert_eq!(s.needs_note(&ctx(&w), "notes"), None);
         std::fs::remove_dir_all(&dir).ok();
     }
 
