@@ -185,6 +185,7 @@ mod tests {
                 "media" => Value::obj([("active", true.into()), ("title", "Song".into()), ("artist", "Band".into()), ("album", "LP".into()), ("source", "Spotify".into()), ("playing", true.into()), ("can_seek", true.into()), ("art", "file:C:\\cover.png".into()), ("position", 30.0.into()), ("duration", 200.0.into()), ("progress", 0.15.into()), ("clock", "0:30".into()), ("length", "3:20".into())]),
                 "audio" => Value::obj([("bands", list(&[0.2, 1.0, 0.5, 0.0])), ("peaks", list(&[0.4, 1.0, 0.6, 0.1])), ("level", 0.7.into()), ("bass", 0.9.into()), ("active", true.into())]),
                 "gallery" => Value::obj([("count", 2.into()), ("index", 1.into()), ("current", pic("b")), ("items", Value::List(vec![pic("a"), pic("b")])), ("folder", "C:\\Photos".into()), ("folder_name", "Photos".into()), ("truncated", true.into()), ("error", "".into())]),
+                "calendar" => crate::data::calendar_value(&crate::data::Tm { year: 2026, month: 8, day: 31, dow: 1, hour: 9, minute: 0, second: 0, ms: 0 }, 6, &["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(String::from)),
                 "agents" => Value::obj([("items", Value::List(vec![Value::obj([("name", "app".into()), ("cwd", "C:\\dev\\app".into()), ("tool", "Claude Code".into()), ("state", "done".into()), ("label", "Done".into()), ("working", false.into()), ("done", true.into()), ("age", "5s".into())])])), ("count", 1.into()), ("working", 0.into()), ("provider", "all".into()), ("note", "".into())]),
                 _ => return None,
             })
@@ -195,6 +196,7 @@ mod tests {
                 "audio" => Value::obj([("bands", Value::List(vec![])), ("peaks", Value::List(vec![])), ("level", 0.0.into()), ("bass", 0.0.into()), ("active", false.into())]),
                 "gallery" => Value::obj([("count", 0.into()), ("index", (-1).into()), ("current", Value::Nil), ("items", Value::List(vec![])), ("folder", "".into()), ("folder_name", "".into()), ("truncated", false.into()), ("error", "".into())]),
                 "agents" => Value::obj([("items", Value::List(vec![])), ("count", 0.into()), ("working", 0.into()), ("provider", "claude".into()), ("note", "".into())]),
+                "calendar" => crate::data::calendar_value(&crate::data::Tm { year: 2021, month: 2, day: 1, dow: 1, hour: 9, minute: 0, second: 0, ms: 0 }, 0, &["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(String::from)),
                 _ => return None,
             })
         };
@@ -209,6 +211,8 @@ mod tests {
             ("photo_frame", &[("show_name", true.into()), ("card", true.into())]),
             ("gif_player", &[("folder", "C:\\Gifs".into())]),
             ("agent_status", &[("provider", "all".into())]),
+            ("calendar", &[]),
+            ("calendar", &[("week_numbers", false.into()), ("other_days", false.into())]),
         ];
         for (id, set) in variants {
             let Some(Ok(w)) = r.get(id) else { panic!("{id} is not built in") };

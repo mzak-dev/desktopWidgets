@@ -132,7 +132,7 @@ font-mono = "Cascadia Mono"
 
 ## Glyph set
 
-`font-glyph` names the icon font. Each `glyph-*` token is one character, usually written as a `\uXXXX` escape. Define all 41:
+`font-glyph` names the icon font. Each `glyph-*` token is one character, usually written as a `\uXXXX` escape. Define all 42:
 
 ```toml
 name = "My Glyphs"
@@ -179,6 +179,7 @@ glyph-previous = ""
 glyph-next = ""
 glyph-chevron-left = ""
 glyph-grid = ""
+glyph-calendar = ""
 ```
 
 ## Icon pack
