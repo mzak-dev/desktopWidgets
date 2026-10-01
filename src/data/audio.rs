@@ -1,6 +1,6 @@
 //! What the speakers play (WASAPI loopback), for visualizers: frequency `bands` with their
-//! `peaks`, `level`, `bass`, the waveform as an oscilloscope draws it (`wave`, -1..1) and
-//! `active`. Built in because WebAssembly cannot reach WASAPI (ADR-0009).
+//! `peaks`, `level`, `bass`, the waveform as an oscilloscope draws it (`wave`, -1..1), the
+//! last second or so of bands for a waterfall (`history`, oldest first) and `active`. Built in because WebAssembly cannot reach WASAPI (ADR-0009).
 //!
 //! Capture runs only while a widget reads `audio`, and stops a few seconds after the last
 //! one does. A widget waiting through silence still counts: it sleeps (no cadence) and the
@@ -28,6 +28,9 @@ pub const WAVE_POINTS: usize = 192;
 const WAVE_HALF_LIFE: f32 = 1.5;
 /// The most the waveform is magnified, so hiss stays a flat line.
 const WAVE_MAX_ZOOM: f32 = 20.0;
+/// Rows of `history`, one every `HISTORY_ROW` seconds.
+pub const HISTORY_ROWS: usize = 24;
+const HISTORY_ROW: f32 = 0.06;
 /// How often a sounding visualizer redraws.
 pub const FRAME_MS: u32 = 33;
 /// Sound this recent makes the source `active`.
@@ -159,12 +162,16 @@ pub struct Look {
     pub wave: Vec<f32>,
     /// The loudest of the waveform lately, which its scale follows.
     wave_peak: f32,
+    /// Past bands, oldest first, always `HISTORY_ROWS` of them.
+    pub history: VecDeque<Vec<f32>>,
+    /// Seconds since the newest row.
+    since_row: f32,
     at: Option<Instant>,
 }
 
 impl Look {
     fn new() -> Look {
-        Look { bands: vec![], peaks: vec![], level: 0.0, bass: 0.0, wave: vec![], wave_peak: 0.0, at: None }
+        Look { bands: vec![], peaks: vec![], level: 0.0, bass: 0.0, wave: vec![], wave_peak: 0.0, history: VecDeque::new(), since_row: 0.0, at: None }
     }
 
     /// Moves toward `target` (heights, level, bass) as time has passed; returns the seconds.
@@ -184,6 +191,19 @@ impl Look {
         }
         self.level = ease(self.level, level);
         self.bass = ease(self.bass, bass);
+        // full of silence from the start, and again when the number of bands changes, so a
+        // waterfall never changes its spacing
+        if self.history.front().is_none_or(|r| r.len() != self.bands.len()) {
+            self.history = std::iter::repeat_n(vec![0.0; self.bands.len()], HISTORY_ROWS).collect();
+            self.since_row = 0.0;
+        }
+        // by the clock, not per frame: frames come faster while the widget is busy
+        self.since_row += dt;
+        if self.since_row >= HISTORY_ROW {
+            self.since_row = (self.since_row - HISTORY_ROW).min(HISTORY_ROW);
+            self.history.pop_front();
+            self.history.push_back(self.bands.clone());
+        }
         dt
     }
 
@@ -199,12 +219,12 @@ impl Look {
 
     /// Everything has fallen to rest: nothing moves until sound comes back.
     pub fn settled(&self) -> bool {
-        self.bands.iter().chain(&self.peaks).chain([&self.level, &self.bass]).all(|v| *v < 0.005) && self.wave.iter().all(|v| v.abs() < 0.005)
+        self.bands.iter().chain(&self.peaks).chain([&self.level, &self.bass]).chain(self.history.iter().flatten()).all(|v| *v < 0.005) && self.wave.iter().all(|v| v.abs() < 0.005)
     }
 
     fn value(&self, active: bool) -> Value {
         let list = |v: &[f32]| Value::List(v.iter().map(|x| Value::Num(*x as f64)).collect());
-        Value::obj([("bands", list(&self.bands)), ("peaks", list(&self.peaks)), ("level", Value::Num(self.level as f64)), ("bass", Value::Num(self.bass as f64)), ("wave", list(&self.wave)), ("active", Value::Bool(active))])
+        Value::obj([("bands", list(&self.bands)), ("peaks", list(&self.peaks)), ("level", Value::Num(self.level as f64)), ("bass", Value::Num(self.bass as f64)), ("wave", list(&self.wave)), ("history", Value::List(self.history.iter().map(|r| list(r)).collect())), ("active", Value::Bool(active))])
     }
 }
 
@@ -510,6 +530,33 @@ mod tests {
             l.step(&[0.0], 0.0, 0.0, t0 + f * i, &s);
         }
         assert!(l.settled(), "at rest after the sound stops: {:?}", l.bands);
+    }
+
+    #[test]
+    fn a_row_of_history_every_60_ms_until_the_last_loud_one_has_gone() {
+        let s = params(&[("bands", 2.0), ("attack", 1.0), ("release", 1.0), ("peak_fall", 20.0)]);
+        let t0 = Instant::now();
+        let ms = |m: u64| t0 + Duration::from_millis(m);
+        let mut l = Look::new();
+        l.step(&[1.0, 0.2], 1.0, 0.0, t0, &s);
+        assert_eq!(l.history.len(), HISTORY_ROWS, "full from the start");
+        assert!(l.history.iter().all(|r| r == &[0.0, 0.0]), "of silence");
+        for i in 1..=6 {
+            l.step(&[1.0, 0.2], 1.0, 0.0, ms(20 * i), &s);
+        }
+        assert_eq!(l.history.back(), Some(&vec![1.0, 0.2]), "the newest row last");
+        assert_eq!((l.history.len(), l.history.iter().filter(|r| r[0] == 1.0).count()), (HISTORY_ROWS, 2), "a row every 60 ms in 153 ms of frames");
+        for i in 7..=12 {
+            l.step(&[0.0, 0.0], 0.0, 0.0, ms(20 * i), &s);
+        }
+        assert!(l.bands.iter().chain(&l.peaks).all(|v| *v == 0.0), "the bands are at rest: {:?} {:?}", l.bands, l.peaks);
+        assert!(!l.settled(), "but loud rows still recede");
+        for i in 13..=120 {
+            l.step(&[0.0, 0.0], 0.0, 0.0, ms(20 * i), &s);
+        }
+        assert!(l.settled(), "until they have gone");
+        l.step(&[0.5; 3], 0.0, 0.0, ms(2420), &s);
+        assert!(l.history.len() == HISTORY_ROWS && l.history.iter().all(|r| r == &[0.0; 3]), "more bands start it again");
     }
 
     #[test]
