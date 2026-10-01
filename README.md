@@ -15,7 +15,7 @@ Move and resize them in real time, restyle everything, and pay nothing while the
 [![DirectX 12](https://img.shields.io/badge/DirectX_12-DirectComposition-107C10?style=for-the-badge&logo=xbox&logoColor=white)](docs/adr/0001-dx12-dcomp-presentation.md)
 
 ![Status](https://img.shields.io/badge/status-alpha-F5A623?style=flat-square)
-![Tests](https://img.shields.io/badge/unit_tests-305_passing-2EA44F?style=flat-square)
+![Tests](https://img.shields.io/badge/unit_tests-307_passing-2EA44F?style=flat-square)
 ![Idle](https://img.shields.io/badge/idle_CPU-0%25-2EA44F?style=flat-square)
 ![Layout](https://img.shields.io/badge/layout-taffy_flexbox-8A63D2?style=flat-square)
 ![Text](https://img.shields.io/badge/text-glyphon-3B82F6?style=flat-square)
@@ -134,12 +134,12 @@ Your arrangement is saved to `workspace.json`. Unplug a monitor and its widgets 
 | 📋 **Icon List** | App shortcuts that scroll when they overflow. **Narrow**: icons only. **Wide**: a grid of tiles. | shortcuts, mirror a folder, icon size, labels |
 | 📁 **Icon Folder** | A tile with a preview (2×2, or 3×3 when large) that **expands in place** into an icon grid, growing away from the screen edge. | shortcuts, mirror a folder, columns, icon size |
 | 🗄️ **Drawer** | A collapsible drawer of app shortcuts with its own folder. **Narrow**: icons only. | title, icon size |
-| 🎵 **Media Controller** | What any app plays through the Windows media controls: cover art that crossfades between tracks, a bar you drag to seek, play / previous / next. **Low**: one row. **Tall**: the cover on top. | source app, progress, cover, card |
-| 🎚️ **Audio Visualizer** | A live spectrum of what the speakers play, with falling peak markers. Dims while nothing plays. | bars, mirrored, line, area or level meter; bands, frequency range, gain, motion, colours |
-| 🖼️ **Photo Frame** | One photo at a time from a folder, crossfading to the next every few seconds to an hour, in order or shuffled. Click for the next one. | folder (or drop one), interval, shuffle, fit, file name, card |
-| 🗂️ **Photo Gallery** | A scrolling grid of a folder's photos that opens one with previous / next and a filmstrip. Follows the folder as files come and go. | folder (or drop a photo from it), thumbnail size, order, names |
-| 🎞️ **GIF Player** | Plays an animated GIF, WebP or APNG, from one file or a strip of a folder's animations. Click to pause. | file or folder (or drop either), fit, card |
-| 🤖 **Agent Status** | Live Claude Code, Copilot CLI and Antigravity CLI sessions: which work, which just finished, where. **Low**: one line. | tool or all of them, folders, colours |
+| 🎵 **Media Controller** | What any app plays through the Windows media controls. **Small**: the cover, the title and play. **Medium**: a bar you drag to seek and the controls. **Large**: the album, time left and where it plays. **Low**: one row. | source app, progress, cover, card |
+| 🎚️ **Audio Visualizer** | A live spectrum of what the speakers play, with falling peak markers. **Small**: only the bars. **Medium**: the frequency range under them. **Large**: a header with the level and bass. Dims while nothing plays. | bars, mirrored, line, area or level meter; bands, frequency range, gain, motion, colours |
+| 🖼️ **Photo Frame** | One photo at a time from a folder, crossfading to the next every few seconds to an hour, in order or shuffled. Just the photo, edge to edge; **large**, a caption with its name, date and place in the folder. Click for the next one. | folder (or drop one), interval, shuffle, fit, card |
+| 🗂️ **Photo Gallery** | A grid of a folder's photos that fills its width. **Medium**: the folder's name and count on top. **Large**: names under the photos, and an open photo gets a filmstrip and its date and size. | folder (or drop a photo from it), thumbnail size, order, names |
+| 🎞️ **GIF Player** | Plays an animated GIF, WebP or APNG. **Small**: only the animation. **Large**: its name, its place in the folder and a strip to choose from. Click to pause. | file or folder (or drop either), fit, card |
+| 🤖 **Agent Status** | Claude Code, Copilot CLI and Antigravity CLI sessions. **Small**: one big number, how many work. **Medium**: each session and what it is doing. **Large**: where each runs and which just finished. **Low**: one line. | tool or all of them, folders, colours |
 
 <br>
 
@@ -233,7 +233,7 @@ justify = "center"
 | Image | `src` (PNG, JPEG, WebP, GIF, BMP; `./` is next to the widget file, or a full path like `{item.target}`) `tint` `fit` (`contain` · `cover`) `feather` (fade the edge over that many px, inside `radius`; a large `radius` on a square image is a circle) `max` (`max = 256`: a small copy, made off the UI thread and kept in `.cache/thumbs`; use it for photo grids) `anim` (`false` stops a GIF, WebP or APNG) `frame` (show one frame) `fade` (`fade = 400`: when `src` changes, the new picture crossfades in over the old one for that many ms; the old one stays until the new one has loaded) |
 | Behaviour | `on_click` (`launch <path>` · `toggle <state>` · `set <state> <value>`, where numbers and `true`/`false` keep their type and `'quotes'` keep text) `on_drop` (a dropped file's path follows the action; `on_drop = "param folder"` saves it as the widget's `folder` setting) `on_slide` (a bar to drag across: while dragging, `state.slide` is 0-1 and `state.sliding` is true; letting go runs the action with the fraction after it, `media.seek 0.42`; empty turns it off, `on_slide = "{media.can_seek ? 'media.seek' : ''}"`) · `param <name> <value>` in `on_click` saves a setting too `hover` `transition` `enter` `scroll` `scroll_x` (sideways; the wheel over it writes `state.scroll_x`, Shift+wheel too) `when` |
 
-**Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `graphs`, `gpus` (one per adapter: `label` `value` `history`), `gpu_count`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `media.*` (what any app plays through the system media controls: `title` `artist` `album` `source` `playing` `can_seek` `art` `position` `duration` `progress` `clock` `length` `active`; `on_click = "media.play_pause"`, `media.next`, `media.prev`, and `media.seek <0-1>` from an `on_slide` bar) · `audio.*` (what the speakers play, for visualizers: `bands` `peaks` `level` `bass` `active`, shaped by the widget's `bands` `fmin` `fmax` `gain` `attack` `release` `peak_fall` params) · `gallery.*` (the pictures in the widget's `folder`: `items` (`name` `path` `ext` `size` `modified_ms`) `count` `error` `truncated`, and the slide a frame shows, `index` and `current`, which move on every `interval` seconds and with `gallery.next` / `gallery.prev`; `on_drop = "gallery.drop"` makes a dropped folder, or a dropped photo's folder, the widget's) · `agents.*` (Claude Code, Copilot CLI and Antigravity CLI sessions for the widget's `provider`: `items` (`name` `cwd` `tool` `label` `working` `done` `age`) `count` `working`) · `param.*` · `state.*` · `self.w` / `self.h`.
+**Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `graphs`, `gpus` (one per adapter: `label` `value` `history`), `gpu_count`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `media.*` (what any app plays through the system media controls: `title` `artist` `album` `source` `playing` `can_seek` `art` `position` `duration` `progress` `clock` `length` `active`; `on_click = "media.play_pause"`, `media.next`, `media.prev`, and `media.seek <0-1>` from an `on_slide` bar) · `audio.*` (what the speakers play, for visualizers: `bands` `peaks` `level` `bass` `active`, shaped by the widget's `bands` `fmin` `fmax` `gain` `attack` `release` `peak_fall` params) · `gallery.*` (the pictures in the widget's `folder`: `items` (`name` `path` `ext` `size` `modified_ms` `date`) `count` `folder_name` `error` `truncated`, and the slide a frame shows, `index` and `current`, which move on every `interval` seconds and with `gallery.next` / `gallery.prev`; `on_drop = "gallery.drop"` makes a dropped folder, or a dropped photo's folder, the widget's) · `agents.*` (Claude Code, Copilot CLI and Antigravity CLI sessions for the widget's `provider`: `items` (`name` `cwd` `tool` `label` `working` `done` `age`) `count` `working`) · `param.*` · `state.*` · `self.w` / `self.h`.
 
 **Size tiers** are plain `when` conditions on `self.w` and `self.h`: show more when there is room. The engine animates the change.
 
@@ -343,7 +343,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 
 **✅ Verified**
 
-- 305 unit tests (`cargo test --lib`)
+- 307 unit tests (`cargo test --lib`)
 - All four widgets and the settings window rendered offscreen
 - A 35-check scripted run of the live app, on the **software** renderer: drag, live resize, undo, saving, folder expand and z-raise, hot reload with error cards, the settings commands, and Show Desktop detection and response (against a stand-in host window)
 
@@ -368,7 +368,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 ## 🛠️ Development
 
 ```powershell
-cargo test --lib                     # 305 unit tests, pure logic, no GPU
+cargo test --lib                     # 307 unit tests, pure logic, no GPU
 cargo run --release -- --selftest --gpu software --data $env:TEMP\wf-test
 ```
 
