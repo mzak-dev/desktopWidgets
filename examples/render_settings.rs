@@ -84,6 +84,18 @@ fn main() {
     let names = sources.names();
     let mut fresh = ws.clone();
     fresh.onboarded = false;
+    // the Workspaces page: one tied to a desktop and the dock's monitors, one to a desktop alone
+    let desktops = [
+        wayfinder::platform::vdesk::Desktop { id: "{0B6E3A2C-1F4D-4E0A-9C1B-2D3E4F5A6B7C}".into(), name: "Desktop 1".into() },
+        wayfinder::platform::vdesk::Desktop { id: "{7C1D2E3F-4A5B-4C6D-8E9F-0A1B2C3D4E5F}".into(), name: "Games".into() },
+    ];
+    let dock = vec![MonitorRef { name: "\\\\.\\DISPLAY2".into(), width: 2560, height: 1440 }, mon.clone()];
+    let mut spaces = ws.clone();
+    let work = spaces.add_workspace("Work", true);
+    spaces.rules_mut(&work).unwrap().monitors = dock.clone();
+    spaces.rules_mut(&work).unwrap().desktops = vec![desktops[0].id.clone()];
+    let games = spaces.add_workspace("Games", false);
+    spaces.rules_mut(&games).unwrap().desktops = vec![desktops[1].id.clone()];
 
     let states: Vec<(&str, Vec<&str>, (f32, f32))> = vec![
         ("setup_1", vec![], (1180.0, 780.0)),
@@ -102,11 +114,13 @@ fn main() {
         ("general", vec!["nav:general"], (1180.0, 780.0)),
         ("plugins", vec!["nav:plugins"], (1180.0, 780.0)),
         ("log", vec!["nav:log"], (1180.0, 780.0)),
+        ("workspaces", vec!["nav:workspaces"], (1180.0, 780.0)),
     ];
     for (name, acts, size) in states {
-        let ws = if name.starts_with("setup") { &fresh } else { &ws };
+        let ws = if name.starts_with("setup") { &fresh } else if name == "workspaces" { &spaces } else { &ws };
+        let (desks, desk, setup): (&[wayfinder::platform::vdesk::Desktop], Option<&str>, &[MonitorRef]) = if name == "workspaces" { (&desktops, Some(desktops[1].id.as_str()), &dock) } else { (&[], None, &[]) };
         let theme = ws.global_theme(&lib);
-        let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources, desktops: &[], desktop: None, setup: &[] };
+        let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources, desktops: desks, desktop: desk, setup };
         let mut ui = UiState::default();
         for a in acts {
             let _ = ui.act(a, &ctx, None);
