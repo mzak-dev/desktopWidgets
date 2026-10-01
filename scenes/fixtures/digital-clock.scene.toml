@@ -1,0 +1,13 @@
+format = 1
+name = "Digital clock, 24 hour"
+
+[widget]
+id = "digital_clock"
+params = { hour24 = true }
+
+[env]
+now = "2026-03-08T15:42:10"
+
+[expect]
+text = ["15:42", "Sunday"]
+no_text = ["undefined", "NaN"]

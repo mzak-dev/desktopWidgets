@@ -25,6 +25,7 @@ pub mod net;
 pub mod platform;
 pub mod plugins;
 pub mod render;
+pub mod scene;
 pub mod settings;
 pub mod shortcut;
 pub mod suggest;

@@ -413,6 +413,19 @@ A render is **hermetic by default**: a fixed date and time (Thursday 2026-01-15 
 > [!NOTE]
 > This changes what `--render-widget` did before. It no longer reads your installed plugins, your own widgets or the real `--data` folder: add `--installed` (with `--data <dir>` for a folder other than the default) to look a widget up by id among them, as before. It no longer uses today's date and your machine's readings, media, sound and icons: `--time` now sets the time of day on the pinned date, and `--real` brings the machine back. Plugin code gets no network unless you ask (`--env fetch=real`, or canned answers with `--env fetch.responses=[...]`). `--palette`, `--scale` and `--transparent` are the pins of the same names, and the theme's `anim-speed` now applies to a render as it does on the desktop. A render that reads the machine or installed content says so on its last line and in the `.env.json`.
 
+`--content-root <plugin folder>` loads a plugin folder where it stands, its widgets and its code, without installing it; the folder is hashed into the record and the run stays hermetic. Pass the widget's id (`wayfinder --render-widget sunset --content-root D:\dev\sunset --png out.png`).
+
+**Scenes** name a widget and the world it is shown in, and `wayfinder scene dump` describes the settled frame as text, with no GPU: one line per element with its rectangle, colours, text, the font the shaper used, hit actions and clips, then the hit regions, the draw counts and the layout flags. A scene is a `*.scene.toml` file under a `scenes/` folder (`format = 1`, a `[widget]` table, optional `[look]`, `[env]` with the same keys as `--env`, `[expect]` and `[sweep]`: `sizes = "tiers"` makes one scene per Tier, `"grid:4x4"`, `"max"` or a list of sizes the other fits):
+
+```powershell
+wayfinder scene list [set|glob] [--sets]                     # ids, from ./scenes or --root
+wayfinder scene dump fixtures/clock --view full               # outline (default, 200 lines) | full | texts | hits | flags
+wayfinder scene dump fixtures/monitor-tiers* --find CPU --format json
+wayfinder scene dump --widget clock --under clock-1/0 --depth 2   # one widget, one subtree
+```
+
+Each run writes `<scenes folder>\.look\summary.txt`, `last.json` and, per scene, `<id>.dump.txt` and `<id>.env.json`, so the result survives a lost console. Exit codes: 0 clean, 1 findings (an error card, a failed `[expect]`, a code source that never answered), 2 bad arguments or scene file (an unknown key suggests the nearest), 3 the output could not be written. The scene file, the dump and these commands are tooling (`format = 1`), not a frozen interface. Text is measured with the machine's fonts, so a dump is exact on the same machine and font set; its header carries a hash of the font set to say which.
+
 > [!WARNING]
 > `examples/phase0_spike.rs` is kept only as the record of the early measurements. **Do not run it**: it stress-tests multi-window swapchains and, together with the bug fixed in ADR-006, crashed an AMD driver during development.
 

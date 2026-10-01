@@ -1,0 +1,8 @@
+format = 1
+name = "Clock, default size"
+
+[widget]
+id = "clock"
+
+[expect]
+no_text = ["undefined", "NaN"]

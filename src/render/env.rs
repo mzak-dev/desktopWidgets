@@ -35,7 +35,8 @@ pub struct Facts<'a> {
     pub installed: bool,
     pub roots: &'a [ContentRoot],
     pub faces: &'a [String],
-    pub adapter: &'a AdapterReport,
+    /// The adapter that drew it; `None` for a run that drew nothing (a scene dump).
+    pub adapter: Option<&'a AdapterReport>,
     /// Every data path the widget reads.
     pub deps: &'a BTreeSet<String>,
     pub code_sources: &'a [String],
@@ -72,8 +73,8 @@ pub fn leaks(f: &Facts) -> Vec<String> {
     if f.installed {
         out.push("installed widgets and plugins were read".into());
     }
-    if !f.adapter.software {
-        out.push(format!("drawn on a hardware adapter ({})", f.adapter.name));
+    if let Some(a) = f.adapter.filter(|a| !a.software) {
+        out.push(format!("drawn on a hardware adapter ({})", a.name));
     }
     if f.deps.iter().any(|d| d.split('.').next() == Some("shortcuts")) {
         out.push("the shortcuts source reads the machine's folders".into());
@@ -99,10 +100,21 @@ fn lock_versions() -> (BTreeMap<String, String>, String) {
     (found, fnv([LOCK.as_bytes()]))
 }
 
-/// "10.0.26200.6584" from `ver`, or "unknown".
+/// "10.0.26200.6584" from `ver`, or "unknown". Starting `cmd` can fail while many processes
+/// start at once, so it is tried a few times; a console window is never shown.
 fn windows_build() -> String {
-    let out = std::process::Command::new("cmd").args(["/c", "ver"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-    out.split_once("Version ").and_then(|(_, r)| r.split_once(']')).map_or_else(|| "unknown".into(), |(v, _)| v.trim().to_string())
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    for attempt in 0..4 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let out = std::process::Command::new("cmd").args(["/c", "ver"]).creation_flags(CREATE_NO_WINDOW).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+        if let Some(v) = out.split_once("Version ").and_then(|(_, r)| r.split_once(']')) {
+            return v.0.trim().to_string();
+        }
+    }
+    "unknown".into()
 }
 
 /// A hash of the files that make a content folder: their names, sizes and (up to 8 MB each)
@@ -148,7 +160,7 @@ pub fn files_under(dir: &Path) -> Vec<PathBuf> {
 pub fn sidecar(f: &Facts) -> Value {
     let because = leaks(f);
     let (versions, lock) = lock_versions();
-    let a = f.adapter;
+    let adapter = f.adapter.map(|a| json!({ "name": a.name, "driver": a.driver, "driver_info": a.driver_info, "backend": a.backend, "device_type": a.device_type, "vendor": a.vendor, "device": a.device, "software": a.software }));
     json!({
         "format": 1,
         "hermetic": because.is_empty(),
@@ -164,7 +176,7 @@ pub fn sidecar(f: &Facts) -> Value {
         "code_sources": f.code_sources,
         "settle_rounds": f.rounds,
         "fonts": { "mode": "system", "faces": f.faces.len(), "hash": fnv(f.faces) },
-        "adapter": { "name": a.name, "driver": a.driver, "driver_info": a.driver_info, "backend": a.backend, "device_type": a.device_type, "vendor": a.vendor, "device": a.device, "software": a.software },
+        "adapter": adapter,
         "windows": windows_build(),
         "engine": { "wayfinder": env!("CARGO_PKG_VERSION"), "cargo_lock": lock, "crates": versions },
     })
@@ -179,7 +191,7 @@ mod tests {
     }
 
     fn facts<'a>(pins: &'a Pins, real: &'a BTreeSet<Seam>, adapter: &'a AdapterReport, deps: &'a BTreeSet<String>) -> Facts<'a> {
-        Facts { widget: "clock", size: (10, 10), pins, real, installed: false, roots: &[], faces: &[], adapter, deps, code_sources: &[], rounds: 1 }
+        Facts { widget: "clock", size: (10, 10), pins, real, installed: false, roots: &[], faces: &[], adapter: Some(adapter), deps, code_sources: &[], rounds: 1 }
     }
 
     #[test]
@@ -212,6 +224,9 @@ mod tests {
         let mut f = facts(&pins, &none, &soft, &deps);
         f.faces = &faces;
         let j = sidecar(&f);
+        let mut drawn_nothing = facts(&pins, &none, &soft, &deps);
+        drawn_nothing.adapter = None;
+        assert!(leaks(&drawn_nothing).is_empty() && sidecar(&drawn_nothing)["adapter"].is_null(), "a dump names no adapter and is still hermetic");
         assert_eq!((j["hermetic"].as_bool(), j["pins"]["now"].as_str(), j["pins"]["sys.cpu"].as_u64(), j["adapter"]["software"].as_bool()), (Some(true), Some("2026-01-15T10:10:30"), Some(37), Some(true)));
         assert_eq!((j["fonts"]["faces"].as_u64(), j["engine"]["crates"]["wgpu"].is_string(), j["engine"]["crates"]["cosmic-text"].is_string()), (Some(1), true, true));
         assert_eq!(sidecar(&f)["fonts"], j["fonts"], "the same fonts hash the same");

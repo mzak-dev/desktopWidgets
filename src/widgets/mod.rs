@@ -81,6 +81,8 @@ pub struct Prepared {
     pub error: Option<String>,
     /// A new image size became known: the queued uploads are in `Services.images`.
     pub images_changed: bool,
+    /// Where the Modules went (Widgets with Modules only).
+    pub arrangement: Option<format::Arrangement>,
 }
 
 pub struct Services<'a> {
@@ -108,6 +110,11 @@ pub struct View<'a> {
 /// frame here. Sources are read at `v.now` (the caller's clock, real in the app, virtual in a
 /// headless render) and animations run at the theme's `anim-speed`.
 pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
+    prepare_with(def, v, sv, false)
+}
+
+/// `prepare`, recording a `Placed` per node in `frame.nodes` when `trace` is on (the scene dump).
+pub fn prepare_with(def: &Def, v: &View, sv: &mut Services, trace: bool) -> Prepared {
     sv.anim.duration_factor = crate::anim::duration_factor(&v.theme.str("anim-speed"));
     let card_size = v.card.card_size(v.window_size);
     let params = match def {
@@ -151,16 +158,16 @@ pub fn prepare(def: &Def, v: &View, sv: &mut Services) -> Prepared {
             }
         }
     }
-    let (root, deps, warnings, expand, error) = match result.expect("at least one build ran") {
+    let (root, deps, warnings, expand, error, arrangement) = match result.expect("at least one build ran") {
         Ok(b) => {
             let root = v.card.window_node(&v.cfg.id, v.window_size, b.root);
-            (root, b.deps, b.warnings, b.expand.map(|e| v.card.expand_in_window_units(e)), None)
+            (root, b.deps, b.warnings, b.expand.map(|e| v.card.expand_in_window_units(e)), None, b.arrangement)
         }
-        Err(e) => (format::error_card(&e, v.window_size, v.theme), BTreeSet::new(), vec![], None, Some(e)),
+        Err(e) => (format::error_card(&e, v.window_size, v.theme), BTreeSet::new(), vec![], None, Some(e), None),
     };
-    let mut env = Env { text: sv.text, anim: sv.anim, hover: v.hover, now: v.now, scale: v.scale, trace: false };
+    let mut env = Env { text: sv.text, anim: sv.anim, hover: v.hover, now: v.now, scale: v.scale, trace };
     let frame = ui::layout(&root, v.window_size, &mut env);
-    Prepared { frame, deps, warnings, expand, error, images_changed }
+    Prepared { frame, deps, warnings, expand, error, images_changed, arrangement }
 }
 
 #[cfg(test)]

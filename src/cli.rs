@@ -4,9 +4,10 @@
 //!   wayfinder --render-widget <id | file.toml> --png <out.png> [--size WxH] [--param k=v]...
 //!             [--state k=v]... [--palette name] [--scale 1.25] [--time HH:MM] [--now ISO]
 //!             [--env key=value]... [--real seams] [--installed] [--transparent] [--wait secs]
-//!             [--data dir] [--gpu software|high|low]
+//!             [--data dir] [--content-root plugin-folder] [--gpu software|high|low]
 //!   wayfinder plugin pack <folder> [out.wfplugin]
 //!   wayfinder plugin check <file.wfplugin | folder>
+//!   wayfinder scene list | dump ...   (see `scene`)
 //!
 //! Exit codes: 0 fine, 1 the widget or plugin has problems, 2 bad arguments.
 //!
@@ -19,37 +20,35 @@ use std::path::{Path, PathBuf};
 use crate::gfx::Power;
 use crate::plugins;
 pub use crate::render::Request as Render;
+use crate::scene::{self, pair};
 #[cfg(test)]
 use crate::ambient::Pins;
 
 pub const USAGE: &str = "usage:
   wayfinder --render-widget <id | file.toml> --png <out.png> [--size WxH] [--param k=v]... [--state k=v]...
             [--palette name] [--scale 1.25] [--time HH:MM] [--now ISO] [--env key=value]... [--real seams]
-            [--installed] [--transparent] [--wait secs] [--data dir] [--gpu software|low|high]
+            [--installed] [--transparent] [--wait secs] [--data dir] [--content-root plugin-folder]
+            [--gpu software|low|high]
   wayfinder plugin pack <folder> [out.wfplugin]
-  wayfinder plugin check <file.wfplugin | folder>";
+  wayfinder plugin check <file.wfplugin | folder>
+  wayfinder scene list | dump ...           (`wayfinder scene` alone prints the scene usage)";
 
 #[derive(Debug, PartialEq)]
 pub enum Command {
     Render(Render),
     Pack { dir: PathBuf, out: Option<PathBuf> },
     Check(PathBuf),
+    Scene(scene::Invocation),
+    SceneUsage(String),
     Usage(String),
-}
-
-/// `v` as JSON when it is (numbers, booleans, lists), else as text.
-fn loose(v: &str) -> serde_json::Value {
-    serde_json::from_str(v).unwrap_or_else(|_| serde_json::Value::String(v.to_string()))
-}
-
-fn pair(s: &str, what: &str) -> Result<(String, serde_json::Value), String> {
-    let (k, v) = s.split_once('=').ok_or_else(|| format!("{what} `{s}`: write it as name=value"))?;
-    Ok((k.trim().to_string(), loose(v)))
 }
 
 /// The command in `args` (without the program name), or None to run the app.
 pub fn command(args: &[String]) -> Option<Command> {
     let usage = |e: String| Command::Usage(e);
+    if args.first().map(String::as_str) == Some("scene") {
+        return Some(scene::parse(&args[1..]).map_or_else(Command::SceneUsage, Command::Scene));
+    }
     if args.first().map(String::as_str) == Some("plugin") {
         return Some(match (args.get(1).map(String::as_str), args.get(2)) {
             (Some("pack"), Some(dir)) => Command::Pack { dir: dir.into(), out: args.get(3).map(PathBuf::from) },
@@ -92,6 +91,7 @@ pub fn command(args: &[String]) -> Option<Command> {
                 "--transparent" => r.pins.transparent = true,
                 "--wait" => r.wait = val()?.parse().map_err(|_| "--wait is seconds")?,
                 "--data" => r.data = Some(val()?.into()),
+                "--content-root" => r.plugin = Some(val()?.into()),
                 "--gpu" => {
                     let v = val()?;
                     Power::parse(&v).map_err(|e| format!("--gpu: {e}"))?;
@@ -119,6 +119,11 @@ pub fn run(cmd: Command) -> i32 {
     match cmd {
         Command::Usage(e) => {
             eprintln!("wayfinder: {e}\n{USAGE}");
+            2
+        }
+        Command::Scene(inv) => scene::run(inv),
+        Command::SceneUsage(e) => {
+            eprintln!("wayfinder: {e}\n{}", scene::USAGE);
             2
         }
         Command::Pack { dir, out } => {
@@ -235,6 +240,13 @@ mod tests {
     }
 
     #[test]
+    fn a_plugin_folder_is_a_content_root_not_an_install() {
+        let Some(Command::Render(r)) = command(&args(&["--render-widget", "sunset", "--png", "o.png", "--content-root", "D:/dev/sunset"])) else { panic!() };
+        assert_eq!((r.plugin, r.installed), (Some(PathBuf::from("D:/dev/sunset")), false));
+        assert!(matches!(command(&args(&["--render-widget", "sunset", "--png", "o.png", "--content-root"])), Some(Command::Usage(_))));
+    }
+
+    #[test]
     fn an_unknown_gpu_mode_is_a_usage_error_that_lists_the_valid_ones() {
         let render = |extra: &[&str]| command(&args(&[&["--render-widget", "clock", "--png", "o.png"][..], extra].concat()));
         for ok in ["software", "low", "high"] {
@@ -257,7 +269,7 @@ mod tests {
     fn render_options_parse() {
         let Some(Command::Render(r)) = command(&args(&["--render-widget", "clock", "--png", "o.png", "--size", "300x200", "--param", "title=Quick launch", "--param", "smooth=true", "--state", "selected=2", "--time", "15:42", "--transparent"])) else { panic!() };
         assert_eq!((r.widget.as_str(), r.png, r.size, r.time, r.pins.transparent), ("clock", PathBuf::from("o.png"), Some((300.0, 200.0)), Some((15, 42)), true));
-        assert_eq!((r.installed, r.data, r.gpu.as_str(), r.wait), (false, None, "software", 5.0));
+        assert_eq!((r.installed, r.data, r.gpu.as_str(), r.wait, r.plugin), (false, None, "software", 5.0, None));
         assert_eq!(r.params, [("title".to_string(), serde_json::json!("Quick launch")), ("smooth".to_string(), serde_json::json!(true))]);
         assert_eq!(r.state, [("selected".to_string(), serde_json::json!(2))]);
         assert_eq!(r.pins, Pins { transparent: true, ..Pins::default() }, "without --env the environment is the default");

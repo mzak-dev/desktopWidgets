@@ -20,7 +20,7 @@ const LAYERS: &[(&str, u8)] = &[
     ("widgets", 7),
     ("content", 8),
     ("plugins", 9),
-    ("cli", 10), ("render", 10), ("settings", 10),
+    ("cli", 10), ("render", 10), ("scene", 10), ("settings", 10),
     ("app", 11),
 ];
 

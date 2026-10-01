@@ -628,6 +628,15 @@ fn read_manifest(folder: &str, dir: &Path) -> Result<Manifest, String> {
     Ok(m)
 }
 
+/// A Plugin folder read where it stands, without installing it (a scene's `plugin`,
+/// `--content-root`): its id is the manifest's, whatever the folder is called.
+pub fn load_folder(dir: &Path) -> Result<Plugin, String> {
+    let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let text = std::fs::read_to_string(dir.join(MANIFEST)).map_err(|_| format!("{}: no {MANIFEST} (a plugin folder holds one)", dir.display()))?;
+    let m = Manifest::parse(&text).map_err(|e| format!("{}: {MANIFEST}: {e}", dir.display()))?;
+    Ok(Plugin { id: m.id.clone(), contents: content::scan(&dir), dir, manifest: Ok(m) })
+}
+
 /// The content roots of the Plugins that load: a valid manifest and not switched off.
 pub fn roots(list: &[Plugin], disabled: &BTreeSet<String>) -> Vec<Root> {
     list.iter().filter(|p| p.manifest.is_ok() && !disabled.contains(&p.id)).map(|p| Root::plugin(&p.id, &p.dir)).collect()
@@ -1449,6 +1458,21 @@ mod tests {
         assert!(data.join("plugins/sunset/widgets/old.toml").is_file());
         assert_eq!(store.list()[0].manifest.as_ref().unwrap().version, "1.2.0");
         std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_plugin_folder_is_read_where_it_stands_under_the_id_of_its_manifest() {
+        let dir = tmp("folder").join("whatever");
+        put(&dir, "plugin.toml", OK);
+        put(&dir, "widgets/weather.toml", "[root]\ntype = 'box'");
+        let p = load_folder(&dir).unwrap();
+        assert_eq!((p.id.as_str(), p.manifest.as_ref().map(|m| m.version.as_str()).ok()), ("sunset", Some("1.2.0")));
+        assert!(p.dir.is_absolute() && p.contents.widgets == ["weather"], "{:?}", p.contents);
+        assert_eq!(roots(&[p], &BTreeSet::new()).len(), 1, "it loads like an installed one");
+        put(&dir, "plugin.toml", "id = 'x'");
+        assert!(load_folder(&dir).unwrap_err().contains("missing `name`"));
+        assert!(load_folder(&dir.join("nope")).unwrap_err().contains("no plugin.toml"));
+        std::fs::remove_dir_all(dir.parent().unwrap()).ok();
     }
 
     #[test]

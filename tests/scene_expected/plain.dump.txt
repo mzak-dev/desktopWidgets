@@ -1,0 +1,17 @@
+wayfinder-dump 1
+scene fixtures/plain   target widget plain   card 180x100   window 220x140   scale 1.25   at 3000ms
+env hermetic pins=fba8f0 now=2026-01-15T10:10:30 zone=UTC locale=en-US anim=theme palette=Midnight fonts=system:*
+note fonts=system: text metrics are this machine's; a dump is exact on the same machine and font set only
+plain-1~ box 0,0 220x140
+  plain-1 box 20,20 180x100 fill=#203040 border=1:#ffffff2e radius=12
+    0 box 30,30 40x80 fill=#ffaa33 radius=6 hover=fill:#ffaa33 hit act="toggle picked"
+    1 box 78,30 112x80
+      0 box 78,30 112x14 fill=#ffffff30 radius=4
+      1 shape:ticks 78,30 112x80 count=12 major_every=3 len=4 major_len=8 width=1 major_width=2 color=#f2f5ff99 major_color=#f2f5ff inset=8
+--- content
+content 220x140   scrolls: none
+--- hits
+plain-1/0  [30,30,40x80]  clip none  act="toggle picked"
+--- draw
+layer0 shapes=15 images=0 texts=0   layer1 shapes=0 images=0 texts=0
+--- flags (0)
