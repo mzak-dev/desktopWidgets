@@ -216,7 +216,8 @@ impl DataSource for Gallery {
     }
 
     fn cadence(&self, field: &str, cx: &SourceCx) -> Option<Cadence> {
-        match field {
+        // a frame binds `gallery.current.path`: the field is `current.path`
+        match field.split('.').next().unwrap_or("") {
             "" | "index" | "current" => slide_cadence(interval(cx)),
             _ => None,
         }
@@ -368,6 +369,7 @@ mod tests {
         assert!(g.act("prev", "", &cx) && g.act("prev", "", &cx));
         assert_eq!(read(&g, &c, tm(10, 1, 0)).get("current").and_then(|p| p.get("name")).map(|n| n.to_string()), Some(now));
         assert_eq!((g.cadence("current", &cx), g.cadence("items", &cx)), (Some(Cadence::Minute), None), "the list itself waits for the watcher");
+        assert_eq!((g.cadence("current.path", &cx), g.cadence("items.0", &cx)), (Some(Cadence::Minute), None), "a field of the slide ticks like the slide");
         g.retain(&BTreeSet::new());
         assert!(g.offsets.lock().unwrap().is_empty(), "a removed widget's steps go");
         std::fs::remove_dir_all(&d).ok();

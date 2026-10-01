@@ -133,6 +133,35 @@ mod tests {
     }
 
     #[test]
+    fn a_photo_frame_wakes_for_its_next_slide_and_a_gallery_does_not() {
+        let dir = std::env::temp_dir().join(format!("wf-frame-wake-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for n in ["a.jpg", "b.jpg"] {
+            std::fs::write(dir.join(n), b"x").unwrap();
+        }
+        let r = Registry::load(Path::new("no-such-dir"));
+        let theme = Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[]);
+        let sources = crate::data::DataSources::builtin();
+        let wake = |id: &str| {
+            let Some(Ok(w)) = r.get(id) else { panic!("{id}") };
+            let mut cfg = crate::workspace::InstanceCfg { id: format!("{id}-1"), widget: id.into(), ..Default::default() };
+            cfg.params.insert("folder".into(), serde_json::Value::String(dir.to_string_lossy().into_owned()));
+            let params = w.meta().effective_params(&cfg.params_map());
+            let cx = crate::data::SourceCx { cfg: &cfg, params: &params, tm: crate::data::Tm { year: 2026, month: 10, day: 1, dow: 4, hour: 9, minute: 0, second: 30, ms: 0 }, icon_pack: "Default" };
+            let read = |n: &str| sources.value(n, &cx);
+            let st = BTreeMap::new();
+            let inp = Inputs { params: &params, state: &st, card_size: w.meta().default_card_size, key_prefix: "t", read_source: &read, arrange: None };
+            let b = w.build(&inp, &theme, &|_| None).unwrap();
+            (b.deps.clone(), sources.next_wake(&b.deps, &cx))
+        };
+        let (deps, next) = wake("photo_frame");
+        assert!(deps.contains("gallery.current.path"), "{deps:?}");
+        assert_eq!(next, Some(std::time::Duration::from_millis(30_002)), "every 5 minutes by default: woken at the next minute to look");
+        assert_eq!(wake("photo_gallery").1, None, "a gallery waits for its folder to change");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn media_photo_and_agent_widgets_build_at_every_size_full_or_empty() {
         let r = Registry::load(Path::new("no-such-dir"));
         let theme = Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[]);
