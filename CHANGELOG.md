@@ -1,6 +1,35 @@
 # Changelog
 
 All notable changes to Wayfinder are documented here.
+## v0.6.0 - 2026-10-01
+
+
+### Bug Fixes
+
+- **data:** Wake a photo frame for its next slide
+
+### Documentation
+
+- Describe the media, photo and agent widgets
+- Update the test count
+- Describe the widgets' size families
+
+### Features
+
+- **theme:** Add media and navigation glyphs
+- **data:** Add a native gallery source
+- **data:** Add a native agents source
+- **theme:** Add neon noir, paper and sunset palettes
+- **widgets:** Add media, photo and agent widgets
+- **data:** Give gallery photos a date and folder name
+
+### Performance
+
+- **data:** Date gallery photos once per listing
+
+### Style
+
+- **widgets:** Restyle media, photo and agent widgets
 ## v0.5.0 - 2026-09-26
 
 
