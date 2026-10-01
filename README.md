@@ -15,7 +15,7 @@ Move and resize them in real time, restyle everything, and pay nothing while the
 [![DirectX 12](https://img.shields.io/badge/DirectX_12-DirectComposition-107C10?style=for-the-badge&logo=xbox&logoColor=white)](docs/adr/0001-dx12-dcomp-presentation.md)
 
 ![Status](https://img.shields.io/badge/status-alpha-F5A623?style=flat-square)
-![Tests](https://img.shields.io/badge/unit_tests-317_passing-2EA44F?style=flat-square)
+![Tests](https://img.shields.io/badge/unit_tests-323_passing-2EA44F?style=flat-square)
 ![Idle](https://img.shields.io/badge/idle_CPU-0%25-2EA44F?style=flat-square)
 ![Layout](https://img.shields.io/badge/layout-taffy_flexbox-8A63D2?style=flat-square)
 ![Text](https://img.shields.io/badge/text-glyphon-3B82F6?style=flat-square)
@@ -138,6 +138,7 @@ The most specific match wins, a Workspace with no ties only comes up when you pi
 | Widget | What it does | Notable options |
 |---|---|---|
 | 🕰️ **Analog Clock** | Round face with tick marks and hands. **Wide**, it lists other cities beside the face; **tall or large**, it shows them as chips under it. | second hand on/off, **smooth** second hand, tick marks, cities |
+| 📅 **Calendar** | Today and its month, with weeks that start on your Windows region's first day. **Small**: the weekday and a big date. **Medium**: the month beside it. **Large**: day names and ISO week numbers. **Low**: one line. | week numbers, the months around, today's colour |
 | 🔢 **Digital Clock** | Large time with the date beneath, in your Windows language. **Tall**, it adds other cities' times. | 24 h / 12 h, seconds, date, cities |
 | 📊 **System Monitor** | CPU, memory, drives and battery. **Small**: bars. **Medium**: ring gauges that shrink to fit. **Large**: every drive, memory commit and a minute of CPU, memory and download graphs. | which gauges, graphs, colours, warn level |
 | 📋 **Icon List** | App shortcuts that scroll when they overflow. **Narrow**: icons only. **Wide**: a grid of tiles. | shortcuts, mirror a folder, icon size, labels |
@@ -242,7 +243,7 @@ justify = "center"
 | Image | `src` (PNG, JPEG, WebP, GIF, BMP; `./` is next to the widget file, or a full path like `{item.target}`) `tint` `fit` (`contain` · `cover`) `feather` (fade the edge over that many px, inside `radius`; a large `radius` on a square image is a circle) `max` (`max = 256`: a small copy, made off the UI thread and kept in `.cache/thumbs`; use it for photo grids) `anim` (`false` stops a GIF, WebP or APNG) `frame` (show one frame) `fade` (`fade = 400`: when `src` changes, the new picture crossfades in over the old one for that many ms; the old one stays until the new one has loaded) |
 | Behaviour | `on_click` (`launch <path>` · `toggle <state>` · `set <state> <value>`, where numbers and `true`/`false` keep their type and `'quotes'` keep text) `on_drop` (a dropped file's path follows the action; `on_drop = "param folder"` saves it as the widget's `folder` setting) `on_slide` (a bar to drag across: while dragging, `state.slide` is 0-1 and `state.sliding` is true; letting go runs the action with the fraction after it, `media.seek 0.42`; empty turns it off, `on_slide = "{media.can_seek ? 'media.seek' : ''}"`) · `param <name> <value>` in `on_click` saves a setting too `hover` `transition` `enter` `scroll` `scroll_x` (sideways; the wheel over it writes `state.scroll_x`, Shift+wheel too) `when` |
 
-**Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `graphs`, `gpus` (one per adapter: `label` `value` `history`), `gpu_count`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `media.*` (what any app plays through the system media controls: `title` `artist` `album` `source` `playing` `can_seek` `art` `position` `duration` `progress` `clock` `length` `active`; `on_click = "media.play_pause"`, `media.next`, `media.prev`, and `media.seek <0-1>` from an `on_slide` bar) · `audio.*` (what the speakers play, for visualizers: `bands` `peaks` `level` `bass` `active`, shaped by the widget's `bands` `fmin` `fmax` `gain` `attack` `release` `peak_fall` params) · `gallery.*` (the pictures in the widget's `folder`: `items` (`name` `path` `ext` `size` `modified_ms` `date`) `count` `folder_name` `error` `truncated`, and the slide a frame shows, `index` and `current`, which move on every `interval` seconds and with `gallery.next` / `gallery.prev`; `on_drop = "gallery.drop"` makes a dropped folder, or a dropped photo's folder, the widget's) · `agents.*` (Claude Code, Copilot CLI and Antigravity CLI sessions for the widget's `provider`: `items` (`name` `cwd` `tool` `label` `working` `done` `age`) `count` `working`) · `param.*` · `state.*` · `self.w` / `self.h`.
+**Data you can bind to:** `clock.*` (hour, minute, second, date, angles for hands, and `clock.zones` for a `cities` param) · `sys.*` (gauges, `gauges_all`, `graphs`, `gpus` (one per adapter: `label` `value` `history`), `gpu_count`, `cpu_history`, `ram_history`, `net_history`, `net_down`, `net_up`, uptime) · `shortcuts.items` · `media.*` (what any app plays through the system media controls: `title` `artist` `album` `source` `playing` `can_seek` `art` `position` `duration` `progress` `clock` `length` `active`; `on_click = "media.play_pause"`, `media.next`, `media.prev`, and `media.seek <0-1>` from an `on_slide` bar) · `audio.*` (what the speakers play, for visualizers: `bands` `peaks` `level` `bass` `active`, shaped by the widget's `bands` `fmin` `fmax` `gain` `attack` `release` `peak_fall` params) · `gallery.*` (the pictures in the widget's `folder`: `items` (`name` `path` `ext` `size` `modified_ms` `date`) `count` `folder_name` `error` `truncated`, and the slide a frame shows, `index` and `current`, which move on every `interval` seconds and with `gallery.next` / `gallery.prev`; `on_drop = "gallery.drop"` makes a dropped folder, or a dropped photo's folder, the widget's) · `calendar.*` (the month around today: `weeks` (`week`, the ISO number, and `days`: `day` `this_month` `today` `weekend`) `day_names` `day_letters` `month_name` `year` `day` `weekday` `week`) · `agents.*` (Claude Code, Copilot CLI and Antigravity CLI sessions for the widget's `provider`: `items` (`name` `cwd` `tool` `label` `working` `done` `age`) `count` `working`) · `param.*` · `state.*` · `self.w` / `self.h`.
 
 **Size tiers** are plain `when` conditions on `self.w` and `self.h`: show more when there is room. The engine animates the change.
 
@@ -313,7 +314,7 @@ The settings window is built from the same element tree in Rust, so widgets and 
 | `sdk/` | the `wayfinder-plugin` crate for writing plugin code, and a weather example |
 | `src/format.rs` `expr.rs` | TOML widget format and the total expression language |
 | `src/elements/` | one file per element kind: its attributes, build and drawing |
-| `src/data/` | one file per Data Source (`clock`, `sys`, `shortcuts`, `media`, `audio`, `gallery`, `agents`) and how often it changes |
+| `src/data/` | one file per Data Source (`clock`, `calendar`, `sys`, `shortcuts`, `media`, `audio`, `gallery`, `agents`) and how often it changes |
 | `src/card.rs` | the card inside each window: shadow gutter, blur, outlines |
 | `src/ui.rs` `text.rs` `anim.rs` | element tree, taffy layout, text shaping (glyphon), declarative transitions |
 | `src/gfx.rs` `draw.rs` `shader.wgsl` | wgpu renderer, SDF shapes, premultiplied alpha |
@@ -353,7 +354,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 
 **✅ Verified**
 
-- 317 unit tests (`cargo test --lib`)
+- 323 unit tests (`cargo test --lib`)
 - All four widgets and the settings window rendered offscreen
 - A 35-check scripted run of the live app, on the **software** renderer: drag, live resize, undo, saving, folder expand and z-raise, hot reload with error cards, the settings commands, and Show Desktop detection and response (against a stand-in host window)
 
@@ -378,7 +379,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 ## 🛠️ Development
 
 ```powershell
-cargo test --lib                     # 317 unit tests, pure logic, no GPU
+cargo test --lib                     # 323 unit tests, pure logic, no GPU
 cargo run --release -- --selftest --gpu software --data $env:TEMP\wf-test
 ```
 
