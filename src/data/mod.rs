@@ -3,6 +3,7 @@
 
 mod agents;
 mod audio;
+mod calendar;
 mod clock;
 mod gallery;
 pub(crate) mod media;
@@ -20,6 +21,7 @@ use crate::workspace::InstanceCfg;
 
 pub use agents::Agents;
 pub use audio::Audio;
+pub use calendar::{Calendar, calendar_value};
 pub use clock::{Clock, Tm, clock_value, now_local};
 pub use gallery::Gallery;
 pub use media::Media;
@@ -175,7 +177,7 @@ impl DataSources {
     /// The built-in sources, caching under `<data>/.cache` (a dot-folder never reloads content).
     pub fn builtin_in(data: &Path) -> Self {
         let cache = data.join(".cache");
-        Self::new(vec![Box::new(Clock), Box::new(Sys::default()), Box::new(Shortcuts::default()), Box::new(Media::new(cache.join("media"))), Box::new(Audio::default()), Box::new(Gallery::default()), Box::new(Agents::default())])
+        Self::new(vec![Box::new(Clock), Box::new(Sys::default()), Box::new(Shortcuts::default()), Box::new(Media::new(cache.join("media"))), Box::new(Audio::default()), Box::new(Gallery::default()), Box::new(Agents::default()), Box::new(Calendar)])
     }
 
     pub fn new(list: Vec<Box<dyn DataSource>>) -> Self {

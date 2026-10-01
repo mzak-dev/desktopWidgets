@@ -4187,7 +4187,7 @@ mod tests {
         assert!(cards(&ui).is_empty(), "a selected widget's panel, not the gallery");
         ui.act("gallery:open", &c, None);
         assert_eq!(cards(&ui).len(), w.reg.ids().len());
-        assert_eq!(&cards(&ui)[..2], ["clock", "digital_clock"], "Time comes first");
+        assert_eq!(&cards(&ui)[..3], ["clock", "calendar", "digital_clock"], "Time comes first, by name");
         ui.act("cat:Launchers", &c, None);
         assert_eq!(cards(&ui), ["drawer", "icon_folder", "icon_list"]);
         ui.act("cat:", &c, None);

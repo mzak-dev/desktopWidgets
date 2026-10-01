@@ -1,0 +1,227 @@
+needs = ["calendar"]
+name = "Calendar"
+description = "Today and the month around it. Small, the weekday and a big date; wider, the month beside it; large, the whole month with day names and week numbers. Weeks start on the day your Windows region starts them."
+category = "Time"
+icon = "calendar"
+size = [340, 160]
+min_size = [150, 56]
+max_size = [720, 640]
+
+[params.week_numbers]
+type = "bool"
+default = true
+label = "Week numbers"
+help = "ISO 8601 week numbers, on a large calendar."
+
+[params.other_days]
+type = "bool"
+default = true
+label = "Days of the months around"
+help = "Shown faint in the first and last week."
+
+[params.today_color]
+type = "color"
+default = "$accent"
+label = "Today"
+
+# Sizes, as on macOS, with the same breakpoints as the media, photo and agent widgets:
+#   row     under 100 high                  one line: the weekday, the date and the week
+#   small   under 260 wide and high         the weekday, a big date, the month
+#   medium  260+ wide, under 260 high       the date beside the month's grid
+#   large   260+ high                       the month with day names, and week numbers
+[root]
+direction = "{self.h >= 100 && self.w >= 260 && self.h < 260 ? 'row' : 'column'}"
+fill = ["$surface", "$surface-2"]
+radius = "$radius-lg"
+border = 1
+shadow = { blur = 14, dy = 5 }
+padding = "{self.h < 100 ? 10 : 16}"
+gap = "{self.h >= 260 ? 10 : 16}"
+clip = true
+
+  # ================= row: one line =================
+  [[root.children]]
+  when = "{self.h < 100}"
+  grow = 1
+  direction = "row"
+  align = "center"
+  gap = 10
+    [[root.children.children]]
+    width = "{self.h - 20}"
+    height = "{self.h - 20}"
+    shrink = 0
+    radius = "$radius-sm"
+    fill = "$face"
+    direction = "column"
+    align = "center"
+    justify = "center"
+      [[root.children.children.children]]
+      type = "text"
+      text = "{calendar.day}"
+      font = "$font-display"
+      size = "{min(22, (self.h - 20) * 0.55)}"
+      weight = 600
+      color = "{param.today_color}"
+    [[root.children.children]]
+    grow = 1
+    min_width = 0
+    direction = "column"
+    gap = 1
+      [[root.children.children.children]]
+      type = "text"
+      text = "{calendar.weekday}"
+      size = 13
+      weight = 600
+      color = "$text"
+      [[root.children.children.children]]
+      type = "text"
+      text = "{calendar.month_name}{self.w >= 200 ? ' ' : ''}{self.w >= 200 ? calendar.year : ''}"
+      size = 11
+      color = "$text-dim"
+    [[root.children.children]]
+    when = "{self.w >= 260}"
+    type = "text"
+    text = "Week {calendar.week}"
+    size = 11
+    color = "$text-dim"
+
+  # ================= small and medium: the date =================
+  [[root.children]]
+  when = "{self.h >= 100 && self.h < 260}"
+  width = "{self.w >= 260 ? min(132, self.w * 0.34) : 'auto'}"
+  grow = "{self.w >= 260 ? 0 : 1}"
+  shrink = 0
+  direction = "column"
+  justify = "{self.w >= 260 ? 'center' : 'between'}"
+  gap = 2
+    [[root.children.children]]
+    type = "text"
+    text = "{upper(calendar.weekday)}"
+    size = 11
+    weight = 700
+    color = "{param.today_color}"
+    [[root.children.children]]
+    type = "text"
+    text = "{calendar.day}"
+    font = "$font-display"
+    size = "{self.w >= 260 ? min(54, (self.h - 32) * 0.46) : min(64, (self.h - 32) * 0.5)}"
+    weight = 600
+    color = "$text"
+    [[root.children.children]]
+    direction = "column"
+    gap = 1
+      [[root.children.children.children]]
+      type = "text"
+      text = "{calendar.month_name}{self.w < 260 ? ' ' : ''}{self.w < 260 ? calendar.year : ''}"
+      size = 13
+      weight = 500
+      color = "$text"
+      [[root.children.children.children]]
+      when = "{self.h >= 150}"
+      type = "text"
+      text = "Week {calendar.week}"
+      size = 11
+      color = "$text-dim"
+
+  # ================= large: the month's name and the week =================
+  [[root.children]]
+  when = "{self.h >= 260}"
+  direction = "row"
+  align = "end"
+  justify = "between"
+    [[root.children.children]]
+    direction = "column"
+    gap = 1
+      [[root.children.children.children]]
+      type = "text"
+      text = "{upper(calendar.weekday)}"
+      size = 11
+      weight = 700
+      color = "{param.today_color}"
+      [[root.children.children.children]]
+      type = "text"
+      text = "{calendar.month_name} {calendar.year}"
+      size = "{self.w < 260 ? 14 : 18}"
+      weight = 600
+      color = "$text"
+    [[root.children.children]]
+    when = "{self.w >= 220}"
+    type = "text"
+    text = "Week {calendar.week}"
+    size = 11
+    color = "$text-dim"
+
+  # ================= medium and large: the month =================
+  [[root.children]]
+  when = "{self.h >= 100 && (self.w >= 260 || self.h >= 260)}"
+  grow = 1
+  min_width = 0
+  min_height = 0
+  direction = "column"
+  gap = "{self.h >= 260 ? 4 : 1}"
+    # the days' names, in the week's order
+    [[root.children.children]]
+    direction = "row"
+    align = "center"
+      [[root.children.children.children]]
+      when = "{self.h >= 260 && self.w >= 260 && param.week_numbers}"
+      width = 26
+      shrink = 0
+      [[root.children.children.children]]
+      type = "repeat"
+      for = "{self.h >= 260 && self.w >= 330 ? calendar.day_names : calendar.day_letters}"
+      as = "n"
+        [[root.children.children.children.children]]
+        type = "text"
+        grow = 1
+        basis = 0
+        text = "{n}"
+        text_align = "center"
+        size = "{self.h >= 260 ? 11 : 10}"
+        weight = 600
+        color = "$text-dim"
+    # a row a week
+    [[root.children.children]]
+    type = "repeat"
+    for = "{calendar.weeks}"
+    as = "wk"
+      [[root.children.children.children]]
+      grow = 1
+      basis = 0
+      min_height = 0
+      direction = "row"
+      align = "center"
+        [[root.children.children.children.children]]
+        when = "{self.h >= 260 && self.w >= 260 && param.week_numbers}"
+        width = 26
+        shrink = 0
+        type = "text"
+        text = "{wk.week}"
+        size = 10
+        color = "$text-dim"
+        [[root.children.children.children.children]]
+        type = "repeat"
+        for = "{wk.days}"
+        as = "c"
+          [[root.children.children.children.children.children]]
+          grow = 1
+          basis = 0
+          direction = "column"
+          align = "center"
+          justify = "center"
+            [[root.children.children.children.children.children.children]]
+            width = "{self.h >= 260 ? min(28, floor((self.w - 32 - (self.w >= 260 && param.week_numbers ? 26 : 0)) / 7) - 2) : 18}"
+            height = "{self.h >= 260 ? min(28, floor((self.w - 32 - (self.w >= 260 && param.week_numbers ? 26 : 0)) / 7) - 2) : 18}"
+            radius = 99
+            direction = "column"
+            align = "center"
+            justify = "center"
+            fill = "{c.today ? param.today_color : '#00000000'}"
+              [[root.children.children.children.children.children.children.children]]
+              when = "{c.this_month || param.other_days}"
+              type = "text"
+              text = "{c.day}"
+              size = "{self.h >= 260 ? min(13, min(28, floor((self.w - 32 - (self.w >= 260 && param.week_numbers ? 26 : 0)) / 7) - 2) * 0.48) : 10}"
+              weight = "{c.today ? 700 : 500}"
+              color = "{c.today ? '$accent-text' : (c.weekend ? '$text-dim' : '$text')}"
+              opacity = "{c.this_month ? 1 : 0.32}"

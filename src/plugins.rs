@@ -77,7 +77,7 @@ impl Code {
 
 const CODE_KEYS: &[&str] = &["module", "source", "net", "fs_read", "fs_read_params", "launch", "initial"];
 /// Data Source names and repeat variables a Code Source must not shadow.
-const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "media", "audio", "gallery", "agents", "param", "state", "self", "item", "index"];
+const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "media", "audio", "gallery", "agents", "calendar", "param", "state", "self", "item", "index"];
 
 fn parse_code(t: &toml::Table) -> Result<Code, String> {
     for k in t.keys() {
