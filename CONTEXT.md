@@ -33,8 +33,20 @@ The visible body of an Instance inside its window. The window adds a transparent
 _Avoid_: frame, body, panel
 
 **Workspace**:
-The saved arrangement of Instances.
-_Avoid_: layout (taffy owns that word), profile
+A named arrangement of Instances in its own look (Theme and Style). Several can be saved; one is on screen at a time. The settings of the whole app (GPU, startup, grid, Plugins) are shared by all of them. In code, `Workspace` is the one on screen plus those settings and the others, saved in `workspace.json`.
+_Avoid_: layout (taffy owns that word), profile, preset, scene
+
+**Workspace rule**:
+What brings a Workspace up by itself: one or more virtual desktops, a monitor setup, or both. The most specific rule that holds wins; without rules a Workspace only comes up when picked (ADR-0011).
+_Avoid_: trigger, binding
+
+**Virtual desktop**:
+One of Windows' desktops (Task View, Win+Ctrl+D), known by the GUID Explorer keeps for it.
+_Avoid_: desktop (alone, it means the wallpaper layer widgets sit on), space
+
+**Monitor setup**:
+The monitors connected at once, by name and size: what a laptop has alone, and docked.
+_Avoid_: display profile
 
 **Theme**:
 A named set of design tokens made of three independently swappable axes: a palette, a font set and a glyph set.
@@ -74,7 +86,7 @@ _Avoid_: theme, glyph set
 The global state in which Instances show handles and can be dragged and resized.
 
 **Data Source**:
-A named producer of values that widget definitions bind to (`clock`, `sys`, `shortcuts`, `media`, `audio`, `gallery`, `agents`). It declares how often each of its fields can change, or says through its Notifier when it changed, which is what lets an idle desktop cost nothing. It may also handle action verbs (`media.play_pause`). Built-ins, Code Sources and native sources an app built on Wayfinder registers (ADR-0009) are all Data Sources.
+A named producer of values that widget definitions bind to (`clock`, `calendar`, `sys`, `shortcuts`, `media`, `audio`, `gallery`, `agents`). It declares how often each of its fields can change, or says through its Notifier when it changed, which is what lets an idle desktop cost nothing. It may also handle action verbs (`media.play_pause`). Built-ins, Code Sources and native sources an app built on Wayfinder registers (ADR-0009) are all Data Sources.
 _Avoid_: measure, plugin
 
 **Z-mode**:
@@ -112,6 +124,7 @@ Everything the engine can show once every content root is read, and which root e
 - A **Widget** may declare **Tiers**, **Slots** and **Modules**; an **Instance** carries one **Arrangement**, edited on a live preview of the Widget in Settings.
 - An **Instance** takes the global **Style** and axes unless it overrides them; its own values win.
 - An **Instance** has exactly one **Z-mode** and is anchored to one monitor; if that monitor is absent it is **Parked**.
+- A **Workspace** holds its own **Instances**, **Theme** and **Style**, and may have a **Workspace rule** naming **Virtual desktops** and a **Monitor setup**; going to such a desktop or connecting such monitors brings it up.
 - A **Plugin** is a **Content root** while it is on, and runs its **Code Source** while it is on. An **Instance** whose Widget only a switched-off Plugin provides is hidden like a Parked one, and shows again when the Plugin is back on.
 
 ## Commit messages

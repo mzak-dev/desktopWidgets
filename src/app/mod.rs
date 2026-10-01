@@ -12,6 +12,7 @@ mod instance;
 mod render;
 mod selftest;
 mod tray;
+mod workspaces;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -21,7 +22,7 @@ use std::time::{Duration, Instant};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
@@ -45,7 +46,8 @@ use crate::icons::IconService;
 use crate::net::Fetch;
 use crate::platform::win32::{self, ZMode};
 use crate::plugins::{self, Plugin, PluginRow, PluginStore};
-use crate::settings::{self, Cmd, Scope, SettingsWin};
+use crate::platform::vdesk;
+use crate::settings::{self, Cmd, Scope, SettingsWin, WsCmd};
 use crate::text::TextEngine;
 use crate::theme::{Library, Theme};
 use crate::ui::{self, Env, Frame};
@@ -75,6 +77,8 @@ pub enum UserEvent {
     SourceNews,
     /// Small copies of pictures (`image` with `max`) are ready to upload.
     ImagesReady,
+    /// The virtual desktops' registry keys changed: a switch, a new desktop, a rename.
+    DesktopsChanged,
 }
 
 /// How to run Wayfinder. `Options::from_args()` reads the command line; an app built on
@@ -214,6 +218,11 @@ pub struct App {
     fetch: Option<Arc<dyn Fetch>>,
     /// Which exe double-clicking a `.wfplugin` runs, for Settings.
     plugin_files: win32::FileOwner,
+    /// The virtual desktop on screen, when Windows says (ADR-0011).
+    desktop: Option<String>,
+    desktops: Vec<vdesk::Desktop>,
+    /// One desktop switch writes several values: look once they have settled.
+    desktop_at: Option<Instant>,
 }
 
 impl App {
@@ -289,6 +298,9 @@ impl App {
             stores: BTreeMap::new(),
             fetch: None,
             plugin_files: win32::FileOwner::Nobody,
+            desktop: None,
+            desktops: Vec::new(),
+            desktop_at: None,
         };
         app.load_content();
         app.rebuild_theme();
@@ -556,6 +568,7 @@ impl App {
         }
         let font_problems = self.text.sync_fonts(&cat.font_files);
         self.families = self.text.family_names();
+        self.lib.set_installed_fonts(&self.families);
         for e in self.lib.errors.clone().into_iter().chain(self.reg.errors()).chain(font_problems) {
             self.log(e);
         }
@@ -764,9 +777,12 @@ impl ApplicationHandler<UserEvent> for App {
         if self.sentinel.is_none() {
             self.log("could not create the z-order sentinel window; Show Desktop handling is off");
         }
+        // the Workspace the desktop and monitors call for, before any window opens
+        self.read_desktops();
+        self.follow_rules(el, " (fits this desktop and these monitors)");
         self.init_tray();
         self.init_hotkey();
-        if self.ws.instances.is_empty() {
+        if self.ws.wants_starter_widgets() {
             let card = self.new_card();
             let mut host = AppHost::new(&self.opts.dir, None);
             self.ws.instances = default_instances(&self.monitors, &self.reg, card, &mut host);
@@ -782,6 +798,10 @@ impl ApplicationHandler<UserEvent> for App {
         let _ = p3;
         win32::watch_shell_events(move || {
             let _ = p1.send_event(UserEvent::ForegroundChanged);
+        });
+        let p4 = self.proxy.clone();
+        vdesk::watch(move || {
+            let _ = p4.send_event(UserEvent::DesktopsChanged);
         });
         if let Some(w) = self.wins.iter().find_map(|w| w.window.clone()) {
             win32::watch_display_changes(&w, move || {
@@ -813,7 +833,21 @@ impl ApplicationHandler<UserEvent> for App {
                 "reload" => self.reload(el),
                 "folder" => self.apply(el, Cmd::OpenFolder),
                 "quit" => el.exit(),
-                _ => {}
+                "wsmanage" => {
+                    self.open_settings(el);
+                    if let Some(s) = &mut self.settings {
+                        s.show_page("workspaces");
+                    }
+                }
+                other => {
+                    let picked = other.strip_prefix("ws:").and_then(|i| i.parse::<usize>().ok()).and_then(|i| self.ws.workspaces.get(i)).map(|w| w.name.clone());
+                    match picked {
+                        Some(name) if name != self.ws.active => self.apply_workspace(el, WsCmd::Switch(name)),
+                        // a click on the ticked one unticks it in the menu: put the tick back
+                        Some(_) => self.refresh_tray(),
+                        None => {}
+                    }
+                }
             },
             UserEvent::Hotkey => self.set_edit(!self.edit),
             UserEvent::TrayClick => self.open_settings(el),
@@ -832,17 +866,19 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::DisplaysChanged => self.display_at = Some(Instant::now() + Duration::from_millis(500)),
             UserEvent::SourceNews => self.take_source_news(),
             UserEvent::ImagesReady => self.images_ready(),
+            UserEvent::DesktopsChanged => self.desktop_at = Some(Instant::now() + Duration::from_millis(150)),
         }
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
         if self.settings.as_ref().is_some_and(|s| s.window.id() == id) {
             let gpu_info = self.gpu.as_ref().map(|g| g.info.clone()).unwrap_or_else(|| "no GPU yet".into());
-            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, .. } = self;
+            let setup: Vec<workspace::MonitorRef> = self.monitor_setup();
+            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, desktops, desktop, .. } = self;
             let off = plugins::hidden_instances(ws, reg, installed);
             let hidden: Vec<(String, settings::Hidden)> = ws.instances.iter().zip(wins.iter()).filter(|(_, w)| w.window.is_none()).map(|(c, _)| (c.id.clone(), off.get(&c.id).map_or(settings::Hidden::Parked, |p| settings::Hidden::PluginOff(p.clone())))).collect();
             let source_names = sources.names();
-            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files, data: sources };
+            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files, data: sources, desktops, desktop: desktop.as_deref(), setup: &setup };
             let s = settings.as_mut().unwrap();
             let cmds = s.event(&ev, &ctx, text);
             if matches!(ev, WindowEvent::RedrawRequested) {
@@ -897,10 +933,22 @@ impl ApplicationHandler<UserEvent> for App {
             self.show_desktop_checks.remove(0);
             self.check_show_desktop();
         }
+        if self.desktop_at.is_some_and(|t| t <= now) {
+            self.desktop_at = None;
+            if self.read_desktops() {
+                let name = self.desktop.as_deref().map(|d| self.desktop_name(d)).unwrap_or_else(|| "one desktop".into());
+                self.follow_rules(el, &format!(" (on {name})"));
+            }
+        }
         if self.display_at.is_some_and(|t| t <= now) {
             self.display_at = None;
+            let before = self.monitor_setup();
             self.monitors = win32::monitors(el);
             self.log(format!("displays changed: {} monitor(s)", self.monitors.len()));
+            // a new scale or monitors waking up leave the same setup: a pick by hand stays
+            if !workspace::same_setup(&before, &self.monitor_setup()) {
+                self.follow_rules(el, " (fits these monitors)");
+            }
             self.sync_windows(el);
             for i in 0..self.wins.len() {
                 if let (Some(p), Some(w)) = (workspace::resolve(&self.ws.instances[i], &self.monitors), self.wins[i].window.clone()) {
@@ -931,7 +979,7 @@ impl ApplicationHandler<UserEvent> for App {
         } else if self.gpu.as_ref().is_some_and(|g| g.is_lost()) {
             self.recover_gpu(el, "device lost callback");
         }
-        let mut wake: Option<Instant> = [self.save_at, self.reload_at, self.show_desktop_checks.first().copied(), self.display_at, self.selftest.as_ref().map(|t| t.at), self.opts.exit_after_secs.map(|t| self.started + Duration::from_secs_f32(t))]
+        let mut wake: Option<Instant> = [self.save_at, self.reload_at, self.show_desktop_checks.first().copied(), self.display_at, self.desktop_at, self.selftest.as_ref().map(|t| t.at), self.opts.exit_after_secs.map(|t| self.started + Duration::from_secs_f32(t))]
             .into_iter()
             .flatten()
             .min();
