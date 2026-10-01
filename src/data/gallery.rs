@@ -33,6 +33,8 @@ pub struct Picture {
     pub ext: String,
     pub size: u64,
     pub modified_ms: i64,
+    /// `modified_ms` as the user writes dates, made once per listing.
+    pub date: String,
 }
 
 /// When a file was changed, as the user writes dates ("3 Mar 2024"), on this PC's clock.
@@ -64,7 +66,7 @@ impl Picture {
     fn to_value(&self) -> Value {
         Value::obj([
             ("name", self.name.as_str().into()),
-            ("date", local_date(self.modified_ms).into()),
+            ("date", self.date.as_str().into()),
             ("path", self.path.as_str().into()),
             ("ext", self.ext.as_str().into()),
             ("size", (self.size as f64).into()),
@@ -114,12 +116,15 @@ pub fn list(folder: &str, how: &str, kinds: &str) -> Listing {
             let m = e.metadata().ok().filter(|m| m.is_file())?;
             let modified_ms = m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as i64);
             let name = file[..file.len() - ext.len() - 1].to_string();
-            Some(Picture { name, path: e.path().to_string_lossy().into_owned(), ext, size: m.len(), modified_ms })
+            Some(Picture { name, path: e.path().to_string_lossy().into_owned(), ext, size: m.len(), modified_ms, date: String::new() })
         })
         .collect();
     sort(&mut items, how);
     let truncated = items.len() > MAX_ITEMS;
     items.truncate(MAX_ITEMS);
+    for p in &mut items {
+        p.date = local_date(p.modified_ms);
+    }
     Listing { items, truncated, error: String::new() }
 }
 
@@ -345,6 +350,7 @@ mod tests {
         assert_eq!(l.items.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["a", "b", "c"]);
         assert_eq!(PathBuf::from(&l.items[0].path), d.join("a.jpg"));
         assert_eq!(l.items[1].ext, "png", "extensions are lower-cased");
+        assert!(!l.items[0].date.is_empty(), "dated once, with the listing");
         assert!(!l.truncated && l.error.is_empty());
         let moving = list(&d.to_string_lossy(), "name", "animated");
         assert_eq!(moving.items.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["b", "c"], "a JPEG never moves");
@@ -361,7 +367,7 @@ mod tests {
 
     #[test]
     fn newest_and_oldest_order_by_time_and_a_missing_folder_says_so() {
-        let mk = |n: &str, t| Picture { name: n.into(), path: n.into(), ext: "png".into(), size: 0, modified_ms: t };
+        let mk = |n: &str, t| Picture { name: n.into(), path: n.into(), ext: "png".into(), size: 0, modified_ms: t, date: String::new() };
         let mut v = vec![mk("a", 5), mk("b", 9), mk("c", 1)];
         sort(&mut v, "newest");
         assert_eq!(v.iter().map(|p| p.name.as_str()).collect::<String>(), "bac");
