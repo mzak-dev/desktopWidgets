@@ -183,7 +183,7 @@ mod tests {
         let full = |name: &str| -> Option<Value> {
             Some(match name {
                 "media" => Value::obj([("active", true.into()), ("title", "Song".into()), ("artist", "Band".into()), ("album", "LP".into()), ("source", "Spotify".into()), ("playing", true.into()), ("can_seek", true.into()), ("art", "file:C:\\cover.png".into()), ("position", 30.0.into()), ("duration", 200.0.into()), ("progress", 0.15.into()), ("clock", "0:30".into()), ("length", "3:20".into())]),
-                "audio" => Value::obj([("bands", list(&[0.2, 1.0, 0.5, 0.0])), ("peaks", list(&[0.4, 1.0, 0.6, 0.1])), ("level", 0.7.into()), ("bass", 0.9.into()), ("active", true.into())]),
+                "audio" => Value::obj([("bands", list(&[0.2, 1.0, 0.5, 0.0])), ("peaks", list(&[0.4, 1.0, 0.6, 0.1])), ("level", 0.7.into()), ("bass", 0.9.into()), ("wave", list(&[0.0, 1.0, -1.0, 0.3])), ("history", Value::List(vec![list(&[0.1, 0.5, 0.2, 0.0]), list(&[0.2, 1.0, 0.5, 0.0])])), ("active", true.into())]),
                 "gallery" => Value::obj([("count", 2.into()), ("index", 1.into()), ("current", pic("b")), ("items", Value::List(vec![pic("a"), pic("b")])), ("folder", "C:\\Photos".into()), ("folder_name", "Photos".into()), ("truncated", true.into()), ("error", "".into())]),
                 "calendar" => crate::data::calendar_value(&crate::data::Tm { year: 2026, month: 8, day: 31, dow: 1, hour: 9, minute: 0, second: 0, ms: 0 }, 6, &["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(String::from)),
                 "agents" => Value::obj([("items", Value::List(vec![Value::obj([("name", "app".into()), ("cwd", "C:\\dev\\app".into()), ("tool", "Claude Code".into()), ("state", "done".into()), ("label", "Done".into()), ("working", false.into()), ("done", true.into()), ("age", "5s".into())])])), ("count", 1.into()), ("working", 0.into()), ("provider", "all".into()), ("note", "".into())]),
@@ -193,7 +193,7 @@ mod tests {
         let empty = |name: &str| -> Option<Value> {
             Some(match name {
                 "media" => Value::obj([("active", false.into()), ("title", "".into()), ("artist", "".into()), ("album", "".into()), ("source", "".into()), ("playing", false.into()), ("can_seek", false.into()), ("art", "".into()), ("position", 0.0.into()), ("duration", 0.0.into()), ("progress", 0.0.into()), ("clock", "".into()), ("length", "".into())]),
-                "audio" => Value::obj([("bands", Value::List(vec![])), ("peaks", Value::List(vec![])), ("level", 0.0.into()), ("bass", 0.0.into()), ("active", false.into())]),
+                "audio" => Value::obj([("bands", Value::List(vec![])), ("peaks", Value::List(vec![])), ("level", 0.0.into()), ("bass", 0.0.into()), ("wave", Value::List(vec![])), ("history", Value::List(vec![])), ("active", false.into())]),
                 "gallery" => Value::obj([("count", 0.into()), ("index", (-1).into()), ("current", Value::Nil), ("items", Value::List(vec![])), ("folder", "".into()), ("folder_name", "".into()), ("truncated", false.into()), ("error", "".into())]),
                 "agents" => Value::obj([("items", Value::List(vec![])), ("count", 0.into()), ("working", 0.into()), ("provider", "claude".into()), ("note", "".into())]),
                 "calendar" => crate::data::calendar_value(&crate::data::Tm { year: 2021, month: 2, day: 1, dow: 1, hour: 9, minute: 0, second: 0, ms: 0 }, 0, &["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(String::from)),
@@ -205,7 +205,11 @@ mod tests {
             ("media_controller", &[("card", false.into()), ("show_art", false.into())]),
             ("audio_visualizer", &[]),
             ("audio_visualizer", &[("mode", "mirror".into())]),
+            ("audio_visualizer", &[("mode", "line".into())]),
             ("audio_visualizer", &[("mode", "area".into())]),
+            ("audio_visualizer", &[("mode", "bars3d".into()), ("depth", 16.into())]),
+            ("audio_visualizer", &[("mode", "scope".into())]),
+            ("audio_visualizer", &[("mode", "waterfall".into()), ("background", false.into())]),
             ("audio_visualizer", &[("mode", "level".into()), ("background", false.into())]),
             ("photo_gallery", &[]),
             ("photo_frame", &[("show_name", true.into()), ("card", true.into())]),
