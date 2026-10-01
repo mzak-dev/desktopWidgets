@@ -77,7 +77,7 @@ impl Code {
 
 const CODE_KEYS: &[&str] = &["module", "source", "net", "fs_read", "fs_read_params", "launch", "initial"];
 /// Data Source names and repeat variables a Code Source must not shadow.
-const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "media", "audio", "param", "state", "self", "item", "index"];
+const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "media", "audio", "gallery", "agents", "param", "state", "self", "item", "index"];
 
 fn parse_code(t: &toml::Table) -> Result<Code, String> {
     for k in t.keys() {
@@ -946,7 +946,7 @@ mod tests {
 
     #[test]
     fn code_may_read_declared_folders_and_picked_ones() {
-        let src = format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'agents'\nfs_read = ['~/.claude', '~\\.copilot']\nfs_read_params = ['folder']");
+        let src = format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'notes'\nfs_read = ['~/.claude', '~\\.copilot']\nfs_read_params = ['folder']");
         let c = Manifest::parse(&src).unwrap().code.remove(0);
         assert_eq!(c.reads(), ["~/.claude", "~/.copilot", "folders you pick for its widgets"]);
         let with = |code: &str| Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'a'\n{code}")).unwrap_err();
@@ -956,10 +956,10 @@ mod tests {
         assert!(with("fs_read = '~/.claude'").contains("list"));
         assert!(with("fs_read_params = ['a b']").contains("param name"));
         let data = tmp("coderead");
-        put(&data, "plugins/agents/plugin.toml", &src.replace("sunset", "agents"));
+        put(&data, "plugins/notes/plugin.toml", &src.replace("sunset", "notes"));
         let list = PluginStore::new(&data).list();
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
-        assert_eq!(rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new())[0].code[0].line(), "Runs code as `agents` · no network · reads ~/.claude, ~/.copilot, folders you pick for its widgets");
+        assert_eq!(rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new())[0].code[0].line(), "Runs code as `notes` · no network · reads ~/.claude, ~/.copilot, folders you pick for its widgets");
         let spec = &code_specs(&list, &BTreeSet::new()).0[0].1;
         assert_eq!((spec.fs_read.len(), spec.fs_read_params.as_slice()), (2, &["folder".to_string()][..]));
         std::fs::remove_dir_all(&data).ok();
@@ -968,14 +968,14 @@ mod tests {
     #[test]
     fn a_widget_needing_a_missing_source_is_a_problem() {
         let data = tmp("needs");
-        put(&data, "plugins/agents/plugin.toml", &OK.replace("sunset", "agents"));
-        put(&data, "plugins/agents/widgets/agents.toml", "name = 'Agents'\nneeds = ['agents', 'clock']\n[root]\ntype = 'box'");
+        put(&data, "plugins/notes/plugin.toml", &OK.replace("sunset", "notes"));
+        put(&data, "plugins/notes/widgets/notes.toml", "name = 'Notes'\nneeds = ['notes', 'clock']\n[root]\ntype = 'box'");
         let list = PluginStore::new(&data).list();
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
         let native = BTreeSet::from(["clock".to_string()]);
         let r = &rows(&list, &BTreeSet::new(), &cat, &native)[0];
-        assert_eq!(r.problems, ["Agents needs the `agents` data source, which is missing. Is the plugin that provides it installed and switched on?"]);
-        code_plugin(&data, "zeta", "agents");
+        assert_eq!(r.problems, ["Notes needs the `notes` data source, which is missing. Is the plugin that provides it installed and switched on?"]);
+        code_plugin(&data, "zeta", "notes");
         let list = PluginStore::new(&data).list();
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
         assert!(rows(&list, &BTreeSet::new(), &cat, &native)[0].problems.is_empty(), "another plugin provides it");
@@ -994,11 +994,11 @@ mod tests {
 
     #[test]
     fn code_may_let_its_widgets_open_more_than_web_links() {
-        let v1 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'agents'\nlaunch = ['vscode', '~/.claude']")).unwrap();
+        let v1 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'notes'\nlaunch = ['vscode', '~/.claude']")).unwrap();
         assert_eq!(v1.code[0].launch.iter().map(|l| l.to_string()).collect::<Vec<_>>(), ["vscode: links", "folders and documents in ~/.claude"]);
         let q = install_question(&v1, &Contents::default(), None);
         assert!(q.contains("Its widgets can open vscode: links, folders and documents in ~/.claude."), "{q}");
-        let v2 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'agents'\nlaunch = ['vscode', '~/.claude', 'slack']")).unwrap();
+        let v2 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'notes'\nlaunch = ['vscode', '~/.claude', 'slack']")).unwrap();
         assert!(install_question(&v2, &Contents::default(), Some(&v1)).contains("New in this version: slack: links."));
         let bad = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'a'\nlaunch = ['ms-msdt']")).unwrap_err();
         assert!(bad.contains("never"), "{bad}");
@@ -1006,9 +1006,9 @@ mod tests {
 
     #[test]
     fn a_plugin_may_carry_several_code_sources() {
-        let two = format!("{OK}\n[[code]]\nmodule = 'a.wasm'\nsource = 'agents'\nfs_read = ['~/.claude']\n[[code]]\nmodule = 'g.wasm'\nsource = 'gallery'\nfs_read_params = ['folder']\nnet = ['api.example.com']");
+        let two = format!("{OK}\n[[code]]\nmodule = 'a.wasm'\nsource = 'notes'\nfs_read = ['~/.claude']\n[[code]]\nmodule = 'g.wasm'\nsource = 'photos'\nfs_read_params = ['folder']\nnet = ['api.example.com']");
         let m = Manifest::parse(&two).unwrap();
-        assert_eq!(m.code.iter().map(|c| c.source.as_str()).collect::<Vec<_>>(), ["agents", "gallery"]);
+        assert_eq!(m.code.iter().map(|c| c.source.as_str()).collect::<Vec<_>>(), ["notes", "photos"]);
         let q = install_question(&m, &Contents::default(), None);
         assert!(q.contains("read files in: ~/.claude, folders you pick for its widgets.") && q.contains("connect to: api.example.com."), "{q}");
         let dup = format!("{OK}\n[[code]]\nmodule = 'a.wasm'\nsource = 'x'\n[[code]]\nmodule = 'b.wasm'\nsource = 'x'");
@@ -1021,7 +1021,7 @@ mod tests {
         assert!(specs.iter().all(|(_, s)| s.plugin == "sunset"), "one plugin, one saved store");
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
         let row = &rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new())[0];
-        assert_eq!(row.code.iter().filter(|c| c.runs).map(|c| c.source.as_str()).collect::<Vec<_>>(), ["agents", "gallery"]);
+        assert_eq!(row.code.iter().filter(|c| c.runs).map(|c| c.source.as_str()).collect::<Vec<_>>(), ["notes", "photos"]);
         assert_eq!((row.code[1].net.as_slice(), row.code[1].reads.as_slice()), (&["api.example.com".to_string()][..], &["folders you pick for its widgets".to_string()][..]));
         std::fs::remove_dir_all(&data).ok();
     }
@@ -1039,6 +1039,8 @@ mod tests {
             ("module = 'w.wasm'\nsource = 'my-weather'", "lower-case"),
             ("module = 'w.wasm'\nsource = 'clock'", "taken"),
             ("module = 'w.wasm'\nsource = 'item'", "taken"),
+            ("module = 'w.wasm'\nsource = 'gallery'", "taken"),
+            ("module = 'w.wasm'\nsource = 'agents'", "taken"),
             ("module = 'w.wasm'\nsource = 'w'\nnet = ['127.0.0.1']", "IP"),
             ("module = 'w.wasm'\nsource = 'w'\nnet = ['*']", "wildcard"),
             ("module = 'w.wasm'\nsource = 'w'\nnet = 'x.com'", "list"),
