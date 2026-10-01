@@ -5,13 +5,16 @@ use crate::format::Attrs;
 use crate::ui::Kind;
 use crate::value::Value;
 
-/// A line through `values`, newest on the right, scaled so `max` touches the top. With
-/// `span` slots across (e.g. a minute of samples) a short history fills in from the right.
-pub const KIND: ElementKind = ElementKind { name: "graph", own_attrs: &["values", "max", "span", "stroke", "color", "area"], fills_parent_when_unsized: false, build };
+/// A line through `values`, newest on the right, scaled so `min` sits on the bottom and `max`
+/// touches the top. With `span` slots across (e.g. a minute of samples) a short history fills
+/// in from the right.
+pub const KIND: ElementKind = ElementKind { name: "graph", own_attrs: &["values", "min", "max", "span", "stroke", "color", "area"], fills_parent_when_unsized: false, build };
 
 #[derive(Clone, Debug)]
 pub struct GraphSpec {
     pub values: Vec<f32>,
+    /// The bottom, 0 unless the values go below it (a waveform from -1 to 1).
+    pub min: f32,
     pub max: f32,
     /// Slots across; at least `values.len()`.
     pub span: usize,
@@ -27,10 +30,12 @@ fn build(a: &mut Attrs) -> Result<Kind, String> {
         _ => vec![],
     };
     let span = (a.num("span")?.unwrap_or(0.0).max(0.0) as usize).max(values.len());
+    let min = a.num("min")?.unwrap_or(0.0);
     Ok(Kind::shape(GraphSpec {
         values,
         span,
-        max: a.num("max")?.unwrap_or(100.0).max(1e-3),
+        min,
+        max: a.num("max")?.unwrap_or(100.0).max(min + 1e-3),
         stroke: a.num("stroke")?.unwrap_or(2.0).max(0.5),
         color: a.color("color")?.unwrap_or(a.theme().color("accent")),
         area: a.color("area")?,
@@ -56,7 +61,8 @@ impl Shape for GraphSpec {
         let step = span_w / (span - 1) as f32;
         // the newest sample sits on the right edge
         let x0 = left + span_w - step * (n - 1) as f32;
-        let y_of = |v: f32| top + span_h * (1.0 - (v / self.max).clamp(0.0, 1.0));
+        let range = (self.max - self.min).max(1e-3);
+        let y_of = |v: f32| top + span_h * (1.0 - ((v - self.min) / range).clamp(0.0, 1.0));
         let point = |i: usize| [x0 + step * i as f32, y_of(self.values[i])];
         let op = cx.inherited_opacity;
         if let Some(area) = self.area {
@@ -110,7 +116,7 @@ mod tests {
 
     #[test]
     fn a_line_segment_per_step_scaled_to_max_and_inside_the_box() {
-        let g = GraphSpec { values: vec![0.0, 50.0, 100.0], max: 100.0, span: 3, stroke: 2.0, color: Color([1.0; 4]), area: None };
+        let g = GraphSpec { values: vec![0.0, 50.0, 100.0], min: 0.0, max: 100.0, span: 3, stroke: 2.0, color: Color([1.0; 4]), area: None };
         let out = emit(&g);
         assert_eq!(out.len(), 2, "one capsule per step");
         assert_eq!((out[0].a, out[1].b), ([1.0, 49.0], [99.0, 1.0]), "0 sits on the bottom, max on the top, inset by the stroke");
@@ -122,5 +128,13 @@ mod tests {
         let young = emit(&GraphSpec { values: vec![10.0, 20.0], span: 60, ..g });
         assert_eq!((young.len(), young[0].b[0]), (1, 99.0), "a short history hugs the right edge");
         assert!((young[0].a[0] - (99.0 - 98.0 / 59.0)).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_signed_wave_centres_on_zero_between_min_and_max() {
+        let g = GraphSpec { values: vec![-1.0, 0.0, 1.0, 3.0], min: -1.0, max: 1.0, span: 4, stroke: 2.0, color: Color([1.0; 4]), area: None };
+        let out = emit(&g);
+        assert_eq!((out[0].a[1], out[0].b[1], out[1].b[1]), (49.0, 25.0, 1.0), "min on the bottom, 0 in the middle, max on the top");
+        assert_eq!(out[2].b[1], 1.0, "beyond max stays inside the box");
     }
 }

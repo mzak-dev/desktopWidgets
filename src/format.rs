@@ -1241,7 +1241,7 @@ mod tests {
             assert!(k.own_attrs.iter().all(|a| !COMMON_ATTRS.contains(a)), "`{}` redeclares a common attribute", k.name);
         }
         let e = WidgetDef::parse("t", "[root]\ntype='nope'").unwrap_err();
-        assert!(e.contains("box, text, image, hand, ticks, arc, graph, repeat, slot"), "{e}");
+        assert!(e.contains("box, text, image, hand, ticks, arc, graph, block, repeat, slot"), "{e}");
         assert!(WidgetDef::parse("t", "[root]\ntype='arc'\nsweep=90\nvalue=50").is_ok());
         let e = WidgetDef::parse("t", "[root]\ntype='arc'\nangle=90").unwrap_err();
         assert!(e.contains("unknown attribute `angle` on `arc`"), "an attribute of another kind is rejected: {e}");
