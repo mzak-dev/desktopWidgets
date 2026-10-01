@@ -77,7 +77,7 @@ impl Code {
 
 const CODE_KEYS: &[&str] = &["module", "source", "net", "fs_read", "fs_read_params", "launch", "initial"];
 /// Data Source names and repeat variables a Code Source must not shadow.
-const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "media", "audio", "gallery", "param", "state", "self", "item", "index"];
+const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "media", "audio", "gallery", "agents", "param", "state", "self", "item", "index"];
 
 fn parse_code(t: &toml::Table) -> Result<Code, String> {
     for k in t.keys() {
@@ -1040,6 +1040,7 @@ mod tests {
             ("module = 'w.wasm'\nsource = 'clock'", "taken"),
             ("module = 'w.wasm'\nsource = 'item'", "taken"),
             ("module = 'w.wasm'\nsource = 'gallery'", "taken"),
+            ("module = 'w.wasm'\nsource = 'agents'", "taken"),
             ("module = 'w.wasm'\nsource = 'w'\nnet = ['127.0.0.1']", "IP"),
             ("module = 'w.wasm'\nsource = 'w'\nnet = ['*']", "wildcard"),
             ("module = 'w.wasm'\nsource = 'w'\nnet = 'x.com'", "list"),
