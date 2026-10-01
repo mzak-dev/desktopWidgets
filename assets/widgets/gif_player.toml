@@ -1,0 +1,148 @@
+needs = ["gallery"]
+name = "GIF Player"
+description = "Plays an animated GIF, WebP or APNG. Pick one file, or pick a folder and choose from its animations in a strip below. Drop a file on the card to play it, or a folder to choose from."
+category = "Photos"
+icon = "play"
+size = [280, 280]
+min_size = [96, 96]
+max_size = [900, 900]
+
+[params.path]
+type = "path"
+default = ""
+label = "Single animation"
+help = "One .gif, animated .webp or animated .png. When set it wins over the folder."
+
+[params.folder]
+type = "folder"
+default = ""
+label = "Animation folder"
+help = "Choose from every image in it with the strip under the player."
+
+[params.kinds]
+type = "enum"
+choices = [{ value = "animated", label = "Animations (GIF, WebP, PNG)" }, { value = "all", label = "Every picture" }]
+default = "animated"
+label = "Folder shows"
+
+[params.fit]
+type = "enum"
+choices = [{ value = "contain", label = "Whole picture" }, { value = "cover", label = "Fill the card" }]
+default = "contain"
+label = "Fit"
+
+[params.strip]
+type = "bool"
+default = true
+label = "Show the folder strip"
+
+[params.playing]
+type = "bool"
+default = true
+label = "Playing"
+
+[params.card]
+type = "bool"
+default = true
+label = "Card background"
+help = "Off leaves just the animation on the desktop."
+
+[params.rounded]
+type = "number"
+default = 14
+min = 0
+max = 60
+step = 1
+label = "Corner radius"
+
+[state]
+paused = false
+pick = ""
+scroll_x = 0
+
+[root]
+direction = "column"
+fill = "{param.card ? '$surface' : '#00000000'}"
+radius = "{param.rounded}"
+border = "{param.card ? 1 : 0}"
+padding = "{param.card ? 8 : 0}"
+gap = 6
+clip = true
+on_drop = "gallery.drop"
+
+  # what is shown: the single file, else the pick from the strip, else the folder's first image
+  [[root.children]]
+  type = "text"
+  when = "{param.path == '' && param.folder == ''}"
+  text = "{self.w < 200 || self.h < 160 ? 'Drop a GIF here' : 'Choose a file or a folder in Settings, or drop an animation here.'}"
+  text_wrap = true
+  text_align = "center"
+  size = "{self.w < 200 || self.h < 160 ? 11 : 13}"
+  color = "$text-dim"
+  padding = "{self.w < 200 || self.h < 160 ? 4 : 12}"
+
+  [[root.children]]
+  type = "text"
+  when = "{param.path == '' && gallery.error != ''}"
+  text = "{gallery.error}"
+  text_wrap = true
+  text_align = "center"
+  size = 13
+  color = "$text-dim"
+  padding = 12
+
+  [[root.children]]
+  type = "text"
+  when = "{param.path == '' && param.folder != '' && gallery.error == '' && gallery.count == 0}"
+  text = "No animations in this folder."
+  text_wrap = true
+  text_align = "center"
+  size = 13
+  color = "$text-dim"
+  padding = 12
+
+  [[root.children]]
+  when = "{param.path != '' || gallery.count > 0}"
+  grow = 1
+  min_height = 0
+  direction = "column"
+  align = "center"
+  justify = "center"
+  on_click = "toggle paused"
+  clip = true
+    [[root.children.children]]
+    type = "image"
+    src = "file:{param.path != '' ? param.path : (state.pick != '' ? state.pick : (gallery.count > 0 ? at(gallery.items, 0).path : ''))}"
+    anim = "{param.playing && !state.paused}"
+    fit = "{param.fit}"
+    width = "100%"
+    height = "100%"
+    radius = "{param.rounded}"
+
+  # the folder's images, scrolling sideways; click one to play it
+  [[root.children]]
+  when = "{param.path == '' && param.folder != '' && param.strip && gallery.count > 1}"
+  height = 56
+  shrink = 0
+  direction = "row"
+  gap = 4
+  scroll_x = "{state.scroll_x}"
+  hit = true
+    [[root.children.children]]
+    type = "repeat"
+    for = "{gallery.items}"
+    as = "g"
+      [[root.children.children.children]]
+      type = "image"
+      src = "file:{g.path}"
+      max = 128
+      anim = false
+      fit = "cover"
+      width = 56
+      height = 56
+      shrink = 0
+      radius = "$radius-sm"
+      opacity = "{(state.pick == g.path || (state.pick == '' && index == 0)) ? 1 : 0.55}"
+      on_click = "set pick {g.path}"
+      hover = { fill = "$surface-hover" }
+      transition = 140

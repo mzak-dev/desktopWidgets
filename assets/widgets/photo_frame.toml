@@ -1,0 +1,168 @@
+needs = ["gallery"]
+name = "Photo Frame"
+description = "One photo at a time from a folder, crossfading to the next every few minutes, in order or shuffled. Click it for the next one, or the arrows that show on hover. Drop a folder, or a photo from it, on it to show that folder."
+category = "Photos"
+icon = "image"
+size = [320, 240]
+min_size = [120, 90]
+max_size = [1400, 1000]
+
+[params.folder]
+type = "folder"
+default = ""
+label = "Photo folder"
+help = "Dropping a folder, or a photo in it, on the frame sets it."
+
+[params.interval]
+type = "enum"
+choices = [{ value = "10", label = "10 seconds" }, { value = "30", label = "30 seconds" }, { value = "60", label = "1 minute" }, { value = "300", label = "5 minutes" }, { value = "900", label = "15 minutes" }, { value = "3600", label = "1 hour" }, { value = "0", label = "Only when clicked" }]
+default = "300"
+label = "Next photo every"
+
+[params.shuffle]
+type = "bool"
+default = true
+label = "Shuffle"
+help = "A new order each time round the folder."
+
+[params.sort]
+type = "enum"
+choices = [{ value = "name", label = "Name" }, { value = "newest", label = "Newest first" }, { value = "oldest", label = "Oldest first" }]
+default = "name"
+label = "Order when not shuffled"
+
+[params.fit]
+type = "enum"
+choices = [{ value = "cover", label = "Fill the frame" }, { value = "contain", label = "Whole photo" }]
+default = "cover"
+label = "Fit"
+
+[params.fade]
+type = "number"
+default = 900
+min = 0
+max = 3000
+step = 100
+label = "Crossfade (ms)"
+
+[params.show_name]
+type = "bool"
+default = false
+label = "Show file name"
+
+[params.card]
+type = "bool"
+default = false
+label = "Card around the photo"
+help = "Off shows just the photo, with rounded corners."
+
+[params.rounded]
+type = "number"
+default = 14
+min = 0
+max = 80
+step = 1
+label = "Corner radius"
+
+[root]
+direction = "column"
+fill = "{param.card ? '$surface' : '#00000000'}"
+radius = "{param.rounded}"
+border = "{param.card ? 1 : 0}"
+shadow = "{param.card ? 14 : 0}"
+padding = "{param.card ? 8 : 0}"
+clip = true
+on_drop = "gallery.drop"
+
+  [[root.children]]
+  type = "text"
+  when = "{gallery.count == 0}"
+  text = "{gallery.error != '' ? gallery.error : (gallery.folder == '' ? (self.w < 220 || self.h < 140 ? 'Drop photos here' : 'Drop a photo folder here, or choose one in Settings.') : 'No photos in this folder.')}"
+  text_wrap = true
+  text_align = "center"
+  size = "{self.w < 220 || self.h < 140 ? 11 : 13}"
+  color = "$text-dim"
+  padding = "{self.w < 220 || self.h < 140 ? 4 : 12}"
+  fill = "$surface"
+  radius = "{param.rounded}"
+  grow = 1
+  justify = "center"
+
+  # the photo: a new one fades in over the last once it has loaded
+  [[root.children]]
+  when = "{gallery.count > 0}"
+  grow = 1
+  min_height = 0
+  radius = "{max(0, param.rounded - (param.card ? 8 : 0))}"
+  clip = true
+  on_click = "gallery.next"
+    [[root.children.children]]
+    type = "image"
+    src = "file:{gallery.current.path}"
+    max = 2048
+    fit = "{param.fit}"
+    fade = "{param.fade}"
+    position = "absolute"
+    left = 0
+    top = 0
+    width = "100%"
+    height = "100%"
+
+    # its name, on a dark band along the bottom
+    [[root.children.children]]
+    when = "{param.show_name}"
+    position = "absolute"
+    left = 0
+    right = 0
+    bottom = 0
+    padding = [16, 12, 8, 12]
+    fill = ["#00000000", "#0000008c"]
+      [[root.children.children.children]]
+      type = "text"
+      text = "{gallery.current.name}"
+      size = 12
+      color = "#ffffffff"
+
+    # previous / next, faint until the pointer is over them
+    [[root.children.children]]
+    when = "{gallery.count > 1 && self.w >= 160}"
+    position = "absolute"
+    left = 6
+    top = "{(self.h - (param.card ? 16 : 0)) / 2 - 16}"
+    width = 32
+    height = 32
+    radius = 99
+    align = "center"
+    justify = "center"
+    fill = "#00000059"
+    opacity = 0
+    hover = { opacity = 1 }
+    transition = 160
+    on_click = "gallery.prev"
+      [[root.children.children.children]]
+      type = "text"
+      text = "$glyph-chevron-left"
+      font = "$font-glyph"
+      size = 14
+      color = "#ffffffff"
+    [[root.children.children]]
+    when = "{gallery.count > 1 && self.w >= 160}"
+    position = "absolute"
+    right = 6
+    top = "{(self.h - (param.card ? 16 : 0)) / 2 - 16}"
+    width = 32
+    height = 32
+    radius = 99
+    align = "center"
+    justify = "center"
+    fill = "#00000059"
+    opacity = 0
+    hover = { opacity = 1 }
+    transition = 160
+    on_click = "gallery.next"
+      [[root.children.children.children]]
+      type = "text"
+      text = "$glyph-chevron-right"
+      font = "$font-glyph"
+      size = 14
+      color = "#ffffffff"

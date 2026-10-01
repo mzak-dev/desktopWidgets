@@ -1,0 +1,184 @@
+needs = ["agents"]
+name = "Agent Status"
+description = "Live sessions of Claude Code, GitHub Copilot CLI and Antigravity CLI, with what each is doing and which just finished. Low, it is a single line: how many work."
+category = "Developer"
+icon = "terminal"
+size = [280, 220]
+min_size = [150, 52]
+max_size = [560, 700]
+
+[params.provider]
+type = "enum"
+choices = [{ value = "claude", label = "Claude Code" }, { value = "copilot", label = "GitHub Copilot CLI" }, { value = "antigravity", label = "Antigravity CLI" }, { value = "all", label = "All of them" }]
+default = "claude"
+label = "Tool"
+
+[params.title]
+type = "string"
+default = ""
+label = "Title"
+help = "Empty uses the tool's name."
+
+[params.show_cwd]
+type = "bool"
+default = true
+label = "Show folder"
+help = "The working directory under each session, when there is room."
+
+[params.working_color]
+type = "color"
+default = "#5fd38d"
+label = "Working colour"
+
+[params.done_color]
+type = "color"
+default = "$accent"
+label = "Just finished colour"
+
+[params.idle_color]
+type = "color"
+default = "$text-dim"
+label = "Idle colour"
+
+[state]
+scroll = 0
+
+# Under 110 px high only the header shows: the name and how many work.
+[root]
+direction = "column"
+justify = "{self.h < 110 ? 'center' : 'start'}"
+fill = ["$surface", "$surface-2"]
+radius = "$radius-lg"
+border = 1
+shadow = { blur = 14, dy = 5 }
+padding = 12
+gap = 8
+clip = true
+
+  # ---- header: name of the tool and how many are busy ----
+  [[root.children]]
+  direction = "row"
+  align = "center"
+  gap = 8
+  padding = [0, 4]
+
+    [[root.children.children]]
+    type = "text"
+    text = "{param.title != '' ? param.title : (param.provider == 'claude' ? 'Claude Code' : (param.provider == 'copilot' ? 'Copilot CLI' : (param.provider == 'all' ? 'Coding agents' : 'Antigravity CLI')))}"
+    size = 13
+    weight = 600
+    color = "$text"
+    grow = 1
+
+    [[root.children.children]]
+    when = "{agents.working > 0}"
+    # [vertical, horizontal]: room at the round ends
+    padding = [4, 10]
+    radius = 99
+    fill = "{param.working_color}"
+    fill_alpha = 0.22
+      [[root.children.children.children]]
+      type = "text"
+      text = "{agents.working} working"
+      size = 11
+      weight = 600
+      color = "{param.working_color}"
+
+    [[root.children.children]]
+    when = "{agents.working == 0 && agents.count > 0}"
+    type = "text"
+    text = "{agents.count} idle"
+    size = 11
+    color = "$text-dim"
+
+    [[root.children.children]]
+    when = "{agents.count == 0 && self.h < 110}"
+    type = "text"
+    text = "none"
+    size = 11
+    color = "$text-dim"
+
+  # ---- the sessions, scrolling when they overflow ----
+  [[root.children]]
+  when = "{self.h >= 110}"
+  grow = 1
+  direction = "column"
+  gap = 2
+  scroll = "{state.scroll}"
+  hit = true
+
+    [[root.children.children]]
+    type = "text"
+    when = "{agents.count == 0}"
+    text = "No live sessions."
+    size = 13
+    color = "$text-dim"
+    padding = 6
+
+    [[root.children.children]]
+    type = "repeat"
+    for = "{agents.items}"
+    as = "a"
+
+      [[root.children.children.children]]
+      direction = "row"
+      align = "center"
+      gap = 10
+      padding = [8, 7]
+      radius = "$radius-sm"
+      hover = { fill = "$surface-hover" }
+      transition = 140
+      enter = { ms = 240, dy = 6, stagger = 22 }
+
+        # status dot
+        [[root.children.children.children.children]]
+        width = 9
+        height = 9
+        shrink = 0
+        radius = 99
+        fill = "{a.working ? param.working_color : (a.done ? param.done_color : param.idle_color)}"
+
+        [[root.children.children.children.children]]
+        direction = "column"
+        grow = 1
+        min_width = 0
+        shrink = 1
+        gap = 1
+          [[root.children.children.children.children.children]]
+          type = "text"
+          text = "{a.name}"
+          size = 13
+          weight = 500
+          color = "$text"
+          # the folder and, when it lists every tool, which one
+          [[root.children.children.children.children.children]]
+          type = "text"
+          when = "{self.w > 200 && ((param.show_cwd && a.cwd != '') || param.provider == 'all')}"
+          text = "{param.provider == 'all' ? a.tool : ''}{param.provider == 'all' && param.show_cwd && a.cwd != '' ? '  ·  ' : ''}{param.show_cwd ? a.cwd : ''}"
+          size = 10
+          color = "$text-dim"
+
+        [[root.children.children.children.children]]
+        direction = "column"
+        align = "end"
+        min_width = 44
+        shrink = 0
+          [[root.children.children.children.children.children]]
+          type = "text"
+          text = "{a.label}"
+          size = 11
+          weight = 600
+          color = "{a.working ? param.working_color : (a.done ? param.done_color : param.idle_color)}"
+          [[root.children.children.children.children.children]]
+          type = "text"
+          text = "{a.age}"
+          size = 10
+          color = "$text-dim"
+
+  [[root.children]]
+  type = "text"
+  when = "{agents.note != '' && self.h >= 110}"
+  text = "{agents.note}"
+  size = 10
+  color = "$text-dim"
+  padding = [4, 0]

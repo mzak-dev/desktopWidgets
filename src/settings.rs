@@ -300,7 +300,7 @@ const CONTROL_W: f32 = 250.0;
 /// Amber, for what works but not as it should; no palette has a token for it.
 const WARN: Color = Color([0.95, 0.77, 0.38, 1.0]);
 /// Where Add a widget lists a category; unknown ones follow in name order.
-const CATEGORIES: [&str; 4] = ["Time", "System", "Media", "Launchers"];
+const CATEGORIES: [&str; 6] = ["Time", "System", "Media", "Photos", "Launchers", "Developer"];
 const SV_N: usize = 14;
 const HUE_N: usize = 28;
 
@@ -3936,7 +3936,7 @@ mod tests {
     fn add_a_widget_shows_each_widget_live_or_its_icon_when_it_cannot_run() {
         let dir = std::env::temp_dir().join(format!("wf-settings-gallery-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("agents.toml"), "name = 'Agents'\nneeds = ['agents']\n[root]\ntype = 'box'").unwrap();
+        std::fs::write(dir.join("notes.toml"), "name = 'Notes'\nneeds = ['notes']\n[root]\ntype = 'box'").unwrap();
         let mut w = world();
         w.reg.load_dir(&dir);
         let mut ui = UiState::default();
@@ -3948,8 +3948,8 @@ mod tests {
             n.action.is_some() || n.children.iter().any(clickable)
         }
         assert!(!clickable(clock), "a preview takes no clicks");
-        let agents = find_node(&root, "w/g/grid/c/agents/top").unwrap();
-        assert!(find_node(agents, "w/g/grid/c/agents/pv").is_none() && find_node(agents, "w/g/grid/c/agents/ic").is_some(), "no `agents` source: its icon");
+        let notes = find_node(&root, "w/g/grid/c/notes/top").unwrap();
+        assert!(find_node(notes, "w/g/grid/c/notes/pv").is_none() && find_node(notes, "w/g/grid/c/notes/ic").is_some(), "no `notes` source: its icon");
         std::fs::remove_dir_all(&dir).ok();
     }
 

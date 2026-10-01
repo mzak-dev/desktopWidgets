@@ -2,8 +2,8 @@
 //! from the files each tool already writes under the home folder. Read-only.
 //!
 //! Param `provider`: `claude` (default), `copilot`, `antigravity` or `all`.
-//! Fields: `items` (name, cwd, tool, state, label, working, age), `count`, `working`,
-//! `provider`, `note`.
+//! Fields: `items` (name, cwd, tool, state, label, working, done, age), `count`, `working`,
+//! `provider`, `note`. `done` is an agent that stopped working within the last minute.
 //!
 //! The files are read at most about once a second, and only while a widget reads `agents`:
 //! every second while an agent works (its age counts up), every ten seconds otherwise.
@@ -22,6 +22,8 @@ const WORKING_WINDOW_MS: i64 = 20_000;
 const STALE_MS: i64 = 12 * 3600 * 1000;
 /// Antigravity has no live marker: a conversation stays listed this long after its last write.
 const ANTIGRAVITY_SHOWN_MS: i64 = 3600 * 1000;
+/// Idle for less than this: it has just finished, worth a look.
+const DONE_MS: i64 = 60_000;
 /// Widgets reading the same tool within this long share one look at its files.
 const FRESH: Duration = Duration::from_millis(900);
 
@@ -144,13 +146,15 @@ pub fn to_value(provider: &str, agents: &[Agent], now: i64) -> Value {
     let items = agents
         .iter()
         .map(|a| {
+            let done = !a.working && now - a.updated_ms < DONE_MS;
             Value::obj([
                 ("name", a.name.as_str().into()),
                 ("cwd", a.cwd.as_str().into()),
                 ("tool", a.tool.into()),
-                ("state", (if a.working { "working" } else { "idle" }).into()),
-                ("label", (if a.working { "Working" } else { "Idle" }).into()),
+                ("state", (if a.working { "working" } else if done { "done" } else { "idle" }).into()),
+                ("label", (if a.working { "Working" } else if done { "Done" } else { "Idle" }).into()),
                 ("working", a.working.into()),
+                ("done", done.into()),
                 ("age", age_label(now, a.updated_ms).into()),
             ])
         })
@@ -265,6 +269,11 @@ mod tests {
         assert_eq!(found.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["s1", "s0"], "busy first");
         let v = to_value("claude", &found, now);
         assert_eq!((v.get("count"), v.get("working"), v.get("note")), (Some(&Value::Num(2.0)), Some(&Value::Num(1.0)), Some(&Value::Str(String::new()))));
+        let Some(Value::List(items)) = v.get("items") else { panic!("no items") };
+        assert_eq!(items[1].get("label"), Some(&Value::Str("Done".into())), "idle a moment ago: just finished");
+        let later = to_value("claude", &found, now + DONE_MS);
+        let Some(Value::List(items)) = later.get("items") else { panic!("no items") };
+        assert_eq!(items[1].get("label"), Some(&Value::Str("Idle".into())));
         std::fs::remove_dir_all(&h).ok();
     }
 

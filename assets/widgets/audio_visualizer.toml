@@ -1,0 +1,300 @@
+needs = ["audio"]
+name = "Audio Visualizer"
+description = "A live spectrum of whatever your PC is playing: bars, mirrored bars, line, area or a level meter, with falling peak markers, gradients, and full control of bands, frequency range, gain and motion. It dims while nothing plays."
+category = "Media"
+icon = "audio"
+size = [360, 140]
+min_size = [100, 48]
+max_size = [1000, 500]
+
+[params.mode]
+group = "Look"
+type = "enum"
+choices = [{ value = "bars", label = "Bars" }, { value = "mirror", label = "Mirrored bars" }, { value = "line", label = "Line" }, { value = "area", label = "Filled area" }, { value = "level", label = "Level meter" }]
+default = "bars"
+label = "Style"
+
+[params.bands]
+group = "Audio"
+type = "number"
+default = 32
+min = 8
+max = 96
+step = 4
+label = "Bands"
+help = "How many bars / points across."
+
+[params.gap]
+group = "Look"
+type = "number"
+default = 3
+min = 0
+max = 12
+step = 1
+label = "Bar gap"
+
+[params.corner]
+group = "Look"
+type = "number"
+default = 3
+min = 0
+max = 20
+step = 1
+label = "Bar roundness"
+
+[params.min_bar]
+group = "Look"
+type = "number"
+default = 3
+min = 0
+max = 20
+step = 1
+label = "Resting bar height"
+help = "Bars never shrink below this, so silence still draws a baseline."
+
+[params.color_high]
+group = "Look"
+type = "color"
+default = "$accent"
+label = "Top colour"
+
+[params.color_low]
+group = "Look"
+type = "color"
+default = "#b57bff"
+label = "Bottom colour"
+help = "Each bar fades from the top colour to this."
+
+[params.peaks]
+group = "Motion"
+type = "bool"
+default = true
+label = "Peak markers"
+help = "A thin mark that holds each band's highest point and falls back slowly."
+
+[params.peak_color]
+group = "Motion"
+type = "color"
+default = "$text"
+label = "Peak colour"
+
+[params.peak_fall]
+group = "Motion"
+type = "number"
+default = 0.5
+min = 0.1
+max = 3
+step = 0.1
+label = "Peak fall speed"
+
+[params.gain]
+group = "Audio"
+type = "number"
+default = 1.1
+min = 0.3
+max = 3
+step = 0.05
+label = "Sensitivity"
+
+[params.attack]
+group = "Motion"
+type = "number"
+default = 30
+min = 5
+max = 80
+step = 1
+label = "Rise speed"
+
+[params.release]
+group = "Motion"
+type = "number"
+default = 7
+min = 1
+max = 40
+step = 1
+label = "Fall speed"
+
+[params.fmin]
+group = "Audio"
+type = "number"
+default = 40
+min = 20
+max = 500
+step = 10
+label = "Lowest frequency (Hz)"
+
+[params.fmax]
+group = "Audio"
+type = "number"
+default = 16000
+min = 2000
+max = 20000
+step = 500
+label = "Highest frequency (Hz)"
+
+[params.pulse]
+group = "Look"
+type = "bool"
+default = false
+label = "Pulse border with bass"
+
+[params.background]
+group = "Look"
+type = "bool"
+default = true
+label = "Card background"
+
+[params.stroke]
+group = "Look"
+type = "number"
+default = 2.5
+min = 1
+max = 8
+step = 0.5
+label = "Line thickness"
+
+[params.idle_opacity]
+group = "Look"
+type = "number"
+default = 0.5
+min = 0
+max = 1
+step = 0.05
+label = "Opacity while silent"
+help = "1 keeps it as it is; 0 hides it until something plays."
+
+# The bars fill the card inside its 12 px padding: `self.h - 24` is their full height.
+[root]
+direction = "column"
+fill = "{param.background ? '$surface' : '#00000000'}"
+radius = "$radius-lg"
+border = "{param.background ? (param.pulse ? 1 + audio.bass * 3 : 1) : 0}"
+border_color = "{param.pulse ? '$accent' : '$border'}"
+padding = 12
+clip = true
+opacity = "{audio.active ? 1 : param.idle_opacity}"
+transition = 600
+
+  # ---- bars: bottom-aligned, each with its peak above it ----
+  [[root.children]]
+  when = "{param.mode == 'bars'}"
+  grow = 1
+  direction = "row"
+  align = "stretch"
+  gap = "{param.gap}"
+    [[root.children.children]]
+    type = "repeat"
+    for = "{audio.bands}"
+    as = "v"
+      [[root.children.children.children]]
+      grow = 1
+      direction = "column"
+      justify = "end"
+        [[root.children.children.children.children]]
+        height = "{max(param.min_bar, v * (self.h - 24))}"
+        radius = "{param.corner}"
+        fill = ["{param.color_high}", "{param.color_low}"]
+        [[root.children.children.children.children]]
+        when = "{param.peaks}"
+        position = "absolute"
+        left = 0
+        right = 0
+        bottom = "{min(max(param.min_bar, at(audio.peaks, index) * (self.h - 24)), self.h - 26)}"
+        height = 2
+        radius = 1
+        fill = "{param.peak_color}"
+
+  # ---- mirror: bars grow both ways from the centre line, peaks above and below ----
+  [[root.children]]
+  when = "{param.mode == 'mirror'}"
+  grow = 1
+  direction = "row"
+  align = "stretch"
+  gap = "{param.gap}"
+    [[root.children.children]]
+    type = "repeat"
+    for = "{audio.bands}"
+    as = "v"
+      [[root.children.children.children]]
+      grow = 1
+      direction = "column"
+      justify = "center"
+        [[root.children.children.children.children]]
+        height = "{max(param.min_bar, v * (self.h - 24))}"
+        radius = "{param.corner}"
+        fill = ["{param.color_high}", "{param.color_low}"]
+        [[root.children.children.children.children]]
+        when = "{param.peaks}"
+        position = "absolute"
+        left = 0
+        right = 0
+        bottom = "{min((self.h - 24) / 2 + max(param.min_bar, at(audio.peaks, index) * (self.h - 24)) / 2, self.h - 26)}"
+        height = 2
+        radius = 1
+        fill = "{param.peak_color}"
+        [[root.children.children.children.children]]
+        when = "{param.peaks}"
+        position = "absolute"
+        left = 0
+        right = 0
+        top = "{min((self.h - 24) / 2 + max(param.min_bar, at(audio.peaks, index) * (self.h - 24)) / 2, self.h - 26)}"
+        height = 2
+        radius = 1
+        fill = "{param.peak_color}"
+
+  # ---- line / area, with the peaks as a thin second line ----
+  [[root.children]]
+  when = "{param.mode == 'line' || param.mode == 'area'}"
+  grow = 1
+    [[root.children.children]]
+    grow = 1
+    type = "graph"
+    values = "{audio.bands}"
+    max = 1
+    stroke = "{param.stroke}"
+    color = "{param.color_high}"
+    area = "{param.mode == 'area' ? param.color_low : nil}"
+    [[root.children.children]]
+    when = "{param.peaks}"
+    type = "graph"
+    position = "absolute"
+    left = 0
+    top = 0
+    right = 0
+    bottom = 0
+    values = "{audio.peaks}"
+    max = 1
+    stroke = 1
+    color = "{param.peak_color}"
+
+  # ---- level meter: one bar for how loud it is, bass under it ----
+  [[root.children]]
+  when = "{param.mode == 'level'}"
+  grow = 1
+  direction = "column"
+  justify = "center"
+  gap = "{param.gap + 2}"
+    [[root.children.children]]
+    height = "{max(6, (self.h - 24 - param.gap - 2) * 0.62)}"
+    radius = "{param.corner}"
+    fill = "$track"
+      [[root.children.children.children]]
+      position = "absolute"
+      left = 0
+      top = 0
+      width = "{max(0, min(1, audio.level)) * 100}%"
+      height = "100%"
+      radius = "{param.corner}"
+      fill = ["{param.color_high}", "{param.color_low}"]
+    [[root.children.children]]
+    height = "{max(3, (self.h - 24 - param.gap - 2) * 0.38)}"
+    radius = "{param.corner}"
+    fill = "$track"
+      [[root.children.children.children]]
+      position = "absolute"
+      left = 0
+      top = 0
+      width = "{max(0, min(1, audio.bass)) * 100}%"
+      height = "100%"
+      radius = "{param.corner}"
+      fill = "{param.color_low}"
