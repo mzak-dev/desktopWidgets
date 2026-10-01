@@ -15,7 +15,7 @@ Move and resize them in real time, restyle everything, and pay nothing while the
 [![DirectX 12](https://img.shields.io/badge/DirectX_12-DirectComposition-107C10?style=for-the-badge&logo=xbox&logoColor=white)](docs/adr/0001-dx12-dcomp-presentation.md)
 
 ![Status](https://img.shields.io/badge/status-alpha-F5A623?style=flat-square)
-![Tests](https://img.shields.io/badge/unit_tests-307_passing-2EA44F?style=flat-square)
+![Tests](https://img.shields.io/badge/unit_tests-317_passing-2EA44F?style=flat-square)
 ![Idle](https://img.shields.io/badge/idle_CPU-0%25-2EA44F?style=flat-square)
 ![Layout](https://img.shields.io/badge/layout-taffy_flexbox-8A63D2?style=flat-square)
 ![Text](https://img.shields.io/badge/text-glyphon-3B82F6?style=flat-square)
@@ -121,6 +121,15 @@ Add and remove widgets and edit them: the widget sits at the top with a tab per 
 </table>
 
 Your arrangement is saved to `workspace.json`. Unplug a monitor and its widgets are **parked**: hidden but remembered, and back exactly where they were when the monitor returns.
+
+### Workspaces
+
+Keep several sets of widgets, each with its own positions, settings and look, and switch between them from the tray's **Workspace** menu or **Settings → Workspaces**. There you can add an empty one or duplicate the one on screen, rename and remove them, and tie one to:
+
+- **virtual desktops** (Win+Ctrl+D): going to one of them brings that Workspace up;
+- **a monitor setup**: connecting those monitors brings it up, so a laptop can have one set alone and another docked. A dock that renumbers its monitors still counts.
+
+The most specific match wins, a Workspace with no ties only comes up when you pick it, and one you pick stays until you go to another desktop or connect other monitors. Virtual desktops are read from where Explorer keeps them, as PowerToys does; see [ADR-011](docs/adr/0011-workspaces-follow-desktops-and-monitors.md).
 
 <br>
 
@@ -327,6 +336,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 | [Content plugins](docs/adr/0007-content-plugins.md) | A `.wfplugin` is a zip that installs by unpacking. Widget ids stay flat, so a plugin can restyle built-ins. No native code. |
 | [Plugin code](docs/adr/0008-plugin-code.md) | WebAssembly Code Sources in wasmi, one thread per plugin, a JSON ABI, HTTPS to listed hosts, read-only folders it declares and 1 MB of saved data. The UI never waits for plugin code. |
 | [Native sources in your own build](docs/adr/0009-native-sources-in-your-own-build.md) | Native code joins through an exe built on the engine as a library, never through DLLs. Sources can act, notify and forget Instances like Code Sources. |
+| [Workspaces follow desktops and monitors](docs/adr/0011-workspaces-follow-desktops-and-monitors.md) | The live Workspace keeps the old fields and the others are saved whole. The current virtual desktop comes from Explorer's registry keys, watched without polling; if they move, desktop rules quietly stop applying. |
 
 > [!IMPORTANT]
 > **Which GPU?** Wayfinder defaults to the **integrated** GPU (`"gpu": "low"`). On the AMD machine it was developed on, selecting the dedicated GPU pinned one CPU core at 99% while idle with two or more widgets on screen, in a driver thread outside Wayfinder, whereas the integrated GPU idled at 0.00%. Widgets are tiny, so the integrated GPU is plenty. You can change it in **Settings → General**, or set `"gpu": "high"` in `workspace.json`. `"software"` renders on the CPU. Details in [ADR-005](docs/adr/0005-adapter-and-present-mode.md).
@@ -343,7 +353,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 
 **✅ Verified**
 
-- 307 unit tests (`cargo test --lib`)
+- 317 unit tests (`cargo test --lib`)
 - All four widgets and the settings window rendered offscreen
 - A 35-check scripted run of the live app, on the **software** renderer: drag, live resize, undo, saving, folder expand and z-raise, hot reload with error cards, the settings commands, and Show Desktop detection and response (against a stand-in host window)
 
@@ -368,7 +378,7 @@ Each one is written up with its measurements in [`docs/adr/`](docs/adr).
 ## 🛠️ Development
 
 ```powershell
-cargo test --lib                     # 307 unit tests, pure logic, no GPU
+cargo test --lib                     # 317 unit tests, pure logic, no GPU
 cargo run --release -- --selftest --gpu software --data $env:TEMP\wf-test
 ```
 
