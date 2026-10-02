@@ -184,7 +184,7 @@ fn build(theme: &Theme, rows: &[Row], st: &State, bottom: bool, closing: bool, s
         .offset(0.0, if closing { 6.0 * dy } else { 0.0 })
         .opacity(if closing { 0.0 } else { 1.0 })
         .transition(if closing { 120 } else { 140 }, if closing { Ease::In } else { Ease::Out })
-        .child(Node::new("m/pill").abs(Some(PAD), Some(PAD), None, None).wh(CARD_W - 2.0 * PAD, ROW).radius(radius.min(8.0)).fill(accent.with_alpha(pill_a)).offset(0.0, st.pill - PAD).transition(140, Ease::Out));
+        .child(Node::new("m/pill").abs(Some(PAD), Some(PAD), None, None).wh(CARD_W - 2.0 * PAD, ROW).radius(radius.min(8.0)).fill(accent.with_alpha(pill_a)).offset(0.0, st.pill).transition(140, Ease::Out));
     let mut sub = 0u32;
     for (i, r) in rows.iter().enumerate() {
         if r.sep {
@@ -228,7 +228,7 @@ fn build(theme: &Theme, rows: &[Row], st: &State, bottom: bool, closing: bool, s
 /// The tree and window size for a state, for `examples/render_settings.rs` to draw to a PNG.
 pub fn preview(theme: &Theme, d: &Data, expanded: bool, cursor: Option<usize>) -> (Node, (f32, f32)) {
     let r = rows(d, expanded);
-    let mut st = State { expanded, cursor, pill: PAD };
+    let mut st = State { expanded, cursor, pill: 0.0 };
     st.track(&r);
     let size = window_size(d);
     (build(theme, &r, &st, true, false, size), size)
@@ -306,7 +306,7 @@ impl MenuWin {
         // the scale may have changed with the monitor
         let _ = self.window.request_inner_size(LogicalSize::new(lw as f64, lh as f64));
         self.st = State::default();
-        self.st.pill = PAD;
+        self.st.pill = 0.0;
         self.anim = Anim::default(); // every row replays its entrance
         self.closing = false;
         self.open = true;
