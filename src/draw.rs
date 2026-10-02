@@ -1,5 +1,5 @@
 //! The renderer's only input: a flat, physical-pixel draw list. Nothing above
-//! this sees a wgpu type, so swapping the renderer touches only `gfx`.
+//! this sees a renderer's types (wgpu, Skia), so swapping the renderer touches only `gfx`.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -110,12 +110,5 @@ mod tests {
         top.layers[1].shapes.push(Inst::default());
         base.put_on_top(top);
         assert_eq!((base.layers[0].shapes.len(), base.layers[1].shapes.len()), (0, 3));
-    }
-
-    /// The shader only compiles for real at pipeline creation; catch WGSL errors without a GPU.
-    #[test]
-    fn shader_is_valid_wgsl() {
-        let m = naga::front::wgsl::parse_str(include_str!("shader.wgsl")).expect("shader.wgsl parses");
-        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&m).expect("shader.wgsl validates");
     }
 }

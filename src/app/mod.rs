@@ -42,7 +42,7 @@ use crate::content::{Catalog, Root};
 use crate::data::{self, DataSources};
 use crate::draw::DrawList;
 use crate::edit::{self, Handle, Rect, Snap};
-use crate::gfx::{Gpu, Power, RenderError, Target};
+use crate::gfx::{Backend, Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
 use crate::net::Fetch;
 use crate::platform::win32::{self, ZMode};
@@ -399,6 +399,11 @@ impl App {
         Power::parse(self.opts.gpu_override.as_deref().unwrap_or(&self.ws.gpu))
     }
 
+    /// Which renderer draws the windows.
+    fn backend(&self) -> Backend {
+        Backend::default()
+    }
+
     pub fn request_edit_on_start(&mut self) {
         self.start_edit = true;
     }
@@ -528,8 +533,8 @@ impl App {
         let target = match self.gpu.as_mut() {
             Some(g) => g.target_for(&window)?,
             None => {
-                let (g, t) = Gpu::new(&window, self.power())?;
-                let info = g.info.clone();
+                let (g, t) = Gpu::new(&window, self.power(), self.backend())?;
+                let info = g.info().to_string();
                 self.gpu = Some(g);
                 self.log_gpu(info);
                 t
@@ -587,11 +592,11 @@ impl App {
         for w in &mut self.wins {
             w.target = None;
         }
-        let power = self.power();
+        let (power, backend) = (self.power(), self.backend());
         for (i, win) in windows {
             let target = match self.gpu.as_mut() {
                 Some(g) => g.target_for(&win),
-                None => Gpu::new(&win, power).map(|(g, t)| {
+                None => Gpu::new(&win, power, backend).map(|(g, t)| {
                     self.gpu = Some(g);
                     t
                 }),
@@ -604,7 +609,7 @@ impl App {
         }
         let _ = el;
         if let Some(g) = &self.gpu {
-            let info = g.info.clone();
+            let info = g.info().to_string();
             self.log_gpu(info);
         }
     }
@@ -832,8 +837,8 @@ impl App {
             s.window.focus_window();
             return;
         }
-        let power = self.power();
-        match SettingsWin::open(el, &mut self.gpu, power) {
+        let (power, backend) = (self.power(), self.backend());
+        match SettingsWin::open(el, &mut self.gpu, power, backend) {
             Ok(s) => self.settings = Some(s),
             Err(e) => self.log(format!("settings: {e}")),
         }
@@ -969,7 +974,7 @@ impl ApplicationHandler<UserEvent> for App {
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
         if self.settings.as_ref().is_some_and(|s| s.window.id() == id) {
-            let gpu_info = self.gpu.as_ref().map(|g| g.info.clone()).unwrap_or_else(|| "no GPU yet".into());
+            let gpu_info = self.gpu.as_ref().map(|g| g.info().to_string()).unwrap_or_else(|| "no GPU yet".into());
             let setup: Vec<workspace::MonitorRef> = self.monitor_setup();
             let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, desktops, desktop, update_releases, update_note, .. } = self;
             let off = plugins::hidden_instances(ws, reg, installed);

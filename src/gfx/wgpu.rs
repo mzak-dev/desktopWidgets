@@ -8,28 +8,13 @@ use glyphon::{Cache as GlyphCache, Color as TextColor, Resolution, TextArea, Tex
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+use super::{Power, RenderError};
 use crate::draw::*;
 use crate::text::TextEngine;
 
 const SHADER: &str = include_str!("shader.wgsl");
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Power {
-    High,
-    Low,
-    /// Never touches the vendor driver, so automated tests use it.
-    Software,
-}
-
 impl Power {
-    /// Low unless asked: High can pin a core (ADR-005).
-    pub fn parse(s: &str) -> Power {
-        match s.to_ascii_lowercase().as_str() {
-            "high" => Power::High,
-            "software" | "warp" | "cpu" => Power::Software,
-            _ => Power::Low,
-        }
-    }
     fn wgpu(self) -> wgpu::PowerPreference {
         match self {
             Power::High => wgpu::PowerPreference::HighPerformance,
@@ -86,13 +71,6 @@ const MAX_SIDE: u32 = 8192;
 
 fn bucketed(v: u32) -> u32 {
     (v.div_ceil(BUCKET) * BUCKET + BUCKET).min(MAX_SIDE)
-}
-
-#[derive(Debug)]
-pub enum RenderError {
-    /// Nothing is wrong with the device.
-    Skip(String),
-    Lost(String),
 }
 
 pub struct Target {
@@ -684,5 +662,15 @@ impl Gpu {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// The shader only compiles for real at pipeline creation; catch WGSL errors without a GPU.
+    #[test]
+    fn shader_is_valid_wgsl() {
+        let m = naga::front::wgsl::parse_str(include_str!("shader.wgsl")).expect("shader.wgsl parses");
+        naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all()).validate(&m).expect("shader.wgsl validates");
     }
 }

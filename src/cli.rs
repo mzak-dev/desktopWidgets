@@ -20,7 +20,7 @@ use crate::code::runtime::Limits;
 use crate::code::{Deps, WasmSource};
 use crate::content::{Catalog, Root};
 use crate::data::{DataSources, Tm};
-use crate::gfx::{Gpu, Power};
+use crate::gfx::{Backend, Gpu, Power};
 use crate::icons::IconService;
 use crate::plugins::{self, PluginStore};
 use crate::text::TextEngine;
@@ -213,7 +213,7 @@ fn render(r: &Render) -> Result<bool, String> {
         println!("warning: {e}");
     }
 
-    let mut gpu = Gpu::new_headless(Power::parse(&r.gpu))?;
+    let mut gpu = Gpu::new_headless(Power::parse(&r.gpu), Backend::default())?;
     let mut text = TextEngine::new();
     for e in text.sync_fonts(&cat.font_files) {
         println!("warning: {e}");

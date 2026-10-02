@@ -21,7 +21,7 @@ use crate::data::Shortcut;
 use crate::dialog;
 use crate::draw::{Inst, KIND_ARC, KIND_CAPSULE, KIND_RECT};
 use crate::elements::{Shape, ShapeCx, rgba_with_opacity};
-use crate::gfx::{Gpu, Power, RenderError, Target};
+use crate::gfx::{Backend, Gpu, Power, RenderError, Target};
 use crate::icons::IconService;
 use crate::modules::Arrangement;
 use crate::plugins::PluginRow;
@@ -3894,7 +3894,7 @@ impl SettingsWin {
         self.redraw = true;
     }
 
-    pub fn open(el: &ActiveEventLoop, gpu: &mut Option<Gpu>, power: Power) -> Result<SettingsWin, String> {
+    pub fn open(el: &ActiveEventLoop, gpu: &mut Option<Gpu>, power: Power, backend: Backend) -> Result<SettingsWin, String> {
         let mon = el.primary_monitor().or_else(|| el.available_monitors().next());
         // a small or zoomed screen gets a smaller window, never below the minimum
         let win = mon.as_ref().map_or((WIN.0 as f64, WIN.1 as f64), |m| {
@@ -3922,7 +3922,7 @@ impl SettingsWin {
         let target = match gpu.as_mut() {
             Some(g) => g.target_for(&window)?,
             None => {
-                let (g, t) = Gpu::new(&window, power)?;
+                let (g, t) = Gpu::new(&window, power, backend)?;
                 *gpu = Some(g);
                 t
             }

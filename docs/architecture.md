@@ -55,7 +55,7 @@ sequenceDiagram
 | `src/data/` | one file per Data Source (`clock`, `calendar`, `sys`, `shortcuts`, `media`, `audio`, `gallery`, `agents`) and how often it changes |
 | `src/card.rs` | the card inside each window: shadow gutter, blur, outlines |
 | `src/ui.rs` `text.rs` `anim.rs` | element tree, taffy layout, text shaping (glyphon), declarative transitions |
-| `src/gfx.rs` `draw.rs` `shader.wgsl` | wgpu renderer, SDF shapes, premultiplied alpha |
+| `src/gfx/` `draw.rs` | the renderer seam and its backends (wgpu: SDF shapes, premultiplied alpha), and the draw list they draw |
 | `src/app/` `edit.rs` `workspace.rs` | windows, scheduling, input, Edit Mode, Workspaces, Show Desktop, persistence and monitor anchoring |
 | `src/settings.rs` | the animated settings window |
 | `src/platform/` | window styles, z-order, Show Desktop, monitors, virtual desktops |

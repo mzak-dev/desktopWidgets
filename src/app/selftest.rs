@@ -104,7 +104,7 @@ impl App {
                 check(&mut st, "leaving edit mode restores no-activate", hw.iter().all(|h| win32::ex_style(*h) & both == both), String::new());
                 let Some(i) = folder else { return self.selftest_abort(el, st, "no icon_folder-1 instance") };
                 st.collapsed = self.rect_now(i);
-                st.configures0 = self.gpu.as_ref().map_or(0, |g| g.reconfigure_count.get());
+                st.configures0 = self.gpu.as_ref().map_or(0, |g| g.reconfigure_count());
                 match self.first_hit_with(i, "toggle expanded") {
                     Some(p) => self.click_at(i, p),
                     None => check(&mut st, "folder tile is clickable", false, "(no toggle hit region)".into()),
@@ -116,7 +116,7 @@ impl App {
                 let c = st.collapsed.unwrap();
                 let r = self.rect_now(i).unwrap();
                 check(&mut st, "clicking the folder expands its window in place", r.w > c.w + 100 && r.h > c.h + 40, format!("({}x{} -> {}x{})", c.w, c.h, r.w, r.h));
-                let n = self.gpu.as_ref().map_or(0, |g| g.reconfigure_count.get()) - st.configures0;
+                let n = self.gpu.as_ref().map_or(0, |g| g.reconfigure_count()) - st.configures0;
                 check(&mut st, "the expand animation reconfigures the swapchain at most once", n <= 1, format!("({n} reconfigures over ~12 frames)"));
                 let m = self.monitor_of(&self.ws.instances[i]).unwrap().work;
                 check(&mut st, "expanded window stays inside the work area", r.x >= m.0 && r.y >= m.1 && r.right() <= m.0 + m.2 as i32 && r.bottom() <= m.1 + m.3 as i32, format!("({r:?} in {m:?})"));
