@@ -31,6 +31,7 @@ Building, testing and extending Wayfinder, and what has and hasn't been verified
 - Workspaces on a real desktop: reading virtual desktops, the tray submenu, docking
 - The audio visualizer with real music: capture, the oscilloscope's trigger and scale
 - Fullscreen games, mixed DPI, monitor hot-unplug
+- The Skia renderer in a window ([ADR-0013](adr/0013-skia-renderer.md)): composition swapchain alpha, idle CPU with several widgets, drag and resize, switching renderers back and forth
 - Vulkan and OpenGL (`WAYFINDER_BACKEND`) are for experiments only
 
 </td>
@@ -46,7 +47,14 @@ cargo test --lib                     # 329 unit tests, pure logic, no GPU
 cargo run --release -- --selftest --gpu software --data $env:TEMP\wf-test
 ```
 
-Offscreen renders, on the software adapter by default:
+The Skia renderer is a Cargo feature (it downloads Skia's prebuilt binaries the first time). Its painter draws on a CPU surface, so its tests need no GPU:
+
+```powershell
+cargo test --lib --features skia gfx
+cargo run --release --features skia -- --selftest --gpu software --renderer skia --data $env:TEMP\wf-test
+```
+
+Offscreen renders, on the software adapter by default (`$env:WAYFINDER_RENDERER = "skia"` draws them with Skia):
 
 ```powershell
 cargo run --release --example render_widgets  -- docs\img\widgets.png

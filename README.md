@@ -157,7 +157,7 @@ Wayfinder is released under the [MIT License](LICENSE). You may use, copy, chang
 
 Inspired by [Rainmeter](https://www.rainmeter.net) and the Windows Vista and 7 sidebar gadgets. Built on
 [wgpu](https://wgpu.rs), [winit](https://github.com/rust-windowing/winit), [taffy](https://github.com/DioxusLabs/taffy),
-[glyphon](https://github.com/grovesNL/glyphon), [`windows`](https://github.com/microsoft/windows-rs),
+[glyphon](https://github.com/grovesNL/glyphon), [Skia](https://skia.org) (optional renderer, through [skia-safe](https://github.com/rust-skia/rust-skia)), [`windows`](https://github.com/microsoft/windows-rs),
 [tray-icon](https://github.com/tauri-apps/tray-icon), [notify](https://github.com/notify-rs/notify),
 [global-hotkey](https://github.com/tauri-apps/global-hotkey), [rustfft](https://github.com/ejmahler/RustFFT) and
 [wasmi](https://github.com/wasmi-labs/wasmi).

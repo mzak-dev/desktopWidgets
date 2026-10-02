@@ -89,6 +89,10 @@ The global state in which Instances show handles and can be dragged and resized.
 A named producer of values that widget definitions bind to (`clock`, `calendar`, `sys`, `shortcuts`, `media`, `audio`, `gallery`, `agents`). It declares how often each of its fields can change, or says through its Notifier when it changed, which is what lets an idle desktop cost nothing. It may also handle action verbs (`media.play_pause`). Built-ins, Code Sources and native sources an app built on Wayfinder registers (ADR-0009) are all Data Sources.
 _Avoid_: measure, plugin
 
+**Renderer**:
+The backend that turns a draw list into pixels in the windows: wgpu (the default) or Skia. Chosen in Settings, shared by every Workspace.
+_Avoid_: engine, backend (in the UI)
+
 **Z-mode**:
 Where an Instance sits relative to other windows: Desktop, Bottom, Normal or Topmost. Desktop and Bottom both sit under application windows; Desktop stays visible while the desktop is shown (Win+D), Bottom is hidden by it.
 

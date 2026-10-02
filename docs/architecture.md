@@ -17,11 +17,11 @@ flowchart LR
     B --> N["element tree"]
     N --> L["taffy flexbox layout"]
     L --> DL["draw list"]
-    DL --> R["wgpu renderer<br/>DX12 + DirectComposition"]
+    DL --> R["renderer: wgpu or Skia<br/>DirectComposition"]
     R --> W["one transparent<br/>window per widget"]
 ```
 
-The settings window is built from the same element tree in Rust, so widgets and settings share **one layout path and one renderer**. The renderer only ever sees a flat draw list, so it can be swapped without touching anything above it.
+The settings window is built from the same element tree in Rust, so widgets and settings share **one layout path and one renderer**. The renderer only ever sees a flat draw list, so it can be swapped without touching anything above it: wgpu draws it on the GPU, and Skia (an opt-in, Settings → General) draws it on the CPU. Both show it through DirectComposition.
 
 ## Why idle costs nothing
 
@@ -76,6 +76,7 @@ Each one is written up with its measurements in [`docs/adr/`](adr).
 | [Plugin code](adr/0008-plugin-code.md) | WebAssembly Code Sources in wasmi, one thread per plugin, a JSON ABI, HTTPS to listed hosts, read-only folders it declares and 1 MB of saved data. The UI never waits for plugin code. |
 | [Native sources in your own build](adr/0009-native-sources-in-your-own-build.md) | Native code joins through an exe built on the engine as a library, never through DLLs. |
 | [Workspaces follow desktops and monitors](adr/0011-workspaces-follow-desktops-and-monitors.md) | The current virtual desktop comes from Explorer's registry keys, watched without polling; if they move, desktop rules quietly stop applying. |
+| [Skia renderer beside wgpu](adr/0013-skia-renderer.md) | A second painter for the same draw list, switchable live in Settings. It draws on the CPU because Skia's Graphite backend can't reach a DirectComposition window through `skia-safe` today. |
 | [Velopack installer and auto-update](adr/0012-velopack-installer-and-autoupdate.md) | A `Setup.exe` installs to `%LocalAppData%\Wayfinder`; a background thread downloads updates and Velopack applies them silently on the next launch. `%APPDATA%\Wayfinder` is untouched. |
 
 <!-- pager:start -->

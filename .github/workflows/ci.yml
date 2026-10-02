@@ -18,6 +18,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --locked --all-targets
+      - name: Build with Skia
+        # skia-safe downloads Skia's prebuilt binaries for this feature set (ADR-0013)
+        run: cargo build --locked --all-targets --features skia
       - name: Plugin SDK tests
         run: |
           cargo test --locked --manifest-path sdk/wayfinder-plugin/Cargo.toml
@@ -31,3 +34,6 @@ jobs:
         env:
           WF_EXAMPLE_WASM: ${{ github.workspace }}/sdk/examples/weather/target/wasm32-unknown-unknown/release/weather.wasm
         run: cargo test --locked --lib
+      - name: Skia renderer tests
+        # the painter draws on a CPU surface, so it needs no GPU
+        run: cargo test --locked --lib --features skia gfx

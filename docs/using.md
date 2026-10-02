@@ -43,6 +43,8 @@ Your arrangement is saved to `workspace.json`. Unplug a monitor and its widgets 
 
 > [!IMPORTANT]
 > **Which GPU?** Wayfinder defaults to the **integrated** GPU (`"gpu": "low"`). On the AMD machine it was developed on, selecting the dedicated GPU pinned one CPU core at 99% while idle with two or more widgets on screen, in a driver thread outside Wayfinder, whereas the integrated GPU idled at 0.00%. Widgets are tiny, so the integrated GPU is plenty. Change it in **Settings → General**, or set `"gpu": "high"` in `workspace.json`. `"software"` renders on the CPU. Details in [ADR-005](adr/0005-adapter-and-present-mode.md).
+>
+> **Which renderer?** Widgets are drawn by **wgpu** unless you choose otherwise. Builds made with `--features skia` add a **Skia** option under **Settings → General → Renderer** (or `wayfinder --renderer skia`). It switches at once, with every widget blinking while it is rebuilt, and draws on the CPU, so the adapter above only decides which GPU presents the result. It is new and has not run on much hardware yet; if it cannot start, Wayfinder keeps drawing with wgpu and says why in General and the log. Details in [ADR-0013](adr/0013-skia-renderer.md).
 
 <!-- pager:start -->
 <br>
