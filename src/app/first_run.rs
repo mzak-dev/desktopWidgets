@@ -6,6 +6,7 @@ const GUIDES: &[(&[&str], &str)] = &[
     (&[".claude", "skills", "wayfinder-theme", "SKILL.md"], include_str!("../../assets/guides/wayfinder-theme/SKILL.md")),
     (&["PLUGINS.md"], include_str!("../../assets/guides/PLUGINS.md")),
     (&[".claude", "skills", "wayfinder-plugin", "SKILL.md"], include_str!("../../assets/guides/wayfinder-plugin/SKILL.md")),
+    (&["WIDGETS.md"], include_str!("../../assets/guides/WIDGETS.md")),
 ];
 
 /// Written only when missing, so the user's own edits survive every start.

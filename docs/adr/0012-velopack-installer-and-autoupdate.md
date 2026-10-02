@@ -1,0 +1,9 @@
+# Installer and silent auto-update via Velopack
+
+Wayfinder shipped as a single portable `.exe` attached to each GitHub Release: download and run, no install footprint, no update mechanism. That stopped being enough once the app needed a real install folder — one that carries reference docs (`assets/guides/*.md`) on disk for people customizing widgets, styling and icon packs — and updates that apply themselves, since this is a background tray app people expect to just keep running.
+
+Considered `self_update` (in-place binary swap: keeps the portable-exe model, so no install folder for the docs), `cargo-wix`/MSI (installer, but no silent background update story), and a `winget` manifest (update is a user-run command, not automatic). None cover both requirements at once.
+
+So: [Velopack](https://velopack.io), the actively maintained successor to Squirrel.Windows. `vpk pack` (a `.NET 8` CI-only tool — end users need nothing extra) builds a `Setup.exe` that installs to `%LocalAppData%\Wayfinder` with a Start Menu shortcut and uninstaller, staged from a `dist/` directory containing the built exe plus `assets/guides/`. `VelopackApp::build().run()` is the first thing `main()` does — it intercepts Velopack's own install/update/uninstall re-invocations and, on an ordinary launch, silently applies any already-downloaded newer version before anything else runs. A background thread (`spawn_update_checker` in `src/main.rs`) polls GitHub Releases roughly hourly and downloads an available update; it never applies or restarts on its own, so a running widget engine is never interrupted — the new version take over automatically the next time the app starts. `%APPDATA%\Wayfinder` (user data) is untouched by any of this.
+
+Unsigned for now: Velopack works without a code-signing certificate, but a `Setup.exe` triggers a more visible SmartScreen prompt than the old portable exe did. Acceptable at Alpha; revisit if it blocks adoption.

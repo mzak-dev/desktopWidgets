@@ -66,11 +66,12 @@ Wayfinder/
 ├─ iconpacks/<name>/     chrome.png ...  replaces the icon of a matching app
 ├─ plugins/<id>/         installed plugins, each laid out like this folder
 ├─ THEMES.md             how to make palettes, font sets, glyph sets and icon packs
+├─ WIDGETS.md            how to write or override a widget
 ├─ PLUGINS.md            how to make and share a plugin
-└─ .claude/skills/       Claude Code skills for making themes and plugins
+└─ .claude/skills/       Claude Code skills for making themes, widgets and plugins
 ```
 
-Wayfinder writes `THEMES.md`, `PLUGINS.md` and their Claude Code skills at startup when they are missing, and never overwrites your edits. Run `claude` in the data folder and ask for a theme ("a warm sunset palette") or a plugin to have Claude Code write the files for you.
+Wayfinder writes `THEMES.md`, `WIDGETS.md`, `PLUGINS.md` and their Claude Code skills at startup when they are missing, and never overwrites your edits. Run `claude` in the data folder and ask for a theme ("a warm sunset palette"), a widget or a plugin to have Claude Code write the files for you.
 
 <!-- pager:start -->
 <br>

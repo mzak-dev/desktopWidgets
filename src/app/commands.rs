@@ -209,6 +209,13 @@ impl App {
             }
             Cmd::Flag(flag, on) => {
                 self.ws.set_flag(flag, on);
+                if flag == Flag::Prerelease {
+                    self.update_prerelease.store(on, Ordering::Relaxed);
+                    if on {
+                        // don't make the user wait up to an hour to see the version picker fill in
+                        spawn_release_fetch(self.proxy.clone());
+                    }
+                }
                 self.mark_save();
             }
             Cmd::Grid(g) => {
@@ -247,6 +254,74 @@ impl App {
                 if let Some(s) = &mut self.settings {
                     s.invalidate();
                 }
+            }
+            Cmd::InstallUpdate(version) => {
+                let Some(asset) = self.update_releases.iter().find(|a| a.Version == version).cloned() else {
+                    self.update_note = format!("could not install {version}: it is no longer listed — reopen the picker and try again.");
+                    if let Some(s) = &mut self.settings {
+                        s.invalidate();
+                    }
+                    return;
+                };
+                if !crate::dialog::confirm("Install this version?", &format!("Wayfinder will download {version} and restart to apply it.")) {
+                    return;
+                }
+                self.update_note = format!("Downloading {version}…");
+                self.log(format!("update: installing {version} by hand"));
+                if let Some(s) = &mut self.settings {
+                    s.invalidate();
+                }
+                let proxy = self.proxy.clone();
+                std::thread::spawn(move || {
+                    let update = velopack::UpdateInfo { TargetFullRelease: asset, ..Default::default() };
+                    let outcome = (|| -> Result<(), velopack::Error> {
+                        // prerelease:true — otherwise a chosen pre-release build's own GitHub
+                        // release is filtered out of the feed and its asset can't be found.
+                        let um = velopack::UpdateManager::new(velopack::sources::GithubSource::new(UPDATE_REPO, None, true), None, None)?;
+                        um.download_updates(&update, None)?;
+                        um.apply_updates_and_restart(&update) // never returns on success
+                    })();
+                    if let Err(e) = outcome {
+                        let _ = proxy.send_event(UserEvent::UpdateInstallFailed(format!("could not install {version}: {e}")));
+                    }
+                });
+            }
+            Cmd::CheckForUpdates => {
+                self.update_note = "Checking for updates…".into();
+                self.log("update: checking now by hand".to_string());
+                if let Some(s) = &mut self.settings {
+                    s.invalidate();
+                }
+                let proxy = self.proxy.clone();
+                let prerelease = self.update_prerelease.load(Ordering::Relaxed);
+                std::thread::spawn(move || {
+                    let outcome = (|| -> Result<String, velopack::Error> {
+                        let um = velopack::UpdateManager::new(velopack::sources::GithubSource::new(UPDATE_REPO, None, prerelease), None, None)?;
+                        // apply a silently downloaded update if there's already one waiting,
+                        // rather than waiting for the next natural restart
+                        if let Some(pending) = um.get_update_pending_restart() {
+                            um.apply_updates_and_restart(&pending)?; // never returns on success
+                            return Ok(String::new());
+                        }
+                        match um.check_for_updates()? {
+                            velopack::UpdateCheck::UpdateAvailable(update) => {
+                                let update = *update;
+                                um.download_updates(&update, None)?;
+                                um.apply_updates_and_restart(&update)?; // never returns on success
+                                Ok(String::new())
+                            }
+                            _ => Ok("You're already on the latest version.".to_string()),
+                        }
+                    })();
+                    match outcome {
+                        Ok(msg) => {
+                            let _ = proxy.send_event(UserEvent::UpdateChecked(msg));
+                        }
+                        Err(e) => {
+                            let _ = proxy.send_event(UserEvent::UpdateInstallFailed(format!("could not check for updates: {e}")));
+                        }
+                    }
+                });
             }
             Cmd::PluginEnabled(id, on) => {
                 if on {
