@@ -61,6 +61,10 @@ pub struct Ctx<'a> {
     pub desktop: Option<&'a str>,
     /// The monitors connected now.
     pub setup: &'a [crate::workspace::MonitorRef],
+    /// The latest releases seen from GitHub, newest first, for the General page's version picker.
+    pub update_releases: &'a [velopack::VelopackAsset],
+    /// The outcome of the last manually chosen install.
+    pub update_note: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -163,6 +167,10 @@ pub enum Cmd {
     Reload,
     OpenFolder,
     InstallPlugin(PathBuf),
+    /// Download and install this specific version now, bypassing the "only if newer" check.
+    InstallUpdate(String),
+    /// Check now instead of waiting for the hourly cycle; applies and restarts if one is found.
+    CheckForUpdates,
     PluginEnabled(String, bool),
     RemovePlugin(String),
     OpenPluginsFolder,
@@ -313,6 +321,7 @@ struct Focus {
 enum Open {
     Dropdown(String),
     Color(String),
+    Changelog,
 }
 
 /// The Edit layout hotkey, as its keys read (registered in `app::tray`).
@@ -821,11 +830,13 @@ pub struct UiState {
     step: usize,
     /// The adapter was changed here, so it waits for a restart.
     gpu_picked: bool,
+    /// A version chosen in the General page's picker, not yet (or just) installed.
+    update_pick: Option<String>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
-        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), popup_anchor_rects: HashMap::new(), drop_hover: false, tier_tab: None, sel_module: None, advanced: false, mdrag: None, preview_arr: RefCell::new(None), tray_key: RefCell::new(String::new()), preview_rects: HashMap::new(), adding: false, category: None, queries: HashMap::new(), log_level: None, step: 0, gpu_picked: false }
+        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), popup_anchor_rects: HashMap::new(), drop_hover: false, tier_tab: None, sel_module: None, advanced: false, mdrag: None, preview_arr: RefCell::new(None), tray_key: RefCell::new(String::new()), preview_rects: HashMap::new(), adding: false, category: None, queries: HashMap::new(), log_level: None, step: 0, gpu_picked: false, update_pick: None }
     }
 }
 
@@ -842,6 +853,7 @@ impl UiState {
         match &self.open {
             Some(Open::Dropdown(k)) => k.clone(),
             Some(Open::Color(t)) => format!("cp:{t}"),
+            Some(Open::Changelog) => CHANGELOG_BTN.to_string(),
             None => String::new(),
         }
     }
@@ -905,6 +917,9 @@ impl UiState {
         if key == "gpu" {
             return two(&[("low", "Integrated GPU (recommended)"), ("high", "Dedicated GPU"), ("software", "Software (CPU, slow)")]);
         }
+        if key == "update_version" {
+            return ctx.update_releases.iter().map(|a| (a.Version.clone(), a.Version.clone())).collect();
+        }
         match key {
             "th:palette" => return ctx.lib.palettes.iter().map(|a| (a.name.clone(), a.name.clone())).collect(),
             "th:fonts" => return ctx.lib.fonts.iter().map(|a| (a.name.clone(), a.name.clone())).collect(),
@@ -949,6 +964,7 @@ impl UiState {
         }
         match key {
             "gpu" => return ctx.ws.gpu.clone(),
+            "update_version" => return self.update_pick.clone().unwrap_or_default(),
             "th:palette" => return ctx.ws.theme.palette.clone(),
             "th:fonts" => return ctx.ws.theme.fonts.clone(),
             "th:glyphs" => return ctx.ws.theme.glyphs.clone(),
@@ -2135,13 +2151,39 @@ impl UiState {
         ];
         let folder = Node::new("gn/files/c").row().gap(8.0).child(k.btn("gn/open", Some("folder"), "Open folder", "openfolder".into(), Btn::Outline)).child(k.btn("gn/reload", Some("refresh"), "Reload all", "reload".into(), Btn::Outline));
         let files = vec![k.row("gn/files", "Your widgets folder", "Drop .toml widget definitions here — they reload as you save.", folder), self.plugin_files_row(k, ctx)];
-        let body = Node::new("gn")
+        let version_ctl = Node::new("gn/ver/c")
+            .row()
+            .gap(10.0)
+            .align(taffy::AlignItems::CENTER)
+            .child(k.tag("gn/ver/v".into(), &format!("v{}", env!("CARGO_PKG_VERSION")), true))
+            .child(k.btn("gn/ver/check", Some("refresh"), "Check for Updates", "checkupdate".into(), Btn::Outline))
+            .child(k.btn(CHANGELOG_BTN, Some("info"), "Changelog", "changelog".into(), Btn::Outline));
+        let version = vec![k.row("gn/ver/row", "Version", "Checks the channel below; a pre-release only counts as \"latest\" when that's switched on.", version_ctl)];
+        let mut updates = vec![flag_row(k, ctx, "gn/pre", Flag::Prerelease)];
+        if ws.flag(Flag::Prerelease) {
+            let mut picker = Node::new("gn/upd/c").row().gap(10.0).align(taffy::AlignItems::CENTER).child(k.dropdown("update_version", &self.dropdown_label(ctx, "update_version"), CONTROL_W, f("update_version")));
+            if self.update_pick.is_some() {
+                picker = picker.child(k.btn("gn/upd/install", Some("refresh"), "Install", "installupdate".into(), Btn::Primary));
+            }
+            // picking a version never applies it by itself (see apply_pick), and the hourly
+            // checker always re-derives "latest" itself, so there is nothing here that can
+            // leave the app stuck on an old or pre-release build.
+            let help = if ctx.update_releases.is_empty() { "Fetching releases…" } else { "Downloads and installs it now, then restarts. Never changes what the background checker treats as newest." };
+            updates.push(k.row("gn/upd/pick", "Install a specific version", help, picker));
+        }
+        let mut body = Node::new("gn")
             .col()
             .gap(30.0)
             .child(k.page_head("gn/head", Page::General.heading(), Page::General.subtitle(), None))
             .child(k.group("gn/gfx", "Graphics", gfx))
             .child(k.group("gn/beh", "Behaviour", behaviour))
+            .child(k.group("gn/ver", "Version", version))
+            .child(k.group("gn/upd", "Updates", updates))
             .child(k.group("gn/fs", "Files", files));
+        if !ctx.update_note.is_empty() {
+            let bad = ctx.update_note.starts_with("could not");
+            body = body.child(k.txt("gn/upd/note".into(), ctx.update_note, 13.0, if bad { k.c("danger") } else { k.c("accent") }).wrap_text());
+        }
         self.page("gn/scroll", content_w(size, 780.0), body)
     }
 
@@ -2416,6 +2458,57 @@ impl UiState {
                         .child(presets),
                 );
             }
+            Open::Changelog => {
+                let (ax, ay, aw, ah) = self.popup_anchor_rects.get(CHANGELOG_BTN).copied().unwrap_or((size.0 / 2.0 - 210.0, size.1 / 2.0 - 240.0, 140.0, 32.0));
+                let pw = 420.0_f32.min(size.0 - 16.0);
+                let ph = 480.0_f32.min(size.1 - 16.0);
+                let x = (ax + aw / 2.0 - pw / 2.0).clamp(8.0, size.0 - pw - 8.0);
+                let below = ay + ah + 6.0 + ph <= size.1 - 8.0;
+                let y = if below { ay + ah + 6.0 } else { (ay - 6.0 - ph).max(8.0) };
+                let mut col = Node::new("cl/col").col().pad(16.0).gap(10.0);
+                if ctx.update_releases.is_empty() {
+                    col = col.child(k.txt("cl/none".into(), "No releases found yet.", 13.0, k.c("text-dim")));
+                }
+                for (ri, asset) in ctx.update_releases.iter().enumerate() {
+                    if ri > 0 {
+                        col = col.child(Node::new(format!("cl/hr{ri}")).h(1.0).no_shrink().fill(k.line()));
+                    }
+                    let notes = if asset.NotesMarkdown.is_empty() { format!("## {}", asset.Version) } else { asset.NotesMarkdown.clone() };
+                    for (li, line) in notes.lines().enumerate() {
+                        let line = line.trim();
+                        if line.is_empty() {
+                            continue;
+                        }
+                        let key = format!("cl/{ri}/{li}");
+                        let node = if let Some(h) = line.strip_prefix("## ") {
+                            k.bold(format!("{key}/t"), h, 15.0, k.c("text"))
+                        } else if let Some(h) = line.strip_prefix("### ") {
+                            k.bold(format!("{key}/t"), h, 12.5, k.c("accent"))
+                        } else if let Some(b) = line.strip_prefix("- ") {
+                            k.txt(format!("{key}/t"), &format!("•  {}", b.replace("**", "")), 12.5, k.c("text-dim")).wrap_text()
+                        } else {
+                            k.txt(format!("{key}/t"), line, 12.5, k.c("text-dim")).wrap_text()
+                        };
+                        col = col.child(node);
+                    }
+                }
+                let list = Node::new("cl/scroll").col().grow(1.0).min_h(0.0).scroll(self.scroll_of("cl/scroll")).hit().child(col);
+                root = root.child(
+                    Node::new("s/ov/pop")
+                        .col()
+                        .abs(Some(x), Some(y), None, None)
+                        .w(pw)
+                        .h(ph)
+                        .radius(12.0)
+                        .fill(pop_fill)
+                        .border(1.0, k.line())
+                        .shadow(18.0, 6.0, Color([0.0, 0.0, 0.0, 0.45]))
+                        .clip()
+                        .enter(160, if below { -6.0 } else { 6.0 }, 0)
+                        .hit()
+                        .child(list),
+                );
+            }
         }
         root
     }
@@ -2429,6 +2522,8 @@ const SEARCH_FROM: usize = 12;
 /// A dropdown row, and the most of its list that shows at once.
 const DD_ROW: f32 = 36.0;
 const DD_LIST_H: f32 = 300.0;
+/// The Changelog button's own key, reused to anchor its popover beneath it.
+const CHANGELOG_BTN: &str = "gn/upd/changelog";
 
 /// Where a dropdown list of `n` rows can scroll to.
 fn dd_max_scroll(n: usize) -> f32 {
@@ -2559,6 +2654,7 @@ impl UiState {
         let key = match &self.open {
             Some(Open::Dropdown(k)) => k.clone(),
             Some(Open::Color(t)) => format!("cp:{t}"),
+            Some(Open::Changelog) => CHANGELOG_BTN.to_string(),
             None => return,
         };
         let rect = if let Some(t) = key.strip_prefix("cp:") {
@@ -2614,6 +2710,12 @@ impl UiState {
         if key == "gpu" {
             self.gpu_picked = true;
             return vec![Cmd::Gpu(value.into())];
+        }
+        if key == "update_version" {
+            // picking only stages it for the Install button below — never applied by itself,
+            // so nothing here can leave the user stuck on an old or pre-release build.
+            self.update_pick = Some(value.into());
+            return vec![];
         }
         if let Some(axis) = key.strip_prefix("th:") {
             let mut sel = ctx.ws.theme.clone();
@@ -2860,6 +2962,13 @@ impl UiState {
             "quit" => vec![Cmd::Quit],
             "restart" => vec![Cmd::Restart],
             "gpufix" => vec![Cmd::Gpu("low".into()), Cmd::Restart],
+            "installupdate" => self.update_pick.clone().map(|v| vec![Cmd::InstallUpdate(v)]).unwrap_or_default(),
+            "checkupdate" => vec![Cmd::CheckForUpdates],
+            "changelog" => {
+                let opening = !matches!(self.open, Some(Open::Changelog));
+                self.open = opening.then_some(Open::Changelog);
+                vec![]
+            }
             "gallery" => {
                 self.adding = rest == "open";
                 vec![]
@@ -3669,7 +3778,7 @@ mod tests {
     }
 
     fn ctx(w: &World) -> Ctx<'_> {
-        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me, data: &w.data, calendar: &w.calendar, desktops: &[], desktop: None, setup: &[] }
+        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me, data: &w.data, calendar: &w.calendar, desktops: &[], desktop: None, setup: &[], update_releases: &[], update_note: "" }
     }
 
     #[test]

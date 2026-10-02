@@ -121,6 +121,7 @@ pub struct Workspace {
     pub grid: f32,
     pub autostart: bool,
     pub header_drag: bool,
+    pub prerelease: bool,
     pub instances: Vec<InstanceCfg>,
     /// Plugins switched off; every other installed Plugin loads.
     #[serde(skip_serializing_if = "BTreeSet::is_empty")]
@@ -152,6 +153,7 @@ impl Default for Workspace {
             grid: 8.0,
             autostart: false,
             header_drag: false,
+            prerelease: false,
             instances: Vec::new(),
             disabled_plugins: BTreeSet::new(),
             onboarded: false,
@@ -172,14 +174,16 @@ fn yes() -> bool {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Flag {
     HeaderDrag,
+    Prerelease,
 }
 
 impl Flag {
-    pub const ALL: [Flag; 1] = [Flag::HeaderDrag];
+    pub const ALL: [Flag; 2] = [Flag::HeaderDrag, Flag::Prerelease];
 
     pub fn id(self) -> &'static str {
         match self {
             Flag::HeaderDrag => "header_drag",
+            Flag::Prerelease => "prerelease",
         }
     }
 
@@ -190,12 +194,14 @@ impl Flag {
     pub fn label(self) -> &'static str {
         match self {
             Flag::HeaderDrag => "Move by header",
+            Flag::Prerelease => "Pre-release updates",
         }
     }
 
     pub fn help(self) -> &'static str {
         match self {
             Flag::HeaderDrag => "Drag a widget's top strip to move it without Edit layout.",
+            Flag::Prerelease => "Also offer beta builds when checking for updates in the background.",
         }
     }
 }
@@ -284,12 +290,14 @@ impl Workspace {
     pub fn flag(&self, f: Flag) -> bool {
         match f {
             Flag::HeaderDrag => self.header_drag,
+            Flag::Prerelease => self.prerelease,
         }
     }
 
     pub fn set_flag(&mut self, f: Flag, on: bool) {
         match f {
             Flag::HeaderDrag => self.header_drag = on,
+            Flag::Prerelease => self.prerelease = on,
         }
     }
 

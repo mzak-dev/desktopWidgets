@@ -4,8 +4,8 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version (semver, no leading v, e.g. 1.4.0)"
-        required: true
+        description: "Release version (semver, no leading v). Leave blank to auto-bump from Conventional Commits since the last tag."
+        required: false
         type: string
 
 env:
@@ -17,15 +17,30 @@ permissions:
 jobs:
   prepare:
     runs-on: ubuntu-latest
-    env:
-      VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Validate version
+      - name: Install git-cliff
         run: |
+          curl -sSfL https://github.com/orhun/git-cliff/releases/download/v2.14.2/git-cliff-2.14.2-x86_64-unknown-linux-gnu.tar.gz | tar xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/git-cliff-2.14.2" >> "$GITHUB_PATH"
+
+      - name: Determine version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            # feat -> minor, fix -> patch, a breaking-change commit -> major (cliff.toml's commit_parsers)
+            RAW="$(git-cliff --config cliff.toml --bumped-version)" || {
+              echo "::error::git-cliff could not compute a next version (no Conventional Commits since the last tag?)"
+              exit 1
+            }
+            VERSION="${RAW#v}"
+          fi
           if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::'$VERSION' is not a valid semver (expected X.Y.Z)"
             exit 1
@@ -34,29 +49,18 @@ jobs:
             echo "::error::tag v$VERSION already exists"
             exit 1
           fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Bump crate version
         run: |
           sed -i '0,/^version = /{s/^version = ".*"/version = "'"$VERSION"'"/}' Cargo.toml
           sed -i '/^name = "wayfinder"$/{n;s/^version = ".*"/version = "'"$VERSION"'"/}' Cargo.lock
 
-      - name: Install git-cliff
+      - name: Generate changelog
         run: |
-          curl -sSfL https://github.com/orhun/git-cliff/releases/download/v2.14.2/git-cliff-2.14.2-x86_64-unknown-linux-gnu.tar.gz | tar xz -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/git-cliff-2.14.2" >> "$GITHUB_PATH"
-
-      - name: Generate changelog and release notes
-        run: |
-          # the notes go straight to a file: commit titles with quotes or backticks never pass through the shell
-          git-cliff --config cliff.toml --unreleased --tag "v$VERSION" --strip header -o RELEASE_NOTES.md
           # --prepend needs the file to exist; the first release starts it
           [ -f CHANGELOG.md ] || : > CHANGELOG.md
           git-cliff --config cliff.toml --unreleased --tag "v$VERSION" --prepend CHANGELOG.md
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: release-notes
-          path: RELEASE_NOTES.md
 
       - name: Commit and tag
         run: |
@@ -67,28 +71,4 @@ jobs:
           git tag "v$VERSION"
           git push origin "HEAD:$GITHUB_REF_NAME"
           git push origin "v$VERSION"
-
-  build-and-release:
-    needs: prepare
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: v${{ inputs.version }}
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: release-notes
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Test
-        run: cargo test --locked --lib
-
-      - name: Build
-        run: cargo build --locked --release
-
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "v${{ inputs.version }}" target/release/wayfinder.exe --title "Wayfinder v${{ inputs.version }}" --notes-file RELEASE_NOTES.md
+          # the tag push above triggers release.yml, which builds and publishes it

@@ -37,7 +37,7 @@ Building, testing and extending Wayfinder, and what has and hasn't been verified
 </tr>
 </table>
 
-**Ideas, not promises:** a plugin catalogue to browse and install from, shader widgets, an installer.
+**Ideas, not promises:** a plugin catalogue to browse and install from, shader widgets.
 
 ## Build and test
 

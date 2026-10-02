@@ -123,7 +123,7 @@ fn main() {
         let ws = if name.starts_with("setup") { &fresh } else if name == "workspaces" { &spaces } else { &ws };
         let (desks, desk, setup): (&[wayfinder::platform::vdesk::Desktop], Option<&str>, &[MonitorRef]) = if name == "workspaces" { (&desktops, Some(desktops[1].id.as_str()), &dock) } else { (&[], None, &[]) };
         let theme = ws.global_theme(&lib);
-        let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources, calendar: &wayfinder::ambient::FixedCalendar::default(), desktops: desks, desktop: desk, setup };
+        let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources, calendar: &wayfinder::ambient::FixedCalendar::default(), desktops: desks, desktop: desk, setup, update_releases: &[], update_note: "" };
         let mut ui = UiState::default();
         for a in acts {
             let _ = ui.act(a, &ctx, &mut wayfinder::native::Headless);

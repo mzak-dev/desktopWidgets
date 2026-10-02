@@ -87,6 +87,15 @@ Wayfinder can render on the CPU (the "Microsoft Basic Render Driver"). It is slo
 
 </details>
 
+<details>
+<summary><b>Prefer an installer?</b></summary>
+
+<br>
+
+Each [release](https://github.com/mzak-dev/desktopWidgets/releases) also has a `Setup.exe`, built with [Velopack](https://velopack.io) ([ADR-012](docs/adr/0012-velopack-installer-and-autoupdate.md)). It installs to `%LocalAppData%\Wayfinder` with a Start Menu shortcut and an uninstaller, and the app checks for updates in the background and applies them silently the next time it starts — no prompts, nothing to run by hand. `%APPDATA%\Wayfinder` (your widgets, themes, settings) is untouched by installs or updates.
+
+</details>
+
 <br>
 
 ## 📚 Guides
