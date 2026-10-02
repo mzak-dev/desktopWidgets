@@ -16,10 +16,10 @@ Building, testing and extending Wayfinder, and what has and hasn't been verified
 
 **✅ Verified**
 
-- 329 unit tests (`cargo test --lib`), pure logic, no GPU
+- 331 unit tests (`cargo test --lib`), pure logic, no GPU
 - Every built-in widget, at each size it allows, checked to build and fit without text cut off
 - Every widget and the settings window rendered offscreen
-- A 35-check scripted run of the live app on the **software** renderer: drag, live resize, undo, saving, folder expand, hot reload with error cards, the settings commands, and Show Desktop against a stand-in host window
+- A 42-check scripted run of the live app on the **software** renderer: drag, live resize, undo, saving, folder expand, hot reload with error cards, the settings commands, Show Desktop against a stand-in host window, and moving a widget behind the desktop icons and back
 
 </td>
 <td width="50%" valign="top">
@@ -28,6 +28,7 @@ Building, testing and extending Wayfinder, and what has and hasn't been verified
 
 - The windowed app on a real GPU after the swapchain fix ([ADR-006](adr/0006-swapchain-resize-and-gpu-loss.md))
 - Show Desktop against the real Explorer (`Win` + `D`)
+- Widgets behind the icons drawing on a real desktop, on 24H2 and before, and through an Explorer restart ([ADR-0013](adr/0013-behind-icons-by-reparenting.md))
 - Workspaces on a real desktop: reading virtual desktops, the tray submenu, docking
 - The audio visualizer with real music: capture, the oscilloscope's trigger and scale
 - Fullscreen games, mixed DPI, monitor hot-unplug
@@ -42,7 +43,7 @@ Building, testing and extending Wayfinder, and what has and hasn't been verified
 ## Build and test
 
 ```powershell
-cargo test --lib                     # 329 unit tests, pure logic, no GPU
+cargo test --lib                     # 331 unit tests, pure logic, no GPU
 cargo run --release -- --selftest --gpu software --data $env:TEMP\wf-test
 ```
 

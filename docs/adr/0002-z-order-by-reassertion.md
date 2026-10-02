@@ -1,6 +1,6 @@
 # Z-order: Rainmeter's sentinel mechanism, not reparenting and not a heuristic
 
-Widgets are ordinary top-level windows kept on the desktop layer by z-order, the way Rainmeter does it (read from `Library/System.cpp` and `Library/Skin.cpp` on `master`). Nothing is reparented into the shell.
+Widgets are ordinary top-level windows kept on the desktop layer by z-order, the way Rainmeter does it (read from `Library/System.cpp` and `Library/Skin.cpp` on `master`). Nothing is reparented into the shell, except a widget the user puts behind the desktop icons ([ADR-0013](0013-behind-icons-by-reparenting.md)).
 
 ## What Rainmeter actually does, and what we copy
 
