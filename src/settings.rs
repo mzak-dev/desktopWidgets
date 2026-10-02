@@ -13,7 +13,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::windows::WindowAttributesExtWindows;
-use winit::window::{CursorIcon, Window, WindowAttributes};
+use winit::window::{CursorIcon, ResizeDirection, Window, WindowAttributes};
 
 use crate::anim::{Anim, Ease};
 use crate::color::{Color, TRANSPARENT};
@@ -312,6 +312,31 @@ impl Page {
     }
 }
 
+/// A section of the Widgets page's options panel; one is open at a time.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Sec {
+    Modules,
+    Options,
+    Advanced,
+    /// The open one was clicked shut.
+    Closed,
+}
+
+impl Sec {
+    fn id(self) -> &'static str {
+        match self {
+            Sec::Modules => "modules",
+            Sec::Options => "options",
+            Sec::Advanced => "advanced",
+            Sec::Closed => "closed",
+        }
+    }
+
+    fn parse(s: &str) -> Option<Sec> {
+        [Sec::Modules, Sec::Options, Sec::Advanced].into_iter().find(|x| x.id() == s)
+    }
+}
+
 struct Focus {
     key: String,
     text: String,
@@ -327,15 +352,17 @@ enum Open {
 /// The Edit layout hotkey, as its keys read (registered in `app::tray`).
 pub const EDIT_KEYS: &[&str] = &["Ctrl", "Shift", "E"];
 
-const WIN: (f32, f32) = (1180.0, 780.0);
-const MIN_WIN: (f32, f32) = (860.0, 560.0);
-const HEADER_H: f32 = 62.0;
-/// Page margin either side, and the Widgets page's list of Instances.
-const PAGE_PAD: f32 = 48.0;
-const SIDEBAR_W: f32 = 232.0;
-const CONTROL_W: f32 = 250.0;
-/// Amber, for what works but not as it should; no palette has a token for it.
-const WARN: Color = Color([0.95, 0.77, 0.38, 1.0]);
+const WIN: (f32, f32) = (1440.0, 900.0);
+const MIN_WIN: (f32, f32) = (960.0, 600.0);
+/// The window's own title bar; Windows draws none.
+const HEADER_H: f32 = 56.0;
+/// Around a page, and inside its panels.
+const PAD: f32 = 24.0;
+/// Between the blocks of a page.
+const GAP: f32 = 8.0;
+const CONTROL_W: f32 = 160.0;
+/// How near an edge of the window a press resizes it.
+const EDGE: f32 = 6.0;
 /// Where Add a widget lists a category; unknown ones follow in name order.
 const CATEGORIES: [&str; 6] = ["Time", "System", "Media", "Photos", "Launchers", "Developer"];
 const SV_N: usize = 14;
@@ -368,60 +395,67 @@ fn next_boundary(s: &str, i: usize) -> usize {
 #[derive(Clone, Copy, PartialEq)]
 enum Btn {
     Primary,
-    Outline,
+    /// The everyday button, on a panel.
+    Secondary,
+    /// A button on a raised row.
+    Tonal,
+    /// Text until it is hovered: Reset, Copy entry.
+    Ghost,
     Danger,
     DangerFill,
     Warn,
 }
 
+const fn hex(c: u32) -> Color {
+    Color::rgba(((c >> 16) & 255) as f32 / 255.0, ((c >> 8) & 255) as f32 / 255.0, (c & 255) as f32 / 255.0, 1.0)
+}
+
+// The window's greys, whatever the palette; only the accent is the palette's.
+const BG: Color = hex(0x0A0C10);
+/// Behind a widget preview, under its dot grid.
+const STAGE: Color = hex(0x06080B);
+const DOTS: Color = hex(0x262C37);
+const SURFACE: Color = hex(0x12151B);
+const RAISED: Color = hex(0x1B1F27);
+const RAISED2: Color = hex(0x272C36);
+const LINE: Color = hex(0x2A3039);
+const LINE_STRONG: Color = hex(0x3D4450);
+const FG: Color = hex(0xEEF1F4);
+const MUTED: Color = hex(0xA3A8AF);
+const SUBTLE: Color = hex(0x868C95);
+const SUCCESS: Color = hex(0x73D083);
+/// What works but not as it should.
+const WARN: Color = hex(0xE1AD57);
+const DANGER: Color = hex(0xFF968A);
+/// The close button's hover, as Windows draws it.
+const CLOSE_RED: Color = hex(0xC42B1C);
+/// `RAISED`, see-through: what a list row fades from, so a hover never flashes black.
+const CLEAR: Color = Color::rgba(0.106, 0.122, 0.153, 0.0);
+
 struct Kit<'a> {
     t: &'a Theme,
-    /// Light text on a dark palette.
-    dark: bool,
 }
 
 impl Kit<'_> {
     fn new(t: &Theme) -> Kit<'_> {
-        let [r, g, b, _] = t.color("text").0;
-        Kit { t, dark: r + g + b > 1.5 }
+        Kit { t }
     }
 
-    fn c(&self, n: &str) -> Color {
-        self.t.color(n)
+    fn accent(&self) -> Color {
+        self.t.color("accent").with_alpha(1.0)
     }
 
-    /// The text colour, faint: panels, hairlines and hovers that read on any palette.
-    fn ink(&self, a: f32) -> Color {
-        self.c("text").with_alpha(a)
-    }
-
-    /// Amber that reads on this palette.
-    fn warn(&self) -> Color {
-        if self.dark { WARN } else { Color([0.62, 0.42, 0.02, 1.0]) }
-    }
-
-    fn line(&self) -> Color {
-        self.ink(0.09)
-    }
-
-    fn panel(&self) -> Color {
-        self.ink(0.03)
-    }
-
-    /// `ink(a)` over the window, opaque: for fills that overlap themselves (`half_round`).
-    fn solid(&self, a: f32) -> Color {
-        self.bg().lerp(self.c("text").with_alpha(1.0), a)
-    }
-
-    /// The window: the palette's surface, deepened on a dark palette.
-    fn bg(&self) -> Color {
-        let s = self.c("surface").with_alpha(1.0);
-        if self.dark { s.lerp(Color([0.0, 0.0, 0.0, 1.0]), 0.45) } else { s }
+    fn on_accent(&self) -> Color {
+        self.t.color("accent-text").with_alpha(1.0)
     }
 
     fn txt(&self, key: String, s: &str, size: f32, col: Color) -> Node {
         let fam = self.t.str("font-body");
         Node::text(key, s, size, col).with_text(|t| t.family = fam)
+    }
+
+    fn medium(&self, key: String, s: &str, size: f32, col: Color) -> Node {
+        self.txt(key, s, size, col).with_text(|t| t.weight = 500)
     }
 
     fn bold(&self, key: String, s: &str, size: f32, col: Color) -> Node {
@@ -443,194 +477,311 @@ impl Kit<'_> {
         meta.map(|m| m.icon.clone()).filter(|i| !i.is_empty() && self.t.get(&format!("glyph-{i}")).is_some()).unwrap_or_else(|| "widgets".into())
     }
 
-    fn heading(&self, key: String, title: &str) -> Node {
-        self.bold(key, title, 15.0, self.c("text"))
-    }
-
-    /// The big title and line under it that open a page, with its buttons on the right.
-    fn page_head(&self, key: &str, title: &str, sub: &str, actions: Option<Node>) -> Node {
-        let left = Node::new(format!("{key}/l"))
-            .col()
-            .grow(1.0)
-            .min_w(0.0)
-            .gap(5.0)
-            .child(self.bold(format!("{key}/t"), title, 26.0, self.c("text")).with_text(|t| t.weight = 700))
-            .child(self.txt(format!("{key}/s"), sub, 13.0, self.c("text-dim")).wrap_text());
-        let mut n = Node::new(key).row().align(taffy::AlignItems::FLEX_END).gap(16.0).child(left);
-        if let Some(a) = actions {
-            n = n.child(a);
-        }
-        n
+    /// The title that opens a page, the line beside it and its buttons.
+    fn page_head(&self, key: &str, title: &str, sub: &str, actions: Vec<Node>) -> Node {
+        Node::new(key)
+            .row()
+            .min_h(32.0)
+            .no_shrink()
+            .align(taffy::AlignItems::CENTER)
+            .gap(16.0)
+            .child(self.bold(format!("{key}/t"), title, 24.0, FG).no_shrink())
+            .child(self.txt(format!("{key}/s"), sub, 14.0, MUTED).wrap_text().grow_text().min_w(0.0))
+            .kids(actions)
     }
 
     fn btn(&self, key: &str, glyph: Option<&str>, label: &str, action: String, kind: Btn) -> Node {
-        let (accent, danger) = (self.c("accent"), self.c("danger"));
-        let (fill, hover, border, col) = match kind {
-            Btn::Primary => (accent, accent.mul_alpha(0.86), TRANSPARENT, self.c("accent-text")),
-            Btn::Outline => (self.ink(0.02), self.ink(0.07), self.line(), self.c("text")),
-            Btn::Danger => (TRANSPARENT, danger.with_alpha(0.12), danger.with_alpha(0.45), danger),
-            Btn::DangerFill => (danger, danger.mul_alpha(0.86), TRANSPARENT, Color([1.0; 4])),
-            Btn::Warn => (WARN, WARN.mul_alpha(0.86), TRANSPARENT, Color([0.14, 0.1, 0.02, 1.0])),
+        let accent = self.accent();
+        let (fill, hover, border, col, weight) = match kind {
+            Btn::Primary => (accent, accent.mul_alpha(0.86), TRANSPARENT, self.on_accent(), 600),
+            Btn::Secondary => (RAISED, RAISED2, TRANSPARENT, FG, 500),
+            Btn::Tonal => (RAISED2, LINE_STRONG, TRANSPARENT, FG, 500),
+            Btn::Ghost => (CLEAR, RAISED, TRANSPARENT, MUTED, 400),
+            Btn::Danger => (DANGER.with_alpha(0.0), DANGER.with_alpha(0.12), LINE_STRONG, DANGER, 500),
+            Btn::DangerFill => (DANGER, DANGER.mul_alpha(0.86), TRANSPARENT, BG, 600),
+            Btn::Warn => (WARN, WARN.mul_alpha(0.86), TRANSPARENT, BG, 600),
         };
-        let mut n = Node::new(key).row().h(34.0).no_shrink().pad_xy(14.0, 0.0).gap(8.0).center().radius(9.0).fill(fill).hover_fill(hover).border(1.0, border).ease(120).on(action);
+        let mut n = Node::new(key).row().h(32.0).no_shrink().pad_xy(12.0, 0.0).gap(8.0).center().radius(4.0).fill(fill).hover_fill(hover).border(1.0, border).ease(120).on(action);
         if let Some(g) = glyph {
             n = n.child(self.glyph(format!("{key}/g"), g, 13.0, col));
         }
-        n.child(self.bold(format!("{key}/t"), label, 13.0, col))
+        n.child(self.txt(format!("{key}/t"), label, 14.0, col).with_text(|t| t.weight = weight))
     }
 
-    fn icon_btn(&self, key: &str, glyph: &str, action: String, col: Color, hover: Color) -> Node {
-        Node::new(key).wh(34.0, 34.0).no_shrink().center().radius(9.0).hover_fill(hover).ease(120).on(action).child(self.glyph(format!("{key}/g"), glyph, 15.0, col))
+    fn icon_btn(&self, key: &str, glyph: &str, action: String, col: Color) -> Node {
+        Node::new(key).wh(32.0, 32.0).no_shrink().center().radius(4.0).fill(CLEAR).hover_fill(RAISED2).ease(120).on(action).child(self.glyph(format!("{key}/g"), glyph, 13.0, col))
     }
 
     /// Text that works like a link.
     fn link(&self, key: &str, label: &str, action: String) -> Node {
-        let mut n = self.bold(key.into(), label, 12.5, self.c("accent")).ease(120).on(action);
-        n.hover.text_color = Some(self.c("accent").mul_alpha(0.7));
+        let mut n = self.medium(key.into(), label, 12.0, self.accent()).ease(120).on(action);
+        n.hover.text_color = Some(self.accent().mul_alpha(0.7));
         n
+    }
+
+    /// A muted link with a chevron, beside a panel's title: Get more from plugins.
+    fn more(&self, key: &str, label: &str, action: String) -> Node {
+        Node::new(key)
+            .row()
+            .h(24.0)
+            .pad_xy(6.0, 0.0)
+            .gap(6.0)
+            .align(taffy::AlignItems::CENTER)
+            .radius(4.0)
+            .fill(CLEAR)
+            .hover_fill(RAISED)
+            .ease(120)
+            .on(action)
+            .child(self.txt(format!("{key}/t"), label, 14.0, MUTED))
+            .child(self.glyph(format!("{key}/g"), "chevron-right", 9.0, MUTED))
     }
 
     fn toggle(&self, key: &str, on: bool, action: String) -> Node {
         let knob = Node::new(format!("{key}/k"))
-            .wh(18.0, 18.0)
-            .radius(9.0)
-            .fill(if on { self.c("accent-text") } else { self.c("text-dim") })
-            .abs(Some(3.0), Some(3.0), None, None)
-            .offset(if on { 18.0 } else { 0.0 }, 0.0)
-            .transition(220, Ease::Back)
-            .shadow(3.0, 1.0, Color([0.0, 0.0, 0.0, 0.25]));
-        Node::new(key).wh(42.0, 24.0).no_shrink().radius(12.0).fill(if on { self.c("accent") } else { self.ink(0.12) }).ease(180).on(action).child(knob)
+            .wh(16.0, 16.0)
+            .radius(2.0)
+            .fill(if on { self.on_accent() } else { MUTED })
+            .abs(Some(4.0), Some(4.0), None, None)
+            .offset(if on { 16.0 } else { 0.0 }, 0.0)
+            .transition(180, Ease::Out);
+        Node::new(key).wh(40.0, 24.0).no_shrink().radius(4.0).fill(if on { self.accent() } else { RAISED2 }).ease(160).on(action).child(knob)
     }
 
     fn slider(&self, key: &str, frac: f32, w: f32, action: String) -> Node {
         let f = frac.clamp(0.0, 1.0);
-        let fill = Node::new(format!("{key}/f")).abs(Some(0.0), Some(0.0), None, Some(0.0)).w(w * f).radius(3.0).fill(self.c("accent"));
-        let thumb = Node::new(format!("{key}/th"))
-            .wh(16.0, 16.0)
-            .radius(8.0)
-            .fill(self.c("accent"))
-            .border(3.0, self.bg())
-            .abs(Some(w * f - 8.0), Some(-5.5), None, None)
-            .shadow(4.0, 1.0, Color([0.0, 0.0, 0.0, 0.35]));
-        let rail = Node::new(format!("{key}/r")).w(w).h(5.0).radius(3.0).fill(self.ink(0.12)).child(fill).child(thumb);
-        // the taller wrapper is the hit target and the rect the drag maps onto
-        Node::new(key).w(w).h(24.0).no_shrink().align(taffy::AlignItems::CENTER).on(action).child(rail)
+        let x = ((w - 8.0) * f).round();
+        let track = Node::new(format!("{key}/r")).abs(Some(0.0), Some(10.0), None, None).wh(w, 4.0).radius(2.0).fill(RAISED2);
+        let fill = Node::new(format!("{key}/f")).abs(Some(0.0), Some(10.0), None, None).wh(x + 4.0, 4.0).radius(2.0).fill(self.accent());
+        let thumb = Node::new(format!("{key}/th")).abs(Some(x), Some(4.0), None, None).wh(8.0, 16.0).radius(2.0).fill(FG);
+        // the whole strip is the hit target and the rect the drag maps onto
+        Node::new(key).wh(w, 24.0).no_shrink().on(action).child(track).child(fill).child(thumb)
     }
 
+    /// A slider and its value, as a setting's control.
+    fn slider_val(&self, key: &str, frac: f32, w: f32, action: String, value: &str) -> Node {
+        Node::new(format!("{key}/sc"))
+            .row()
+            .align(taffy::AlignItems::CENTER)
+            .gap(8.0)
+            .child(self.slider(key, frac, w, action))
+            .child(Node::new(format!("{key}/vw")).w(56.0).no_shrink().child(self.txt(format!("{key}/v"), value, 14.0, FG).with_text(|t| t.align = crate::text::TextAlign::Right).grow_text()))
+    }
+
+    /// `w` 0 leaves the width to the parent: a column stretches it.
     fn input(&self, key: &str, text: &str, placeholder: &str, focus: Option<(usize, bool)>, w: f32, mono: bool) -> Node {
         let focused = focus.is_some();
         let fam = if mono { self.t.str("font-mono") } else { self.t.str("font-body") };
         let shown = if text.is_empty() && !focused { placeholder } else { text };
-        let col = if text.is_empty() { self.c("text-dim").mul_alpha(0.8) } else { self.c("text") };
+        let col = if text.is_empty() { SUBTLE } else { FG };
         let caret = focus.and_then(|(c, on)| on.then_some(c));
-        let t = Node::text(format!("{key}/t"), shown, 13.0, col).with_text(|s| {
+        let t = Node::text(format!("{key}/t"), shown, if mono { 13.0 } else { 14.0 }, col).with_text(|s| {
             s.family = fam;
             s.caret = caret;
-            s.wrap = false;
         });
-        Node::new(key)
-            .w(w)
-            .h(36.0)
+        let n = Node::new(key)
+            .h(32.0)
             .no_shrink()
             .pad_xy(12.0, 0.0)
             .align(taffy::AlignItems::CENTER)
-            .radius(9.0)
-            .fill(self.ink(0.03))
-            .border(if focused { 1.5 } else { 1.0 }, if focused { self.c("accent") } else { self.line() })
+            .radius(4.0)
+            .fill(RAISED)
+            .border(1.0, if focused { self.accent() } else { LINE })
             .ease(120)
             .clip()
             .on(format!("in:{key}"))
-            .child(t)
+            .child(t);
+        if w > 0.0 { n.w(w) } else { n }
     }
 
     fn dropdown(&self, key: &str, label: &str, w: f32, open: bool) -> Node {
         Node::new(key)
             .w(w)
-            .h(36.0)
+            .h(32.0)
             .no_shrink()
             .row()
             .align(taffy::AlignItems::CENTER)
-            .pad_xy(12.0, 0.0)
-            .gap(6.0)
-            .radius(9.0)
-            .fill(self.ink(0.03))
-            .hover_fill(self.ink(0.07))
-            .border(if open { 1.5 } else { 1.0 }, if open { self.c("accent") } else { self.line() })
+            .pad_each(0.0, 10.0, 0.0, 12.0)
+            .gap(8.0)
+            .radius(4.0)
+            .fill(RAISED)
+            .hover_fill(RAISED2)
+            .border(1.0, if open { self.accent() } else { LINE })
             .ease(120)
+            .clip()
             .on(format!("dd:{key}"))
-            .child(self.txt(format!("{key}/t"), label, 13.0, self.c("text")).grow_text())
-            .child(self.glyph(format!("{key}/g"), "chevron-down", 11.0, self.c("text-dim")))
+            .child(self.txt(format!("{key}/t"), label, 14.0, FG).grow_text().min_w(0.0))
+            .child(self.glyph(format!("{key}/g"), "chevron-down", 10.0, MUTED))
     }
 
+    /// A colour to pick; the picked one wears a ring.
     fn swatch(&self, key: &str, col: Color, size: f32, action: Option<String>, selected: bool) -> Node {
-        let mut n = Node::new(key).wh(size, size).no_shrink().radius(size / 2.0).fill(col).border(if selected { 2.5 } else { 1.0 }, if selected { self.c("text") } else { self.line() }).ease(120);
+        let mut chip = Node::new(format!("{key}/c")).wh(size, size).radius(4.0).fill(col).border(1.0, LINE).ease(120);
         if let Some(a) = action {
-            n = n.on(a).hover_fill(col.mul_alpha(0.8));
+            chip = chip.on(a).hover_fill(col.mul_alpha(0.8));
+        }
+        Node::new(key).wh(size + 6.0, size + 6.0).no_shrink().center().radius(6.0).border(2.0, if selected { FG } else { CLEAR }).ease(120).child(chip)
+    }
+
+    /// A shortcut's keys on one chip: `Ctrl Shift E`.
+    fn keys(&self, key: &str, keys: &[&str]) -> Node {
+        Node::new(key).h(20.0).no_shrink().pad_xy(4.0, 0.0).center().radius(2.0).fill(RAISED2).child(self.mono(format!("{key}/t"), &keys.join(" "), 12.0, MUTED))
+    }
+
+    /// A shortcut spelled out in a box: `Ctrl + Shift + E`.
+    fn shortcut(&self, key: &str, keys: &[&str]) -> Node {
+        let mut n = Node::new(key).row().h(32.0).no_shrink().pad_xy(12.0, 0.0).gap(8.0).align(taffy::AlignItems::CENTER).radius(4.0).fill(RAISED).border(1.0, LINE);
+        for (i, l) in keys.iter().enumerate() {
+            if i > 0 {
+                n = n.child(self.mono(format!("{key}/p{i}"), "+", 13.0, SUBTLE));
+            }
+            n = n.child(self.mono(format!("{key}/{i}"), l, 13.0, FG));
         }
         n
     }
 
-    /// A key of a shortcut, as on the keyboard.
-    fn kbd(&self, key: String, label: &str) -> Node {
-        Node::new(key.clone()).h(22.0).no_shrink().pad_xy(7.0, 0.0).center().radius(5.0).fill(self.ink(0.05)).border(1.0, self.line()).child(self.mono(format!("{key}/t"), label, 11.5, self.c("text-dim")))
-    }
-
-    fn keys(&self, key: &str, keys: &[&str]) -> Node {
-        Node::new(key).row().gap(4.0).align(taffy::AlignItems::CENTER).kids(keys.iter().enumerate().map(|(i, l)| self.kbd(format!("{key}/{i}"), l)))
-    }
-
-    fn badge(&self, key: String, label: &str, col: Color) -> Node {
-        Node::new(key.clone()).h(20.0).no_shrink().pad_xy(7.0, 0.0).center().radius(5.0).fill(col.with_alpha(0.14)).child(self.bold(format!("{key}/t"), label, 11.0, col))
-    }
-
-    /// A small outlined label: `Extra`, a version.
-    fn tag(&self, key: String, label: &str, mono: bool) -> Node {
-        let t = if mono { self.mono(format!("{key}/t"), label, 11.5, self.c("text-dim")) } else { self.txt(format!("{key}/t"), label, 11.0, self.c("text-dim")) };
-        Node::new(key).h(20.0).no_shrink().pad_xy(6.0, 0.0).center().radius(5.0).border(1.0, self.line()).child(t)
-    }
-
-    /// A glyph on a rounded square.
-    fn tile(&self, key: String, glyph: &str, size: f32, col: Color) -> Node {
-        Node::new(key.clone()).wh(size, size).no_shrink().center().radius(size * 0.26).fill(self.ink(0.05)).border(1.0, self.line()).child(self.glyph(format!("{key}/g"), glyph, (size * 0.4).round(), col))
+    /// A small label on a chip: Changed, Own, a plugin's name.
+    fn tag(&self, key: String, label: &str, col: Color) -> Node {
+        Node::new(key.clone()).h(18.0).no_shrink().pad_xy(4.0, 0.0).center().radius(2.0).fill(RAISED2).child(self.txt(format!("{key}/t"), label, 12.0, col))
     }
 
     /// The Wayfinder mark: an arrow on an accent square.
     fn logo(&self, key: &str, size: f32) -> Node {
-        let arrow = shape_node(format!("{key}/a"), Arrow { color: self.c("accent-text"), width: size * 0.12 }).abs_fill();
-        Node::new(key).wh(size, size).no_shrink().radius(size * 0.28).fill(self.c("accent")).child(arrow)
+        let arrow = shape_node(format!("{key}/a"), Arrow { color: self.on_accent(), width: size * 0.09 }).abs_fill();
+        Node::new(key).wh(size, size).no_shrink().radius((size * 0.17).round()).fill(self.accent()).child(arrow)
     }
 
-    /// A setting in a group card: what it is on the left, its control on the right.
+    fn hr(&self, key: String) -> Node {
+        Node::new(key).h(1.0).no_shrink().fill(LINE)
+    }
+
+    /// A hairline across the top of its parent.
+    fn top_line(&self, key: String) -> Node {
+        Node::new(key).abs(Some(0.0), Some(0.0), Some(0.0), None).h(1.0).fill(LINE)
+    }
+
+    /// A setting: what it is on the left, its control on the right.
     fn row(&self, key: &str, label: &str, help: &str, control: Node) -> Node {
-        self.row_with(key, self.bold(format!("{key}/lt"), label, 13.5, self.c("text")).wrap_text(), help, None, control)
+        self.row_with(key, self.medium(format!("{key}/lt"), label, 14.0, FG).wrap_text(), help, None, control)
     }
 
     fn row_with(&self, key: &str, title: Node, help: &str, extra: Option<Node>, control: Node) -> Node {
-        let mut left = Node::new(format!("{key}/l")).col().grow(1.0).min_w(0.0).gap(3.0).child(title);
+        let mut left = Node::new(format!("{key}/l")).col().grow(1.0).min_w(0.0).gap(2.0).child(title);
         if !help.is_empty() {
-            left = left.child(self.txt(format!("{key}/lh"), help, 12.0, self.c("text-dim")).wrap_text());
+            left = left.child(self.txt(format!("{key}/lh"), help, 12.0, MUTED).wrap_text());
         }
         if let Some(e) = extra {
             left = left.child(e);
         }
-        let ctl = Node::new(format!("{key}/ctl")).row().no_shrink().align(taffy::AlignItems::CENTER).gap(10.0).child(control);
-        Node::new(key).row().gap(20.0).align(taffy::AlignItems::CENTER).pad_xy(20.0, 13.0).child(left).child(ctl)
+        let ctl = Node::new(format!("{key}/ctl")).row().no_shrink().align(taffy::AlignItems::CENTER).gap(8.0).child(control);
+        Node::new(key).row().min_h(56.0).pad_xy(0.0, 8.0).gap(16.0).align(taffy::AlignItems::CENTER).child(left).child(ctl)
     }
 
-    /// A heading over a card of rows, with hairlines between them.
-    fn group(&self, key: &str, title: &str, rows: Vec<Node>) -> Node {
-        let mut card = Node::new(format!("{key}/card")).col().radius(12.0).fill(self.panel()).border(1.0, self.line()).clip();
+    /// A setting whose control is too wide to sit beside it: underneath, as wide as the row.
+    fn stack(&self, key: &str, label: &str, help: &str, control: Node) -> Node {
+        let mut n = Node::new(key).col().pad_xy(0.0, 12.0).gap(2.0).child(self.medium(format!("{key}/lt"), label, 14.0, FG).wrap_text());
+        if !help.is_empty() {
+            n = n.child(self.txt(format!("{key}/lh"), help, 12.0, MUTED).wrap_text());
+        }
+        n.child(Node::new(format!("{key}/ctl")).col().pad_each(8.0, 0.0, 0.0, 0.0).child(control))
+    }
+
+    /// Rows with hairlines between them.
+    fn rows(&self, key: &str, rows: Vec<Node>) -> Node {
+        let mut c = Node::new(key).col();
         for (i, r) in rows.into_iter().enumerate() {
             if i > 0 {
-                card = card.child(Node::new(format!("{key}/hr{i}")).h(1.0).no_shrink().fill(self.line()));
+                c = c.child(self.hr(format!("{key}/hr{i}")));
             }
-            card = card.child(r);
+            c = c.child(r);
         }
-        let mut g = Node::new(key).col().gap(10.0);
+        c
+    }
+
+    /// A small heading inside a panel: a group of options, a kind of module.
+    fn sub(&self, key: String, title: &str) -> Node {
+        Node::new(key.clone()).pad_each(16.0, 0.0, 4.0, 0.0).child(self.txt(format!("{key}/t"), title, 12.0, MUTED))
+    }
+
+    /// One block of the bento: a title, a note on its right and what it holds.
+    fn panel(&self, key: &str, title: &str, note: Option<Node>, body: Node) -> Node {
+        let mut n = Node::new(key).col().pad_each(16.0, 24.0, 8.0, 24.0).gap(4.0).radius(4.0).fill(SURFACE);
         if !title.is_empty() {
-            g = g.child(self.heading(format!("{key}/t"), title));
+            let mut head = Node::new(format!("{key}/h")).row().min_h(24.0).align(taffy::AlignItems::CENTER).gap(12.0).child(self.bold(format!("{key}/t"), title, 16.0, FG).grow_text());
+            if let Some(nt) = note {
+                head = head.child(nt);
+            }
+            n = n.child(head);
         }
-        g.child(card)
+        n.child(body)
+    }
+
+    /// A panel of setting rows.
+    fn group(&self, key: &str, title: &str, rows: Vec<Node>) -> Node {
+        self.panel(key, title, None, self.rows(&format!("{key}/rows"), rows))
+    }
+
+    /// The list down the left of a page: its heading and count, the items, a note under them.
+    fn side_list(&self, key: &str, w: f32, title: &str, count: usize, items: Node, foot: Option<Node>) -> Node {
+        let head = Node::new(format!("{key}/h"))
+            .row()
+            .no_shrink()
+            .pad_xy(12.0, 8.0)
+            .justify(taffy::JustifyContent::SPACE_BETWEEN)
+            .child(self.txt(format!("{key}/h/t"), title, 12.0, MUTED))
+            .child(self.txt(format!("{key}/h/n"), &count.to_string(), 12.0, MUTED));
+        let mut n = Node::new(key).col().w(w).no_shrink().pad(8.0).gap(4.0).radius(4.0).fill(SURFACE).child(head).child(items);
+        if let Some(f) = foot {
+            n = n.child(f);
+        }
+        n
+    }
+
+    fn foot_note(&self, key: &str, text: &str) -> Node {
+        Node::new(key).no_shrink().pad_xy(12.0, 8.0).child(self.txt(format!("{key}/t"), text, 12.0, SUBTLE).wrap_text())
+    }
+
+    /// An entry of a page's side list.
+    fn list_item(&self, key: &str, on: bool, action: String) -> Node {
+        Node::new(key).row().min_h(40.0).pad_xy(12.0, 8.0).gap(12.0).align(taffy::AlignItems::CENTER).radius(4.0).fill(if on { RAISED } else { CLEAR }).hover_fill(RAISED).ease(120).on(action)
+    }
+
+    /// A raised row naming something, with a line under it and a button: a desktop, a monitor setup.
+    fn item_row(&self, key: &str, title: &str, sub: &str, btn: Option<Node>) -> Node {
+        let mut text = Node::new(format!("{key}/c")).col().grow(1.0).min_w(0.0).child(self.medium(format!("{key}/t"), title, 14.0, FG).wrap_text());
+        if !sub.is_empty() {
+            text = text.child(self.txt(format!("{key}/s"), sub, 12.0, MUTED).wrap_text());
+        }
+        let n = Node::new(key).row().min_h(56.0).pad_xy(12.0, 8.0).gap(12.0).align(taffy::AlignItems::CENTER).radius(4.0).fill(RAISED).child(text);
+        match btn {
+            Some(b) => n.child(b),
+            None => n,
+        }
+    }
+
+    /// `label ........ value`.
+    fn kv(&self, key: &str, label: &str, value: Node) -> Node {
+        Node::new(key).row().min_h(40.0).pad_xy(0.0, 8.0).gap(16.0).align(taffy::AlignItems::CENTER).child(self.txt(format!("{key}/l"), label, 14.0, MUTED).no_shrink()).child(Node::new(format!("{key}/v")).row().grow(1.0).min_w(0.0).justify(taffy::JustifyContent::FLEX_END).child(value))
+    }
+
+    /// A choice of a segmented control.
+    fn seg_item(&self, key: String, label: &str, on: bool, action: String) -> Node {
+        Node::new(key.clone())
+            .row()
+            .h(28.0)
+            .pad_xy(12.0, 0.0)
+            .gap(8.0)
+            .align(taffy::AlignItems::CENTER)
+            .radius(2.0)
+            .fill(if on { RAISED2 } else { RAISED2.with_alpha(0.0) })
+            .hover_fill(RAISED2)
+            .ease(120)
+            .on(action)
+            .child(self.txt(format!("{key}/t"), label, 14.0, if on { FG } else { MUTED }).with_text(|t| t.weight = if on { 500 } else { 400 }))
+    }
+
+    /// Choices side by side, one of them on: size tiers, log levels.
+    fn segmented(&self, key: &str, items: Vec<Node>) -> Node {
+        Node::new(key).row().no_shrink().pad(2.0).radius(4.0).fill(RAISED).kids(items)
     }
 }
 
@@ -661,8 +812,8 @@ fn shape_node(key: String, s: impl Shape + 'static) -> Node {
 }
 
 /// A dot grid filling its parent, behind the parent's other children.
-fn dots(key: String, col: Color) -> Node {
-    shape_node(key, Dots { gap: 18.0, color: col }).abs_fill()
+fn dots(key: String) -> Node {
+    shape_node(key, Dots { gap: 16.0, color: DOTS }).abs_fill()
 }
 
 /// A dashed outline filling its parent.
@@ -790,8 +941,10 @@ impl TextExt for Node {
     fn grow_text(self) -> Self {
         self.grow(1.0)
     }
+    /// Wraps at its parent's width; in a row it may shrink for that, as text reports its
+    /// unwrapped width as its smallest.
     fn wrap_text(self) -> Self {
-        self.with_text(|t| t.wrap = true)
+        self.with_text(|t| t.wrap = true).min_w(0.0)
     }
 }
 
@@ -812,7 +965,8 @@ pub struct UiState {
     /// The size tier the preview shows; none = the one the Instance's own size falls in.
     pub tier_tab: Option<String>,
     sel_module: Option<String>,
-    advanced: bool,
+    /// The options panel's open section; none = the Widget's default.
+    sec: Option<Sec>,
     mdrag: Option<ModDrag>,
     /// What the last preview build placed, and where the last frame drew it.
     preview_arr: RefCell<Option<Arrangement>>,
@@ -832,11 +986,21 @@ pub struct UiState {
     gpu_picked: bool,
     /// A version chosen in the General page's picker, not yet (or just) installed.
     update_pick: Option<String>,
+    /// The window fills the screen, so its button restores it.
+    pub maximized: bool,
+    /// The Workspace the Workspaces page shows, by index; none = the one on screen.
+    ws_sel: Option<usize>,
+    /// The Plugin the Plugins page shows, by id; none = the first.
+    plugin_sel: Option<String>,
+    /// The log entry shown in full, by index into the log.
+    log_sel: Option<usize>,
+    /// How soon the previews' live data changes, from the last build.
+    preview_wake: std::cell::Cell<Option<Duration>>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
-        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), popup_anchor_rects: HashMap::new(), drop_hover: false, tier_tab: None, sel_module: None, advanced: false, mdrag: None, preview_arr: RefCell::new(None), tray_key: RefCell::new(String::new()), preview_rects: HashMap::new(), adding: false, category: None, queries: HashMap::new(), log_level: None, step: 0, gpu_picked: false, update_pick: None }
+        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), popup_anchor_rects: HashMap::new(), drop_hover: false, tier_tab: None, sel_module: None, sec: None, mdrag: None, preview_arr: RefCell::new(None), tray_key: RefCell::new(String::new()), preview_rects: HashMap::new(), adding: false, category: None, queries: HashMap::new(), log_level: None, step: 0, gpu_picked: false, update_pick: None, maximized: false, ws_sel: None, plugin_sel: None, log_sel: None, preview_wake: std::cell::Cell::new(None) }
     }
 }
 
@@ -1154,22 +1318,24 @@ impl UiState {
     pub fn build(&self, ctx: &Ctx, size: (f32, f32)) -> (Node, Vec<String>) {
         let k = Kit::new(ctx.theme);
         let mut images = Vec::new();
-        let mut card = Node::new("s/card").col().wh(size.0, size.1).fill(k.bg()).clip();
-        if ctx.ws.onboarded {
-            let body = match self.page {
+        self.preview_wake.set(None);
+        let body = if ctx.ws.onboarded {
+            let (actions, body) = match self.page {
                 Page::Widgets => self.page_widgets(&k, ctx, size, &mut images),
                 Page::Workspaces => self.page_workspaces(&k, ctx, size),
                 Page::Appearance => self.page_appearance(&k, ctx, size),
-                Page::Plugins => self.page_plugins(&k, ctx, size),
+                Page::Plugins => self.page_plugins(&k, ctx, size, &mut images),
                 Page::General => self.page_general(&k, ctx, size),
                 Page::Log => self.page_log(&k, ctx, size),
             };
+            let id = self.page.id();
+            let head = k.page_head(&format!("s/head/{id}"), self.page.heading(), self.page.subtitle(), actions);
             // a new key per page replays the enter animation
-            let page = Node::new(format!("s/page/{}", self.page.id())).col().grow(1.0).min_h(0.0).enter(240, 10.0, 0).child(body);
-            card = card.child(self.header(&k, ctx, size)).child(page);
+            Node::new(format!("s/page/{id}")).col().grow(1.0).min_h(0.0).pad(PAD).gap(16.0).enter(240, 10.0, 0).child(head).child(body)
         } else {
-            card = card.child(self.setup(&k, ctx, size, &mut images));
-        }
+            self.setup(&k, ctx, size, &mut images)
+        };
+        let card = Node::new("s/card").col().wh(size.0, size.1).fill(BG).clip().child(self.header(&k, size, ctx.ws.onboarded)).child(body);
         let mut root = Node::new("s").wh(size.0, size.1).child(card);
         if let Some(o) = self.module_overlay(&k, ctx, &mut images) {
             root = root.child(o);
@@ -1180,122 +1346,88 @@ impl UiState {
         (root, images)
     }
 
-    /// The brand, the page tabs, Edit layout and Quit.
-    fn header(&self, k: &Kit, ctx: &Ctx, size: (f32, f32)) -> Node {
-        let mut brand = Node::new("s/brand").row().grow(1.0).align(taffy::AlignItems::CENTER).gap(10.0).child(k.logo("s/logo", 30.0));
-        if size.0 >= 960.0 {
-            brand = brand.child(k.bold("s/brand/t".into(), "Wayfinder", 16.0, k.c("text")).with_text(|t| t.weight = 700));
+    /// The window's own title bar, which drags it: the brand, the pages, and minimize,
+    /// maximize and close.
+    fn header(&self, k: &Kit, size: (f32, f32), tabs: bool) -> Node {
+        let mut brand = Node::new("s/brand").row().no_shrink().align(taffy::AlignItems::CENTER).gap(12.0).child(k.logo("s/logo", 24.0));
+        if size.0 >= 1100.0 {
+            brand = brand.child(k.bold("s/brand/t".into(), "Wayfinder", 16.0, FG));
         }
-        let mut tabs = Node::new("s/tabs").row().no_shrink().gap(2.0).pad(4.0).radius(12.0).fill(k.ink(0.025)).border(1.0, k.line());
-        for p in Page::ALL {
+        brand = if size.0 >= 1280.0 { brand.w(248.0) } else { brand.pad_each(0.0, 24.0, 0.0, 0.0) };
+        let mut nav = Node::new("s/tabs").row().no_shrink().gap(4.0);
+        for p in Page::ALL.into_iter().filter(|_| tabs) {
             let on = p == self.page;
-            let col = if on { k.c("text") } else { k.c("text-dim") };
-            tabs = tabs.child(
-                Node::new(format!("s/tab/{}", p.id()))
+            let key = format!("s/tab/{}", p.id());
+            let col = if on { FG } else { MUTED };
+            nav = nav.child(
+                Node::new(key.clone())
                     .row()
-                    .h(34.0)
-                    .pad_xy(14.0, 0.0)
+                    .h(32.0)
+                    .pad_xy(12.0, 0.0)
                     .gap(8.0)
                     .align(taffy::AlignItems::CENTER)
-                    .radius(9.0)
-                    .fill(k.c("accent").with_alpha(if on { 0.16 } else { 0.0 }))
-                    .hover_fill(if on { k.c("accent").with_alpha(0.2) } else { k.ink(0.05) })
-                    .ease(170)
+                    .radius(4.0)
+                    .fill(if on { RAISED } else { CLEAR })
+                    .hover_fill(RAISED)
+                    .ease(150)
                     .on(format!("nav:{}", p.id()))
-                    .child(k.glyph(format!("s/tab/{}/g", p.id()), p.glyph(), 14.0, if on { k.c("accent") } else { col }))
-                    .child(k.txt(format!("s/tab/{}/t", p.id()), p.title(), 13.5, col).with_text(|t| t.weight = if on { 600 } else { 400 })),
+                    .child(k.glyph(format!("{key}/g"), p.glyph(), 13.0, col))
+                    .child(k.txt(format!("{key}/t"), p.title(), 14.0, col).with_text(|t| t.weight = if on { 500 } else { 400 })),
             );
         }
-        let on = ctx.edit;
-        let fg = if on { k.c("accent-text") } else { k.c("text") };
-        let mut edit = Node::new("s/edit")
+        let ctl = |key: &str, glyph: &str, action: &str, hover: Color| Node::new(key).w(48.0).h(HEADER_H).center().fill(hover.with_alpha(0.0)).hover_fill(hover).ease(100).on(action).child(k.glyph(format!("{key}/g"), glyph, 10.0, FG));
+        let controls = Node::new("s/win")
             .row()
-            .h(38.0)
-            .pad_xy(12.0, 0.0)
-            .gap(10.0)
-            .align(taffy::AlignItems::CENTER)
-            .radius(10.0)
-            .fill(if on { k.c("accent") } else { k.ink(0.02) })
-            .hover_fill(if on { k.c("accent").mul_alpha(0.86) } else { k.ink(0.06) })
-            .border(1.0, if on { TRANSPARENT } else { k.line() })
-            .ease(160)
-            .on("edit:toggle")
-            .child(k.glyph("s/edit/g".into(), "move", 15.0, if on { fg } else { k.c("accent") }))
-            .child(k.bold("s/edit/t".into(), if on { "Finish editing" } else { "Edit layout" }, 13.5, fg));
-        if !on && size.0 >= 1060.0 {
-            edit = edit.child(k.keys("s/edit/k", EDIT_KEYS));
-        }
-        let quit = k.icon_btn("s/quit", "power", "quit".into(), k.c("text-dim"), k.c("danger").with_alpha(0.2));
-        let right = Node::new("s/right").row().grow(1.0).align(taffy::AlignItems::CENTER).justify(taffy::JustifyContent::FLEX_END).gap(8.0).child(edit).child(quit);
+            .no_shrink()
+            .child(ctl("s/win/min", "minimize", "min", RAISED))
+            .child(ctl("s/win/max", if self.maximized { "restore" } else { "maximize" }, "max", RAISED))
+            .child(ctl("s/win/close", "close", "close", CLOSE_RED));
         Node::new("s/header")
             .row()
             .h(HEADER_H)
             .no_shrink()
             .align(taffy::AlignItems::CENTER)
-            .pad_xy(18.0, 0.0)
-            .gap(16.0)
-            .fill(k.ink(0.02))
+            .pad_each(0.0, 0.0, 0.0, 24.0)
+            .fill(SURFACE)
+            .on("drag")
             .child(brand)
-            .child(tabs)
-            .child(right)
-            .child(Node::new("s/header/hr").abs(Some(0.0), None, Some(0.0), Some(0.0)).h(1.0).fill(k.line()))
+            .child(nav)
+            .child(Node::new("s/header/sp").grow(1.0))
+            .child(controls)
     }
 
     fn scrolling(&self, key: &str, content: Node) -> Node {
-        Node::new(key).col().grow(1.0).min_h(0.0).scroll(self.scroll_of(key)).hit().child(content)
+        Node::new(key).col().grow(1.0).min_h(0.0).min_w(0.0).scroll(self.scroll_of(key)).hit().child(content)
     }
 
-    /// A page's scrolling body: a column `w` wide (see `content_w`), centred in the window.
-    fn page(&self, key: &str, w: f32, content: Node) -> Node {
-        // a set width: a percentage of a scrolling parent resolves as unknown
-        let wrap = Node::new(format!("{key}/wrap")).col().align(taffy::AlignItems::CENTER).pad_xy(PAGE_PAD, 34.0).child(content.w(w));
-        self.scrolling(key, wrap)
+    fn is_open_dd(&self, key: &str) -> bool {
+        matches!(&self.open, Some(Open::Dropdown(o)) if o == key)
     }
 
-    fn page_widgets(&self, k: &Kit, ctx: &Ctx, size: (f32, f32), images: &mut Vec<String>) -> Node {
-        let right_w = content_w(size, 1040.0) - SIDEBAR_W - 24.0;
+    fn page_widgets(&self, k: &Kit, ctx: &Ctx, size: (f32, f32), images: &mut Vec<String>) -> (Vec<Node>, Node) {
+        let editing = ctx.edit;
+        let mut edit = k.btn("w/edit", Some("move"), if editing { "Finish editing" } else { "Edit layout" }, "edit:toggle".into(), if editing { Btn::Primary } else { Btn::Secondary });
+        if !editing {
+            edit = edit.pad_each(0.0, 8.0, 0.0, 12.0).child(k.keys("w/edit/k", EDIT_KEYS));
+        }
+        let add = k.btn("w/add", Some("add"), "Add widget", "gallery:open".into(), Btn::Primary);
+        let (lw, sw) = side_widths(size);
         let sel = if self.adding { None } else { self.selected_cfg(ctx) };
-        let mut list = Node::new("w/list")
-            .col()
-            .w(SIDEBAR_W)
-            .no_shrink()
-            .gap(2.0)
-            .pad(8.0)
-            .radius(14.0)
-            .fill(k.panel())
-            .border(1.0, k.line())
-            .child(Node::new("w/list/h").pad_xy(10.0, 8.0).child(k.bold("w/list/h/t".into(), &format!("On your desktop · {}", ctx.ws.instances.len()), 12.0, k.c("text-dim"))));
+        let mut items = Node::new("w/list/items").col().gap(4.0);
         if ctx.ws.instances.is_empty() {
-            list = list.child(Node::new("w/empty").pad_xy(10.0, 6.0).child(k.txt("w/empty/t".into(), "Nothing yet. Add one to get started.", 12.5, k.c("text-dim")).wrap_text()));
+            items = items.child(Node::new("w/empty").pad_xy(12.0, 8.0).child(k.txt("w/empty/t".into(), "Nothing yet. Add one to get started.", 14.0, MUTED).wrap_text()));
         }
         for (i, c) in ctx.ws.instances.iter().enumerate() {
-            list = list.child(self.instance_item(k, ctx, c, sel.is_some_and(|s| s.id == c.id), i));
+            items = items.child(self.instance_item(k, ctx, c, sel.is_some_and(|s| s.id == c.id), i));
         }
-        let gallery = sel.is_none();
-        let add = Node::new("w/addbtn")
-            .row()
-            .h(46.0)
-            .pad_xy(10.0, 0.0)
-            .gap(12.0)
-            .align(taffy::AlignItems::CENTER)
-            .radius(10.0)
-            .fill(k.c("accent").with_alpha(if gallery { 0.1 } else { 0.03 }))
-            .hover_fill(k.c("accent").with_alpha(0.13))
-            .ease(140)
-            .on("gallery:open")
-            .child(dashed("w/addbtn/d".into(), 10.0, k.c("accent").with_alpha(0.55)))
-            .child(Node::new("w/addbtn/ic").wh(26.0, 26.0).no_shrink().radius(7.0).center().fill(k.c("accent").with_alpha(0.16)).child(k.glyph("w/addbtn/ic/g".into(), "add", 12.0, k.c("accent"))))
-            .child(k.bold("w/addbtn/t".into(), "Add widget", 13.5, k.c("text")).grow_text())
-            .child(k.txt("w/addbtn/n".into(), &format!("{} types", ctx.reg.ids().len()), 11.5, k.c("text-dim")));
-        list = list.child(Node::new("w/list/sp").h(6.0)).child(add);
-        let right = match sel {
-            Some(cfg) => self.instance_panel(k, ctx, cfg, images),
-            None => self.gallery(k, ctx, right_w, !ctx.ws.instances.is_empty(), images),
+        let foot = k.foot_note("w/list/f", &format!("{} widget types to add from", ctx.reg.ids().len()));
+        let list = k.side_list("w/list", lw, "On your desktop", ctx.ws.instances.len(), self.scrolling("w/list/scroll", items), Some(foot));
+        let body = Node::new("w").row().grow(1.0).min_h(0.0).gap(GAP).child(list);
+        let body = match sel {
+            Some(cfg) => body.child(self.stage(k, ctx, cfg, size.0 - 2.0 * PAD - lw - sw - 2.0 * GAP, images)).child(self.options_panel(k, ctx, cfg, sw, images)),
+            None => body.child(self.gallery(k, ctx, size.0 - 2.0 * PAD - lw - GAP, !ctx.ws.instances.is_empty(), images)),
         };
-        // min_w(0): text reports its unwrapped width as min-content, so a long description would push Remove out
-        let cols = Node::new("w/cols").row().gap(24.0).align(taffy::AlignItems::FLEX_START).child(list).child(Node::new("w/right").col().grow(1.0).min_w(0.0).child(right));
-        let body = Node::new("w").col().gap(26.0).child(k.page_head("w/head", Page::Widgets.heading(), Page::Widgets.subtitle(), None)).child(cols);
-        self.page("w/scroll-r", content_w(size, 1040.0), body)
+        (vec![edit, add], body)
     }
 
     /// An Instance in the list on the left of the Widgets page.
@@ -1311,27 +1443,17 @@ impl UiState {
         });
         let note = note.or_else(|| self.needs_note(ctx, &c.widget).map(|n| capitalized(n.trim_start_matches("  ·  "))));
         let key = format!("w/i/{}", c.id);
-        let mut text = Node::new(format!("{key}/c")).col().grow(1.0).min_w(0.0).gap(1.0).child(k.txt(format!("{key}/n"), &name, 13.5, k.c("text")).with_text(|t| t.weight = if on { 600 } else { 400 }));
+        let mut text = Node::new(format!("{key}/c")).col().grow(1.0).min_w(0.0).child(k.txt(format!("{key}/n"), &name, 14.0, FG).with_text(|t| t.weight = if on { 500 } else { 400 }));
         if let Some(n) = &note {
-            text = text.child(k.txt(format!("{key}/why"), n, 11.5, k.c("danger")).wrap_text());
+            text = text.child(k.txt(format!("{key}/why"), n, 12.0, DANGER).wrap_text());
         }
-        let icon = Node::new(format!("{key}/ic")).wh(30.0, 30.0).no_shrink().radius(8.0).center().fill(k.ink(0.05)).child(k.glyph(format!("{key}/ic/g"), &k.widget_glyph(def), 13.0, if on { k.c("accent") } else { k.c("text-dim") }));
-        let mut row = Node::new(key.clone())
-            .row()
-            .min_h(44.0)
-            .pad_xy(8.0, 6.0)
-            .gap(12.0)
-            .align(taffy::AlignItems::CENTER)
-            .radius(9.0)
-            .fill(if on { k.c("accent").with_alpha(0.12) } else { k.ink(0.0) })
-            .hover_fill(if on { k.c("accent").with_alpha(0.16) } else { k.ink(0.05) })
-            .ease(150)
-            .on(format!("sel:{}", c.id))
+        let mut row = k
+            .list_item(&key, on, format!("sel:{}", c.id))
             .enter(220, 6.0, (i as u32).min(10) * 24)
-            .child(icon)
+            .child(k.glyph(format!("{key}/g"), &k.widget_glyph(def), 13.0, if on { k.accent() } else { SUBTLE }))
             .child(text);
         if let Some(b) = self.plugin_badge(ctx, &c.widget) {
-            row = row.child(k.tag(format!("{key}/b"), &b, false));
+            row = row.child(k.tag(format!("{key}/b"), &b, MUTED));
         }
         row
     }
@@ -1359,7 +1481,7 @@ impl UiState {
         v.into_iter().map(|(c, _, id)| (id, c)).collect()
     }
 
-    /// Add a widget: search, categories and a card per Widget.
+    /// Add a widget, where the preview and options would be: search, categories and a card per Widget.
     fn gallery(&self, k: &Kit, ctx: &Ctx, w: f32, closable: bool, images: &mut Vec<String>) -> Node {
         let all = self.catalog(ctx);
         let q = self.query("q:widgets").to_lowercase();
@@ -1376,94 +1498,73 @@ impl UiState {
         }
         let mut head = Node::new("w/g/h")
             .row()
-            .align(taffy::AlignItems::FLEX_START)
+            .no_shrink()
+            .align(taffy::AlignItems::CENTER)
             .gap(12.0)
-            .child(Node::new("w/g/h/l").col().grow(1.0).min_w(0.0).gap(4.0).child(k.bold("w/g/h/t".into(), "Add a widget", 19.0, k.c("text")).with_text(|t| t.weight = 700)).child(k.txt("w/g/h/s".into(), "Pick one and it lands on your desktop — then drag it where you want it.", 12.5, k.c("text-dim")).wrap_text()));
+            .pad_each(20.0, 24.0, 16.0, 24.0)
+            .child(Node::new("w/g/h/l").col().grow(1.0).min_w(0.0).gap(2.0).child(k.bold("w/g/h/t".into(), "Add a widget", 16.0, FG)).child(k.txt("w/g/h/s".into(), "Pick one and it lands on your desktop — then drag it where you want it.", 12.0, MUTED).wrap_text()));
         if closable {
-            head = head.child(k.btn("w/g/close", Some("close"), "Close", "gallery:close".into(), Btn::Outline));
+            head = head.child(k.btn("w/g/close", Some("close"), "Close", "gallery:close".into(), Btn::Secondary));
         }
         let fq = self.focus.as_ref().filter(|f| f.key == "q:widgets").map(|f| (f.caret, self.caret_on));
-        let mut filters = Node::new("w/g/f").row().wrap().gap(8.0).align(taffy::AlignItems::CENTER).child(k.input("q:widgets", &self.input_text(ctx, "q:widgets"), "Search widgets…", fq, 220.0, false));
+        let mut filters = Node::new("w/g/f").row().no_shrink().wrap().gap(8.0).align(taffy::AlignItems::CENTER).pad_xy(24.0, 0.0).child(k.input("q:widgets", &self.input_text(ctx, "q:widgets"), "Search widgets…", fq, 220.0, false));
         filters = filters.child(self.chip(k, "w/g/cat/all", "All", all.len(), self.category.is_none(), "cat:".into()));
         for (c, n) in cats {
             filters = filters.child(self.chip(k, &format!("w/g/cat/{c}"), c, n, self.category.as_deref() == Some(c), format!("cat:{c}")));
         }
-        Node::new("w/g").col().gap(18.0).child(head).child(filters).child(self.widget_grid(k, ctx, w, "w/g/grid", &shown, images))
+        let grid = Node::new("w/g/gw").col().pad(24.0).child(self.widget_grid(k, ctx, w - 48.0, "w/g/grid", &shown, images));
+        Node::new("w/g").col().grow(1.0).min_w(0.0).radius(4.0).fill(SURFACE).child(head).child(filters).child(self.scrolling("w/g/scroll", grid))
     }
 
     fn chip(&self, k: &Kit, key: &str, label: &str, count: usize, on: bool, action: String) -> Node {
         Node::new(key)
             .row()
-            .h(36.0)
+            .h(32.0)
             .pad_xy(12.0, 0.0)
-            .gap(7.0)
+            .gap(8.0)
             .align(taffy::AlignItems::CENTER)
-            .radius(9.0)
-            .fill(k.c("accent").with_alpha(if on { 0.12 } else { 0.0 }))
-            .hover_fill(if on { k.c("accent").with_alpha(0.16) } else { k.ink(0.05) })
-            .border(1.0, if on { k.c("accent").with_alpha(0.5) } else { k.line() })
-            .ease(140)
+            .radius(4.0)
+            .fill(if on { RAISED2 } else { RAISED })
+            .hover_fill(RAISED2)
+            .ease(120)
             .on(action)
-            .child(k.txt(format!("{key}/t"), label, 13.0, if on { k.c("text") } else { k.c("text-dim") }).with_text(|t| t.weight = if on { 600 } else { 400 }))
-            .child(k.txt(format!("{key}/n"), &count.to_string(), 11.5, k.c("text-dim")))
+            .child(k.txt(format!("{key}/t"), label, 14.0, if on { FG } else { MUTED }).with_text(|t| t.weight = if on { 500 } else { 400 }))
+            .child(k.txt(format!("{key}/n"), &count.to_string(), 12.0, SUBTLE))
     }
 
     fn widget_grid(&self, k: &Kit, ctx: &Ctx, w: f32, key: &str, ids: &[String], images: &mut Vec<String>) -> Node {
         if ids.is_empty() {
-            return Node::new(key).pad_xy(0.0, 20.0).child(k.txt(format!("{key}/none"), "No widget matches.", 13.0, k.c("text-dim")));
+            return Node::new(key).pad_xy(0.0, 20.0).child(k.txt(format!("{key}/none"), "No widget matches.", 14.0, MUTED));
         }
-        let (cols, cw) = columns(w, 200.0, 14.0, 4);
-        grid(key, cols, 14.0, ids.iter().enumerate().map(|(i, id)| self.widget_card(k, ctx, id, cw, key, i, images)).collect())
+        let (cols, cw) = columns(w, 200.0, GAP, 4);
+        grid(key, cols, GAP, ids.iter().enumerate().map(|(i, id)| self.widget_card(k, ctx, id, cw, key, i, images)).collect())
     }
 
     fn widget_card(&self, k: &Kit, ctx: &Ctx, id: &str, w: f32, prefix: &str, i: usize, images: &mut Vec<String>) -> Node {
         let key = format!("{prefix}/c/{id}");
         let def = self.def_of(ctx, id);
-        let accent = k.c("accent");
+        let accent = k.accent();
         let preview = self.widget_preview(ctx, id, (w - 24.0, GALLERY_PV_H - 24.0), &format!("{key}/pv"), images);
-        let mut top = Node::new(format!("{key}/top")).h(GALLERY_PV_H).no_shrink().center().clip().child(dots(format!("{key}/dots"), k.ink(0.1)));
+        let mut top = Node::new(format!("{key}/top")).h(GALLERY_PV_H).no_shrink().center().clip().kids(half_round(&format!("{key}/top"), STAGE, 4.0, true)).child(dots(format!("{key}/dots")));
         // the Widget itself, live; its icon when it cannot show (a data source is missing)
-        top = top.child(preview.unwrap_or_else(|| k.tile(format!("{key}/ic"), &k.widget_glyph(def), 46.0, accent)));
+        top = top.child(preview.unwrap_or_else(|| Node::new(format!("{key}/ic")).wh(48.0, 48.0).radius(4.0).center().fill(RAISED2).child(k.glyph(format!("{key}/ic/g"), &k.widget_glyph(def), 20.0, accent))));
         if ctx.ws.instances.iter().any(|c| c.widget == id) {
-            top = top.child(k.badge(format!("{key}/on"), "On desktop", accent).abs(None, Some(8.0), Some(8.0), None));
+            top = top.child(k.tag(format!("{key}/on"), "On desktop", accent).abs(None, Some(8.0), Some(8.0), None));
         }
-        let mut title = Node::new(format!("{key}/tt")).row().wrap().gap(8.0).align(taffy::AlignItems::CENTER).child(k.bold(format!("{key}/n"), &def.map_or(id.to_string(), |d| d.name.clone()), 13.5, k.c("text")));
+        let mut title = Node::new(format!("{key}/tt")).row().wrap().gap(8.0).align(taffy::AlignItems::CENTER).child(k.medium(format!("{key}/n"), &def.map_or(id.to_string(), |d| d.name.clone()), 14.0, FG));
         if let Some(b) = self.plugin_badge(ctx, id) {
-            title = title.child(k.tag(format!("{key}/badge"), &b, false));
+            title = title.child(k.tag(format!("{key}/badge"), &b, MUTED));
         }
-        let mut body = Node::new(format!("{key}/b")).col().grow(1.0).pad(14.0).gap(6.0).child(title);
+        let mut body = Node::new(format!("{key}/b")).col().grow(1.0).pad(16.0).gap(4.0).child(title);
         match def {
-            Some(d) => body = body.child(k.txt(format!("{key}/d"), &d.description, 12.0, k.c("text-dim")).wrap_text()),
-            None => body = body.child(k.txt(format!("{key}/d"), "Its definition failed to load; see the Log page.", 12.0, k.c("danger")).wrap_text()),
+            Some(d) => body = body.child(k.txt(format!("{key}/d"), &d.description, 12.0, MUTED).wrap_text()),
+            None => body = body.child(k.txt(format!("{key}/d"), "Its definition failed to load; see the Log page.", 12.0, DANGER).wrap_text()),
         }
         if let Some(n) = self.needs_note(ctx, id) {
-            body = body.child(k.txt(format!("{key}/needs"), &capitalized(n.trim_start_matches("  ·  ")), 12.0, k.c("danger")));
+            body = body.child(k.txt(format!("{key}/needs"), &capitalized(n.trim_start_matches("  ·  ")), 12.0, DANGER).wrap_text());
         }
-        let add = Node::new(format!("{key}/add"))
-            .row()
-            .h(36.0)
-            .gap(8.0)
-            .center()
-            .radius(9.0)
-            .fill(accent.with_alpha(0.06))
-            .hover_fill(accent.with_alpha(0.15))
-            .border(1.0, accent.with_alpha(0.4))
-            .ease(130)
-            .on(format!("add:{id}"))
-            .child(k.glyph(format!("{key}/add/g"), "add", 12.0, accent))
-            .child(k.bold(format!("{key}/add/t"), "Add to desktop", 13.0, accent));
-        body = body.child(Node::new(format!("{key}/sp")).grow(1.0).min_h(8.0)).child(add);
-        Node::new(key.clone())
-            .col()
-            .w(w)
-            .radius(12.0)
-            .fill(k.panel())
-            .border(1.0, k.line())
-            .clip()
-            .enter(220, 8.0, (i as u32).min(12) * 25)
-            .child(top)
-            .child(Node::new(format!("{key}/hr")).h(1.0).no_shrink().fill(k.line()))
-            .child(body)
+        body = body.child(Node::new(format!("{key}/sp")).grow(1.0).min_h(12.0)).child(k.btn(&format!("{key}/add"), Some("add"), "Add to desktop", format!("add:{id}"), Btn::Tonal));
+        Node::new(key.clone()).col().w(w).radius(4.0).fill(RAISED).clip().enter(220, 8.0, (i as u32).min(12) * 25).child(top).child(body)
     }
 
     /// Widget `id` as it looks on a desktop, live and inert, at its default shape made to fit
@@ -1490,75 +1591,147 @@ impl UiState {
         Some(root)
     }
 
-    fn instance_panel(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, images: &mut Vec<String>) -> Node {
+    /// The middle of the Widgets page: the Instance's name, its size tiers, the live preview
+    /// its Modules are dragged in, and the reset buttons.
+    fn stage(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, w: f32, images: &mut Vec<String>) -> Node {
+        // narrow, the bars stack their parts rather than wrap them: taffy sizes a wrapping row by one line
+        let bar = |key: String| if w < 600.0 { Node::new(key).col().gap(12.0) } else { Node::new(key).row().gap(16.0).align(taffy::AlignItems::CENTER) };
         let id = &cfg.id;
         let def = self.def_of(ctx, &cfg.widget);
         let title = def.map_or(cfg.widget.clone(), |d| d.name.clone());
+        let (pv, arr) = self.preview(k, ctx, cfg, images);
+        *self.tray_key.borrow_mut() = format!("ip/{id}/tray");
+        *self.preview_arr.borrow_mut() = arr.clone();
+        let mut top = bar(format!("ip/{id}/h"))
+            .min_h(64.0)
+            .no_shrink()
+            .pad_each(12.0, 16.0, 12.0, 24.0)
+            .fill(SURFACE)
+            .child(Node::new(format!("ip/{id}/hl")).col().grow(1.0).min_w(0.0).child(k.bold(format!("ip/{id}/ht"), &title, 16.0, FG)).child(k.txt(format!("ip/{id}/hs"), def.map_or("", |d| d.description.as_str()), 12.0, MUTED).wrap_text()));
+        let mid = Node::new(format!("ip/{id}/pv")).col().grow(1.0).min_h(0.0).center().pad(24.0).clip().child(dots(format!("ip/{id}/pv/dots"))).child(pv);
+        let stage = Node::new(format!("ip/{id}/stage")).col().grow(1.0).min_w(0.0).radius(4.0).fill(STAGE).clip();
+        let (Some(a), Some(meta)) = (&arr, def) else { return stage.child(top).child(mid) };
+        let tiers = k.segmented(&format!("ip/{id}/tabs"), meta.tiers.iter().map(|t| k.seg_item(format!("ip/{id}/tab/{}", t.name), &t.label, t.name == a.tier, format!("tier:{}", t.name))).collect());
+        top = top.child(Node::new(format!("ip/{id}/tabs/w")).row().no_shrink().child(tiers));
+        let cut: Vec<String> = a.slots.iter().flat_map(|s| s.cut.iter().map(|m| m.label.clone())).collect();
+        let hint = if cut.is_empty() { "Drag modules to rearrange them for this size. Click one to change its options.".to_string() } else { format!("No room at this size, left out: {}.", cut.join(", ")) };
+        let mut resets = Node::new(format!("ip/{id}/resets")).row().no_shrink().gap(8.0);
+        if cfg.layout.contains_key(&a.tier) {
+            resets = resets.child(k.btn(&format!("ip/{id}/lr"), None, "Reset this size", format!("layreset:{id}|{}", a.tier), Btn::Secondary));
+        }
+        if cfg.layout.len() > 1 || (cfg.layout.len() == 1 && !cfg.layout.contains_key(&a.tier)) {
+            resets = resets.child(k.btn(&format!("ip/{id}/lra"), None, "Reset all sizes", format!("layresetall:{id}"), Btn::Secondary));
+        }
+        let hint = k.txt(format!("ip/{id}/hint"), &hint, 14.0, MUTED).wrap_text();
+        let foot = bar(format!("ip/{id}/foot")).min_h(56.0).no_shrink().pad_each(12.0, 16.0, 12.0, 24.0).justify(taffy::JustifyContent::CENTER).fill(SURFACE).child(if w < 600.0 { hint } else { hint.grow_text() });
+        let foot = if resets.children.is_empty() { foot } else { foot.child(resets) };
+        stage.child(top).child(mid).child(foot)
+    }
+
+    /// The section of the options panel that is open: the one picked, else Modules for a
+    /// Widget that has them and Options for one that does not.
+    fn open_sec(&self, has_modules: bool) -> Sec {
+        match self.sec {
+            Some(Sec::Modules) if !has_modules => Sec::Options,
+            Some(s) => s,
+            None if has_modules => Sec::Modules,
+            None => Sec::Options,
+        }
+    }
+
+    /// The right of the Widgets page: Modules, Options and Advanced, one open at a time, and Remove.
+    fn options_panel(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, w: f32, images: &mut Vec<String>) -> Node {
+        let id = &cfg.id;
+        let def = self.def_of(ctx, &cfg.widget);
+        let arr = self.preview_arr.borrow().clone();
+        let tray = arr.as_ref().filter(|_| def.is_some_and(|d| !d.modules.is_empty()));
+        let open = self.open_sec(tray.is_some());
+        let inner = w - 2.0 * PAD;
+        let head = |sec: Sec, title: &str, note: &str, first: bool| {
+            let key = format!("ip/{id}/sec/{}", sec.id());
+            let on = open == sec;
+            let mut n = Node::new(key.clone())
+                .row()
+                .h(if first { 32.0 } else { 56.0 })
+                .no_shrink()
+                .gap(8.0)
+                .align(taffy::AlignItems::CENTER)
+                .on(format!("sec:{}", sec.id()))
+                .child(k.glyph(format!("{key}/g"), if on { "chevron-down" } else { "chevron-right" }, 10.0, MUTED))
+                .child(k.bold(format!("{key}/t"), title, 16.0, FG).grow_text())
+                .child(k.txt(format!("{key}/n"), note, 12.0, MUTED));
+            if !first {
+                n = n.child(k.top_line(format!("{key}/hr")));
+            }
+            n
+        };
+        let body = |sec: Sec, content: Node| self.scrolling(&format!("ip/{id}/sec/{}/body", sec.id()), content.pad_each(0.0, 0.0, 24.0, 0.0));
+        let mut p = Node::new(format!("ip/{id}")).col().w(w).no_shrink().pad(PAD).radius(4.0).fill(SURFACE);
+        if let Some(a) = tray {
+            let note = if a.hidden.is_empty() { "All in use".to_string() } else { format!("{} not in use", a.hidden.len()) };
+            // the whole section, open or not, is where a Module dragged out of the preview goes
+            let mut t = Node::new(format!("ip/{id}/tray")).col().no_shrink().child(head(Sec::Modules, "Modules", &note, true));
+            if open == Sec::Modules {
+                t = t.grow(1.0).min_h(0.0).child(body(Sec::Modules, self.module_tray(k, ctx, cfg, a, inner, images)));
+            }
+            p = p.child(t);
+        }
+        let n = def.map_or(0, |d| d.params.len());
+        p = p.child(head(Sec::Options, "Options", &if n == 0 { String::new() } else { n.to_string() }, tray.is_none()));
+        if open == Sec::Options {
+            p = p.child(body(Sec::Options, self.option_rows(k, ctx, cfg, def, images)));
+        }
+        p = p.child(head(Sec::Advanced, "Advanced", "Layer, click-through, size limit, style", false));
+        if open == Sec::Advanced {
+            p = p.child(body(Sec::Advanced, self.advanced_rows(k, ctx, cfg, def)));
+        }
+        if open == Sec::Closed {
+            p = p.child(Node::new(format!("ip/{id}/sp")).grow(1.0));
+        }
         let remove = if self.confirm_del.as_deref() == Some(id.as_str()) {
             k.btn(&format!("ip/{id}/del"), Some("delete"), "Really remove?", format!("del:{id}"), Btn::DangerFill)
         } else {
             k.btn(&format!("ip/{id}/del"), Some("delete"), "Remove", format!("del:{id}"), Btn::Danger)
         };
-        let head = Node::new(format!("ip/{id}/h"))
-            .row()
-            .align(taffy::AlignItems::CENTER)
-            .gap(14.0)
-            .child(k.tile(format!("ip/{id}/ic"), &k.widget_glyph(def), 46.0, k.c("accent")))
-            .child(Node::new(format!("ip/{id}/hl")).col().grow(1.0).min_w(0.0).gap(3.0).child(k.bold(format!("ip/{id}/ht"), &title, 19.0, k.c("text")).with_text(|t| t.weight = 700)).child(k.txt(format!("ip/{id}/hs"), def.map_or("", |d| d.description.as_str()), 12.5, k.c("text-dim")).wrap_text()))
-            .child(remove);
-        let mut p = Node::new(format!("ip/{id}")).col().gap(22.0).child(head).child(self.preview_block(k, ctx, cfg, images));
-        match def {
-            Some(d) if !d.modules.is_empty() => p = p.child(self.module_options(k, ctx, cfg, d, images)),
-            Some(d) => {
-                for (i, (group, params)) in ParamDef::grouped(&d.params).into_iter().enumerate() {
-                    let rows = params.into_iter().map(|pd| self.param_row(k, ctx, cfg, pd, images)).collect();
-                    p = p.child(k.group(&format!("ip/{id}/s2/{i}"), group.unwrap_or("Options"), rows));
-                }
-            }
-            None => p = p.child(k.txt(format!("ip/{id}/err"), "This widget's definition failed to load; see the Log page.", 12.5, k.c("danger")).wrap_text()),
+        p.child(
+            Node::new(format!("ip/{id}/rmrow"))
+                .row()
+                .no_shrink()
+                .gap(16.0)
+                .align(taffy::AlignItems::CENTER)
+                .pad_each(16.0, 0.0, 0.0, 0.0)
+                .child(k.top_line(format!("ip/{id}/rmrow/hr")))
+                .child(k.txt(format!("ip/{id}/rmrow/t"), "Take it off your desktop", 14.0, MUTED).wrap_text().grow_text())
+                .child(remove),
+        )
+    }
+
+    /// Placement and the Instance's own Style, under Advanced.
+    fn advanced_rows(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, def: Option<&WidgetMeta>) -> Node {
+        let id = &cfg.id;
+        let zk = format!("z:{id}");
+        let mut place = vec![
+            k.row(&format!("ip/{id}/z"), "Layer", "Where it sits relative to other windows", k.dropdown(&zk, &self.dropdown_label(ctx, &zk), 200.0, self.is_open_dd(&zk))),
+            k.row(&format!("ip/{id}/ct"), "Click-through", "Clicks pass to whatever is underneath", k.toggle(&format!("ct:{id}"), cfg.click_through, format!("ct:{id}"))),
+        ];
+        if def.is_some_and(|d| d.max_card_size.is_some()) {
+            place.push(k.row(&format!("ip/{id}/lim"), "Size limit", "Keep it within the size it was designed for. Off lets it grow larger; the minimum always applies.", k.toggle(&format!("lim:{id}"), cfg.size_limit, format!("lim:{id}"))));
         }
-        let adv = Node::new(format!("ip/{id}/adv"))
-            .row()
-            .h(36.0)
-            .align(taffy::AlignItems::CENTER)
-            .gap(10.0)
-            .pad_xy(6.0, 0.0)
-            .radius(8.0)
-            .hover_fill(k.ink(0.05))
-            .ease(120)
-            .on("adv:toggle")
-            .child(k.glyph(format!("ip/{id}/adv/g"), if self.advanced { "chevron-down" } else { "chevron-right" }, 11.0, k.c("text-dim")))
-            .child(k.bold(format!("ip/{id}/adv/t"), "Advanced: layer, click-through, size limit, style", 13.0, k.c("text-dim")));
-        p = p.child(adv);
-        if self.advanced {
-            let zk = format!("z:{id}");
-            let z = k.dropdown(&zk, &self.dropdown_label(ctx, &zk), CONTROL_W, matches!(&self.open, Some(Open::Dropdown(o)) if *o == zk));
-            let mut place = vec![
-                k.row(&format!("ip/{id}/z"), "Layer", "Where it sits relative to other windows", z),
-                k.row(&format!("ip/{id}/ct"), "Click-through", "Clicks pass to whatever is underneath", k.toggle(&format!("ct:{id}"), cfg.click_through, format!("ct:{id}"))),
-            ];
-            if def.is_some_and(|d| d.max_card_size.is_some()) {
-                place.push(k.row(&format!("ip/{id}/lim"), "Size limit", "Keep it within the size it was designed for. Off lets it grow larger; the minimum always applies.", k.toggle(&format!("lim:{id}"), cfg.size_limit, format!("lim:{id}"))));
-            }
-            let pos = Node::new(format!("ip/{id}/pl")).row().gap(8.0).child(k.btn(&format!("ip/{id}/edit"), Some("move"), "Edit layout", "edit:toggle".into(), Btn::Outline)).child(k.btn(&format!("ip/{id}/reset"), None, "Reset position", format!("reset:{id}"), Btn::Outline));
-            place.push(k.row(&format!("ip/{id}/pos"), "Position", &format!("{:.0}, {:.0}  ·  {:.0} × {:.0}", cfg.x, cfg.y, cfg.w, cfg.h), pos));
-            p = p.child(k.group(&format!("ip/{id}/s1"), "Placement", place));
-            let mut style: Vec<Node> = THEME_AXES
-                .iter()
-                .map(|(axis, label)| {
-                    let key = format!("tp:{id}:{axis}");
-                    let open = matches!(&self.open, Some(Open::Dropdown(o)) if *o == key);
-                    k.row(&format!("ip/{id}/tp/{axis}"), label, "", k.dropdown(&key, &self.dropdown_label(ctx, &key), CONTROL_W, open))
-                })
-                .collect();
-            let scope = Scope::Instance(id.clone());
-            style.extend(style_schema().iter().map(|pd| self.style_row(k, ctx, &scope, pd)));
-            if !cfg.style.is_empty() || !cfg.theme.is_empty() {
-                style.push(k.row(&format!("ip/{id}/rs"), "Reset style", "Back to the global style", k.btn(&format!("ip/{id}/rs/b"), None, "Reset style", format!("syreset:{id}|*"), Btn::Outline)));
-            }
-            p = p.child(k.group(&format!("ip/{id}/s3"), "Style", style));
+        let pos = Node::new(format!("ip/{id}/pl")).row().wrap().gap(8.0).child(k.btn(&format!("ip/{id}/edit"), Some("move"), "Edit layout", "edit:toggle".into(), Btn::Secondary)).child(k.btn(&format!("ip/{id}/reset"), None, "Reset position", format!("reset:{id}"), Btn::Secondary));
+        place.push(k.stack(&format!("ip/{id}/pos"), "Position", &format!("{:.0}, {:.0}  ·  {:.0} × {:.0}", cfg.x, cfg.y, cfg.w, cfg.h), pos));
+        let mut style: Vec<Node> = THEME_AXES
+            .iter()
+            .map(|(axis, label)| {
+                let key = format!("tp:{id}:{axis}");
+                k.row(&format!("ip/{id}/tp/{axis}"), label, "", k.dropdown(&key, &self.dropdown_label(ctx, &key), CONTROL_W, self.is_open_dd(&key)))
+            })
+            .collect();
+        let scope = Scope::Instance(id.clone());
+        style.extend(style_schema().iter().map(|pd| self.style_row(k, ctx, &scope, pd)));
+        if !cfg.style.is_empty() || !cfg.theme.is_empty() {
+            style.push(k.row(&format!("ip/{id}/rs"), "Reset style", "Back to the global style", k.btn(&format!("ip/{id}/rs/b"), None, "Reset style", format!("syreset:{id}|*"), Btn::Secondary)));
         }
-        p.child(Node::new(format!("ip/{id}/pad")).h(8.0))
+        Node::new(format!("ip/{id}/adv")).col().child(k.sub(format!("ip/{id}/s1"), "Placement")).child(k.rows(&format!("ip/{id}/s1/rows"), place)).child(k.sub(format!("ip/{id}/s3"), "Style")).child(k.rows(&format!("ip/{id}/s3/rows"), style))
     }
 
     /// One Style token at one scope, built like a Widget param's row.
@@ -1568,41 +1741,33 @@ impl UiState {
         let rk = format!("sr/{sk}/{tok}");
         let theme = Self::scope_theme(ctx, scope);
         let (label, unit) = split_unit(&pd.label);
+        let accent = pd.ty == ParamType::Color && tok == "accent";
         let control = match pd.ty {
             ParamType::Bool => k.toggle(&format!("tg:{key}"), theme.flag(tok), format!("sy:{sk}|{tok}")),
             ParamType::Number | ParamType::Duration => {
                 let (min, max, _step, cur) = self.slider_spec(ctx, &key).unwrap_or((0.0, 100.0, 1.0, 0.0));
                 let frac = if max > min { ((cur - min) / (max - min)) as f32 } else { 0.0 };
-                Node::new(format!("{rk}/sc")).row().align(taffy::AlignItems::CENTER).gap(12.0).child(k.slider(&format!("sl:{key}"), frac, 190.0, format!("sl:{key}"))).child(Node::new(format!("{rk}/vw")).w(48.0).child(k.txt(format!("{rk}/v"), &with_unit(cur, unit), 12.5, k.c("text"))))
+                k.slider_val(&format!("sl:{key}"), frac, 120.0, format!("sl:{key}"), &with_unit(cur, unit))
             }
-            ParamType::Color if tok == "accent" => self.accent_swatches(k, ctx, &key, &rk, theme.color(tok)),
-            ParamType::Color => {
-                let f = self.focus.as_ref().filter(|f| f.key == format!("hx:{key}")).map(|f| (f.caret, self.caret_on));
-                Node::new(format!("{rk}/cc"))
-                    .row()
-                    .align(taffy::AlignItems::CENTER)
-                    .gap(8.0)
-                    .child(k.swatch(&format!("{rk}/sw"), theme.color(tok), 28.0, Some(format!("cp:{key}")), matches!(&self.open, Some(Open::Color(o)) if *o == key)))
-                    .child(k.input(&format!("hx:{key}"), &self.input_text(ctx, &format!("hx:{key}")), "#rrggbb", f, 104.0, true))
-            }
+            ParamType::Color if accent => self.accent_swatches(k, ctx, &key, &rk, theme.color(tok)),
+            ParamType::Color => self.color_field(k, ctx, &key, &rk, theme.color(tok)),
             _ => self.dropdown_for(k, ctx, &key),
         };
         let set = Self::style_is_set(ctx, scope, tok);
-        let mut title = Node::new(format!("{rk}/tt")).row().wrap().gap(8.0).align(taffy::AlignItems::CENTER).child(k.bold(format!("{rk}/lt"), label, 13.5, k.c("text")));
-        let mut c = Node::new(format!("{rk}/c")).row().align(taffy::AlignItems::CENTER).gap(10.0).child(control);
+        let mut title = Node::new(format!("{rk}/tt")).row().wrap().gap(8.0).align(taffy::AlignItems::CENTER).child(k.medium(format!("{rk}/lt"), label, 14.0, FG).wrap_text());
+        let mut c = Node::new(format!("{rk}/c")).row().align(taffy::AlignItems::CENTER).gap(8.0);
         if set {
-            title = title.child(k.badge(format!("{rk}/badge"), if matches!(scope, Scope::Instance(_)) { "Own" } else { "Changed" }, k.c("accent")));
-            c = c.child(
-                Node::new(format!("{rk}/reset"))
-                    .h(28.0)
-                    .pad_xy(8.0, 0.0)
-                    .center()
-                    .radius(7.0)
-                    .hover_fill(k.ink(0.07))
-                    .ease(120)
-                    .on(format!("syreset:{sk}|{tok}"))
-                    .child(k.txt(format!("{rk}/reset/t"), "Reset", 12.5, k.c("text-dim"))),
-            );
+            title = title.child(k.tag(format!("{rk}/badge"), if matches!(scope, Scope::Instance(_)) { "Own" } else { "Changed" }, MUTED));
+            c = c.child(k.btn(&format!("{rk}/reset"), None, "Reset", format!("syreset:{sk}|{tok}"), Btn::Ghost).pad_xy(8.0, 0.0));
+        }
+        c = c.child(control);
+        // the accent's swatches need the panel's whole width beside a widget's options
+        if accent && matches!(scope, Scope::Instance(_)) {
+            let mut n = Node::new(rk.clone()).col().pad_xy(0.0, 12.0).gap(2.0).child(title);
+            if !pd.help.is_empty() {
+                n = n.child(k.txt(format!("{rk}/lh"), &pd.help, 12.0, MUTED).wrap_text());
+            }
+            return n.child(Node::new(format!("{rk}/ctl")).row().wrap().pad_each(8.0, 0.0, 0.0, 0.0).child(c.wrap()));
         }
         k.row_with(&rk, title, &pd.help, None, c)
     }
@@ -1610,26 +1775,28 @@ impl UiState {
     /// The palette's own accent, four others, a custom one and its hex.
     fn accent_swatches(&self, k: &Kit, ctx: &Ctx, key: &str, rk: &str, cur: Color) -> Node {
         let own = ctx.lib.palette(&ctx.ws.theme.palette).tokens.get("accent").map(|v| v.to_string()).and_then(|s| Color::parse(&s)).unwrap_or(cur);
-        let presets = [own, Color::parse("#6b8cff").unwrap(), Color::parse("#f0913a").unwrap(), Color::parse("#c39bff").unwrap(), Color::parse("#ff6b8a").unwrap()];
+        let presets = [own, Color::parse("#7a8cff").unwrap(), Color::parse("#ff9f43").unwrap(), Color::parse("#c79bff").unwrap(), Color::parse("#ff6b81").unwrap()];
         let hex = cur.to_hex();
-        let mut row = Node::new(format!("{rk}/ac")).row().align(taffy::AlignItems::CENTER).gap(8.0);
+        let mut row = Node::new(format!("{rk}/ac")).row().align(taffy::AlignItems::CENTER).gap(2.0);
         for (i, c) in presets.iter().enumerate() {
-            row = row.child(k.swatch(&format!("{rk}/p{i}"), *c, 28.0, Some(format!("setc:{key}|{}", c.to_hex())), c.to_hex() == hex));
+            row = row.child(k.swatch(&format!("{rk}/p{i}"), *c, 24.0, Some(format!("setc:{key}|{}", c.to_hex())), c.to_hex() == hex));
         }
         let custom = !presets.iter().any(|c| c.to_hex() == hex);
-        let picker = Node::new(format!("{rk}/cp"))
-            .wh(28.0, 28.0)
-            .no_shrink()
-            .radius(14.0)
-            .center()
-            .fill(if custom { cur } else { k.ink(0.0) })
-            .border(if custom { 2.5 } else { 1.0 }, if custom { k.c("text") } else { k.line() })
-            .hover_fill(if custom { cur.mul_alpha(0.8) } else { k.ink(0.07) })
-            .ease(120)
-            .on(format!("cp:{key}"));
-        let picker = if custom { picker } else { picker.child(k.glyph(format!("{rk}/cp/g"), "edit", 11.0, k.c("text-dim"))) };
+        let mut picker = Node::new(format!("{rk}/cp/c")).wh(24.0, 24.0).radius(4.0).center().fill(if custom { cur } else { RAISED2 }).hover_fill(if custom { cur.mul_alpha(0.8) } else { LINE_STRONG }).ease(120).on(format!("cp:{key}"));
+        if !custom {
+            picker = picker.child(k.glyph(format!("{rk}/cp/g"), "edit", 10.0, MUTED));
+        }
+        let picker = Node::new(format!("{rk}/cp")).wh(30.0, 30.0).no_shrink().center().radius(6.0).border(2.0, if custom { FG } else { CLEAR }).child(picker);
         let f = self.focus.as_ref().filter(|f| f.key == format!("hx:{key}")).map(|f| (f.caret, self.caret_on));
-        row.child(picker).child(Node::new(format!("{rk}/gap")).w(4.0)).child(k.input(&format!("hx:{key}"), &self.input_text(ctx, &format!("hx:{key}")), "#rrggbb", f, 104.0, true))
+        row.child(picker).child(Node::new(format!("{rk}/gap")).w(6.0)).child(k.input(&format!("hx:{key}"), &self.input_text(ctx, &format!("hx:{key}")), "#rrggbb", f, 92.0, true))
+    }
+
+    /// A colour as a swatch that opens the picker, and its hex.
+    fn color_field(&self, k: &Kit, ctx: &Ctx, key: &str, rk: &str, col: Color) -> Node {
+        let f = self.focus.as_ref().filter(|f| f.key == format!("hx:{key}")).map(|f| (f.caret, self.caret_on));
+        let open = matches!(&self.open, Some(Open::Color(o)) if o == key);
+        let sw = Node::new(format!("{rk}/sw")).wh(32.0, 32.0).no_shrink().radius(4.0).fill(col).border(if open { 2.0 } else { 1.0 }, if open { FG } else { LINE }).hover_fill(col.mul_alpha(0.8)).ease(120).on(format!("cp:{key}"));
+        Node::new(format!("{rk}/cc")).row().align(taffy::AlignItems::CENTER).gap(8.0).child(sw).child(k.input(&format!("hx:{key}"), &self.input_text(ctx, &format!("hx:{key}")), "#rrggbb", f, 96.0, true))
     }
 
     fn param_row(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, pd: &ParamDef, images: &mut Vec<String>) -> Node {
@@ -1644,18 +1811,9 @@ impl UiState {
             ParamType::Number | ParamType::Duration => {
                 let (min, max, _step, cur) = self.slider_spec(ctx, &key).unwrap_or((0.0, 100.0, 1.0, 0.0));
                 let frac = if max > min { ((cur - min) / (max - min)) as f32 } else { 0.0 };
-                Node::new(format!("{rk}/sc")).row().align(taffy::AlignItems::CENTER).gap(12.0).child(k.slider(&format!("sl:{key}"), frac, 190.0, format!("sl:{key}"))).child(Node::new(format!("{rk}/vw")).w(48.0).child(k.txt(format!("{rk}/v"), &with_unit(cur, unit), 12.5, k.c("text"))))
+                k.slider_val(&format!("sl:{key}"), frac, 120.0, format!("sl:{key}"), &with_unit(cur, unit))
             }
-            ParamType::Color => {
-                let col = Self::resolve_color(ctx, &val);
-                let f = self.focus.as_ref().filter(|f| f.key == format!("hx:{key}")).map(|f| (f.caret, self.caret_on));
-                Node::new(format!("{rk}/cc"))
-                    .row()
-                    .align(taffy::AlignItems::CENTER)
-                    .gap(8.0)
-                    .child(k.swatch(&format!("{rk}/sw"), col, 28.0, Some(format!("cp:{key}")), matches!(&self.open, Some(Open::Color(o)) if *o == key)))
-                    .child(k.input(&format!("hx:{key}"), &self.input_text(ctx, &format!("hx:{key}")), "#rrggbb", f, 104.0, true))
-            }
+            ParamType::Color => self.color_field(k, ctx, &key, &rk, Self::resolve_color(ctx, &val)),
             ParamType::Font | ParamType::Enum => self.dropdown_for(k, ctx, &key),
             ParamType::Str => {
                 let ik = format!("n:{id}:{name}");
@@ -1668,11 +1826,12 @@ impl UiState {
                 let f = self.focus.as_ref().filter(|f| f.key == ik).map(|f| (f.caret, self.caret_on));
                 let has_list = self.def_of(ctx, &cfg.widget).is_some_and(|d| d.params.iter().any(|p| p.ty == ParamType::Shortcuts));
                 let empty = if has_list { "no folder: use the list below" } else if pd.ty == ParamType::File { "no file chosen" } else { "no folder chosen" };
-                Node::new(format!("{rk}/pc"))
+                let path = Node::new(format!("{rk}/pc"))
                     .col()
                     .gap(8.0)
-                    .child(k.input(&ik, &self.input_text(ctx, &ik), empty, f, CONTROL_W, false))
-                    .child(Node::new(format!("{rk}/pb")).row().gap(8.0).child(k.btn(&format!("{rk}/browse"), Some("folder"), "Browse…", format!("{pick}:{id}|{name}"), Btn::Outline)).child(k.btn(&format!("{rk}/clear"), None, "Clear", format!("clear:{id}|{name}"), Btn::Outline)))
+                    .child(k.input(&ik, &self.input_text(ctx, &ik), empty, f, 0.0, false))
+                    .child(Node::new(format!("{rk}/pb")).row().gap(8.0).child(k.btn(&format!("{rk}/browse"), Some("folder"), "Browse…", format!("{pick}:{id}|{name}"), Btn::Secondary)).child(k.btn(&format!("{rk}/clear"), None, "Clear", format!("clear:{id}|{name}"), Btn::Secondary)));
+                return k.stack(&rk, label, &pd.help, path);
             }
             ParamType::Shortcuts => return self.shortcuts_editor(k, ctx, cfg, pd, images),
         };
@@ -1683,19 +1842,20 @@ impl UiState {
         let id = &cfg.id;
         let items = cfg.items();
         let mirrored = !cfg.folder().is_empty();
-        let mut col = Node::new(format!("sc/{id}")).col().gap(8.0).pad_xy(20.0, 14.0);
+        let mut col = Node::new(format!("sc/{id}")).col().gap(8.0).pad_xy(0.0, 12.0);
         col = col.child(
             Node::new(format!("sc/{id}/h"))
                 .row()
                 .align(taffy::AlignItems::CENTER)
-                .child(k.bold(format!("sc/{id}/ht"), &pd.label, 13.5, k.c("text")).grow_text())
-                .child(k.btn(&format!("sc/{id}/add"), Some("add"), "Add shortcut…", format!("scadd:{id}"), Btn::Primary)),
+                .gap(8.0)
+                .child(k.medium(format!("sc/{id}/ht"), &pd.label, 14.0, FG).grow_text())
+                .child(k.btn(&format!("sc/{id}/add"), Some("add"), "Add shortcut…", format!("scadd:{id}"), Btn::Secondary)),
         );
         if mirrored {
-            col = col.child(k.txt(format!("sc/{id}/m"), "A folder is mirrored, so this list is not shown. Clear the folder to use it.", 12.0, k.c("text-dim")).wrap_text());
+            col = col.child(k.txt(format!("sc/{id}/m"), "A folder is mirrored, so this list is not shown. Clear the folder to use it.", 12.0, MUTED).wrap_text());
         }
         if items.is_empty() {
-            col = col.child(k.txt(format!("sc/{id}/e"), "No shortcuts. Add an app, file or folder.", 12.0, k.c("text-dim")));
+            col = col.child(k.txt(format!("sc/{id}/e"), "No shortcuts. Add an app, file or folder.", 12.0, MUTED).wrap_text());
         }
         let pack = &ctx.ws.theme.icon_pack;
         for (i, it) in items.iter().enumerate() {
@@ -1707,208 +1867,248 @@ impl UiState {
             let ftg = self.focus.as_ref().filter(|f| f.key == tk).map(|f| (f.caret, self.caret_on));
             let mut img = Node::new(format!("sc/{id}/{i}/img")).wh(28.0, 28.0).no_shrink();
             img.kind = Kind::Image(ui::ImageSpec { id: iid, w: 32.0, h: 32.0, ..Default::default() });
-            let fields = Node::new(format!("sc/{id}/{i}/f")).row().wrap().grow(1.0).min_w(0.0).gap(6.0).child(k.input(&nk, &self.input_text(ctx, &nk), "Name", fnm, 170.0, false)).child(k.input(&tk, &self.input_text(ctx, &tk), "Path or command", ftg, 230.0, true));
-            col = col.child(
-                Node::new(format!("sc/{id}/{i}"))
-                    .row()
-                    .align(taffy::AlignItems::CENTER)
-                    .gap(10.0)
-                    .pad_xy(10.0, 8.0)
-                    .radius(10.0)
-                    .fill(k.ink(0.03))
-                    .border(1.0, k.line())
-                    .enter(200, 6.0, (i as u32).min(8) * 20)
-                    .child(img)
-                    .child(fields)
-                    .child(k.icon_btn(&format!("sc/{id}/{i}/bf"), "folder", format!("scbrowse:{id}|{i}"), k.c("text-dim"), k.ink(0.08)))
-                    .child(k.icon_btn(&format!("sc/{id}/{i}/x"), "delete", format!("scdel:{id}|{i}"), k.c("danger"), k.c("danger").with_alpha(0.15))),
-            );
+            let fields = Node::new(format!("sc/{id}/{i}/f")).col().grow(1.0).min_w(0.0).gap(6.0).child(k.input(&nk, &self.input_text(ctx, &nk), "Name", fnm, 0.0, false)).child(k.input(&tk, &self.input_text(ctx, &tk), "Path or command", ftg, 0.0, true));
+            let tools = Node::new(format!("sc/{id}/{i}/b")).col().gap(6.0).child(k.icon_btn(&format!("sc/{id}/{i}/bf"), "folder", format!("scbrowse:{id}|{i}"), MUTED)).child(k.icon_btn(&format!("sc/{id}/{i}/x"), "delete", format!("scdel:{id}|{i}"), DANGER));
+            col = col.child(Node::new(format!("sc/{id}/{i}")).row().align(taffy::AlignItems::CENTER).gap(8.0).pad(8.0).radius(4.0).fill(RAISED).enter(200, 6.0, (i as u32).min(8) * 20).child(img).child(fields).child(tools));
         }
         col
     }
 
-    fn page_workspaces(&self, k: &Kit, ctx: &Ctx, size: (f32, f32)) -> Node {
-        let actions = Node::new("ws/acts").row().gap(8.0).child(k.btn("ws/dup", Some("copy"), "Duplicate this one", "wsadd:copy".into(), Btn::Outline)).child(k.btn("ws/new", Some("add"), "New workspace", "wsadd:new".into(), Btn::Primary));
-        // where this PC is now, which is what a rule ties a Workspace to
-        let here = |key: &str, glyph: &str, text: &str| Node::new(format!("ws/now/{key}")).row().h(30.0).pad_xy(10.0, 0.0).gap(8.0).align(taffy::AlignItems::CENTER).radius(8.0).fill(k.ink(0.04)).child(k.glyph(format!("ws/now/{key}/g"), glyph, 12.0, k.c("text-dim"))).child(k.txt(format!("ws/now/{key}/t"), text, 12.5, k.c("text")));
-        let desk = match ctx.desktop {
-            Some(id) => format!("On {}", desktop_label(ctx, id)),
-            None => "One desktop (Windows lists no virtual desktops)".to_string(),
-        };
-        let now = Node::new("ws/now").row().wrap().gap(8.0).align(taffy::AlignItems::CENTER).child(k.txt("ws/now/l".into(), "Now:", 12.5, k.c("text-dim"))).child(here("d", "widgets", &desk)).child(here("m", "display", &setup_label(ctx.setup)));
-        let mut list = Node::new("ws/list").col().gap(14.0);
-        for (i, w) in ctx.ws.workspaces.iter().enumerate() {
-            list = list.child(self.workspace_card(k, ctx, i, w));
+    fn page_workspaces(&self, k: &Kit, ctx: &Ctx, size: (f32, f32)) -> (Vec<Node>, Node) {
+        let actions = vec![k.btn("ws/new", Some("add"), "New workspace", "wsadd:new".into(), Btn::Primary)];
+        let (lw, sw) = side_widths(size);
+        let spaces = &ctx.ws.workspaces;
+        let active = spaces.iter().position(|w| w.name == ctx.ws.active).unwrap_or(0);
+        let sel = self.ws_sel.filter(|i| *i < spaces.len()).unwrap_or(active);
+        let mut items = Node::new("ws/list/items").col().gap(4.0);
+        for (i, w) in spaces.iter().enumerate() {
+            let on_screen = w.name == ctx.ws.active;
+            let count = if on_screen { ctx.ws.instances.len() } else { w.instances.len() };
+            let key = format!("ws/i/{i}");
+            let sub = if on_screen { "On screen".to_string() } else { plural(count, "widget") };
+            items = items.child(
+                k.list_item(&key, i == sel, format!("wssel:{i}"))
+                    .min_h(56.0)
+                    .enter(220, 6.0, (i as u32).min(8) * 30)
+                    .child(k.glyph(format!("{key}/g"), "display", 13.0, if on_screen { k.accent() } else { SUBTLE }))
+                    .child(Node::new(format!("{key}/c")).col().grow(1.0).min_w(0.0).child(k.medium(format!("{key}/n"), &w.name, 14.0, FG)).child(k.txt(format!("{key}/s"), &sub, 12.0, MUTED))),
+            );
         }
-        let body = Node::new("ws").col().gap(22.0).child(k.page_head("ws/head", Page::Workspaces.heading(), Page::Workspaces.subtitle(), Some(actions))).child(now).child(list);
-        self.page("ws/scroll", content_w(size, 820.0), body)
+        let list = k.side_list("ws/list", lw, "Your workspaces", spaces.len(), self.scrolling("ws/list/scroll", items), Some(k.foot_note("ws/list/f", "A new workspace starts empty, with its own look.")));
+        let body = Node::new("ws").row().grow(1.0).min_h(0.0).gap(GAP).child(list);
+        let Some(w) = spaces.get(sel) else { return (actions, body) };
+        let stage_w = size.0 - 2.0 * PAD - lw - sw - 2.0 * GAP;
+        (actions, body.child(self.workspace_stage(k, ctx, sel, w, stage_w)).child(self.workspace_panel(k, ctx, sel, w, sw)))
     }
 
-    fn workspace_card(&self, k: &Kit, ctx: &Ctx, i: usize, w: &crate::workspace::Saved) -> Node {
+    /// The middle of the Workspaces page: what this Workspace puts on screen.
+    fn workspace_stage(&self, k: &Kit, ctx: &Ctx, i: usize, w: &crate::workspace::Saved, stage_w: f32) -> Node {
         let key = format!("ws/w/{i}");
-        let (accent, dim) = (k.c("accent"), k.c("text-dim"));
         let on = w.name == ctx.ws.active;
-        let confirm = self.confirm_del.as_deref() == Some(format!("ws/{}", w.name).as_str());
-        let (count, palette) = if on { (ctx.ws.instances.len(), ctx.ws.theme.palette.clone()) } else { (w.instances.len(), w.theme.as_ref().map_or_else(|| ctx.ws.theme.palette.clone(), |t| t.palette.clone())) };
+        let insts: &[crate::workspace::InstanceCfg] = if on { &ctx.ws.instances } else { &w.instances };
+        let palette = if on { ctx.ws.theme.palette.clone() } else { w.theme.as_ref().map_or_else(|| ctx.ws.theme.palette.clone(), |t| t.palette.clone()) };
+        let fact = |fk: &str, label: &str, value: &str| Node::new(format!("{key}/{fk}")).row().gap(8.0).align(taffy::AlignItems::CENTER).child(k.txt(format!("{key}/{fk}/l"), label, 14.0, MUTED)).child(k.medium(format!("{key}/{fk}/v"), value, 14.0, FG));
+        let desk = ctx.desktop.map_or_else(|| "Only one".to_string(), |d| desktop_label(ctx, d));
+        let mut top = Node::new(format!("{key}/h"))
+            .row()
+            .wrap()
+            .min_h(64.0)
+            .no_shrink()
+            .pad_each(12.0, 24.0, 12.0, 24.0)
+            .gap(24.0)
+            .align(taffy::AlignItems::CENTER)
+            .fill(SURFACE)
+            .child(Node::new(format!("{key}/hl")).col().grow(1.0).min_w(140.0).child(k.bold(format!("{key}/ht"), &w.name, 16.0, FG)).child(k.txt(format!("{key}/hs"), if on { "On screen now" } else { "Not on screen" }, 12.0, MUTED)))
+            .child(fact("fd", "Virtual desktop", &desk))
+            .child(fact("fm", "Monitors", &monitors_label(ctx.setup)));
+        if !on {
+            top = top.child(k.btn(&format!("{key}/go"), None, "Show", format!("wsgo:{i}"), Btn::Primary));
+        }
+        // the Workspace as a screen: its widgets, in its palette's colours
+        let tok = |n: &str, or: Color| ctx.lib.palette(&palette).tokens.get(n).map(|v| v.to_string()).and_then(|s| Color::parse(&s)).unwrap_or(or);
+        let (surf, text, dim) = (tok("surface", RAISED).with_alpha(1.0), tok("text", FG).with_alpha(1.0), tok("text-dim", MUTED));
+        let track = surf.lerp(text, 0.08);
+        let mw = (stage_w - 64.0).clamp(220.0, 704.0);
+        let mut chips = Node::new(format!("{key}/chips")).row().wrap().gap(8.0).pad_each(16.0, 0.0, 0.0, 0.0);
+        for c in insts {
+            let def = self.def_of(ctx, &c.widget);
+            let ck = format!("{key}/chip/{}", c.id);
+            chips = chips.child(Node::new(ck.clone()).row().h(32.0).pad_xy(12.0, 0.0).gap(8.0).align(taffy::AlignItems::CENTER).radius(4.0).fill(track).child(k.glyph(format!("{ck}/g"), &k.widget_glyph(def), 12.0, dim)).child(k.txt(format!("{ck}/t"), &def.map_or(c.widget.clone(), |d| d.name.clone()), 14.0, text)));
+        }
+        let screen = Node::new(format!("{key}/scr"))
+            .col()
+            .wh(mw, (mw * 9.0 / 16.0).round())
+            .no_shrink()
+            .radius(4.0)
+            .fill(surf)
+            .border(1.0, LINE_STRONG)
+            .clip()
+            .child(Node::new(format!("{key}/scr/in")).col().grow(1.0).min_h(0.0).pad(if mw > 400.0 { 32.0 } else { 16.0 }).gap(4.0).clip().child(k.bold(format!("{key}/scr/t"), &w.name, 20.0, text)).child(k.txt(format!("{key}/scr/s"), &format!("{}, in the {palette} palette", plural(insts.len(), "widget")), 14.0, dim)).child(chips))
+            .child(Node::new(format!("{key}/scr/bar")).h(16.0).no_shrink().fill(track));
+        let mid = Node::new(format!("{key}/mid")).col().grow(1.0).min_h(0.0).center().gap(16.0).pad(24.0).clip().child(dots(format!("{key}/dots"))).child(screen).child(k.txt(format!("{key}/cap"), &setup_label(ctx.setup), 12.0, MUTED));
+        let note = if on { "This is what comes up on the monitors and desktop you are using now." } else { "Show it to swap these widgets in for the ones on screen." };
+        let foot = Node::new(format!("{key}/f")).row().min_h(56.0).no_shrink().pad_xy(24.0, 12.0).align(taffy::AlignItems::CENTER).fill(SURFACE).child(k.txt(format!("{key}/f/t"), note, 14.0, MUTED).wrap_text().grow_text());
+        Node::new(format!("{key}/stage")).col().grow(1.0).min_w(0.0).radius(4.0).fill(STAGE).clip().child(top).child(mid).child(foot)
+    }
+
+    /// The right of the Workspaces page: its name, what brings it up, its look, and copy or remove.
+    fn workspace_panel(&self, k: &Kit, ctx: &Ctx, i: usize, w: &crate::workspace::Saved, sw: f32) -> Node {
+        let key = format!("ws/w/{i}");
+        let on = w.name == ctx.ws.active;
         let nk = format!("wsn:{i}");
         let f = self.focus.as_ref().filter(|f| f.key == nk).map(|f| (f.caret, self.caret_on));
-        let mut name = Node::new(format!("{key}/nm")).row().gap(10.0).align(taffy::AlignItems::CENTER).child(k.input(&nk, &self.input_text(ctx, &nk), "Name", f, 240.0, false));
-        if on {
-            name = name.child(k.tag(format!("{key}/on"), "On screen", false));
-        }
-        let info = Node::new(format!("{key}/info"))
-            .col()
-            .grow(1.0)
-            .min_w(0.0)
-            .gap(6.0)
-            .child(name)
-            .child(k.txt(format!("{key}/sub"), &format!("{count} widget{} · {palette}", if count == 1 { "" } else { "s" }), 12.5, dim));
-        let mut buttons = Node::new(format!("{key}/b")).row().no_shrink().gap(8.0).align(taffy::AlignItems::CENTER);
-        if !on {
-            buttons = buttons.child(k.btn(&format!("{key}/go"), None, "Show", format!("wsgo:{i}"), Btn::Primary));
-        }
-        if ctx.ws.workspaces.len() > 1 {
-            buttons = buttons.child(if confirm { k.btn(&format!("{key}/del"), Some("delete"), "Remove it and its widgets", format!("wsdel:{i}"), Btn::DangerFill) } else { k.btn(&format!("{key}/del"), Some("delete"), "Remove", format!("wsdel:{i}"), Btn::Outline) });
-        }
-        let head = Node::new(format!("{key}/h")).row().gap(16.0).align(taffy::AlignItems::CENTER).pad(20.0).child(k.tile(format!("{key}/ic"), "display", 44.0, if on { accent } else { dim })).child(info).child(buttons);
-
-        // what brings it up by itself
-        let chip = |ck: String, text: &str, undo: Option<String>| {
-            let mut c = Node::new(ck.clone()).row().h(30.0).pad_xy(10.0, 0.0).gap(8.0).align(taffy::AlignItems::CENTER).radius(8.0).fill(k.ink(0.03)).border(1.0, k.line()).child(k.txt(format!("{ck}/t"), text, 12.5, k.c("text")));
-            if let Some(a) = undo {
-                c = c.child(Node::new(format!("{ck}/x")).wh(18.0, 18.0).radius(9.0).center().hover_fill(k.ink(0.08)).ease(120).on(a).child(k.glyph(format!("{ck}/x/g"), "close", 9.0, dim)));
+        let block = |bk: &str, title: &str, help: &str, rows: Vec<Node>, foot: &str| {
+            let mut n = Node::new(format!("{key}/{bk}")).col().gap(2.0).pad_each(24.0, 0.0, 0.0, 0.0).child(k.top_line(format!("{key}/{bk}/hr"))).child(k.medium(format!("{key}/{bk}/t"), title, 14.0, FG));
+            if !help.is_empty() {
+                n = n.child(k.txt(format!("{key}/{bk}/h"), help, 14.0, MUTED).wrap_text());
             }
-            c
+            n = n.child(Node::new(format!("{key}/{bk}/l")).col().gap(8.0).pad_each(10.0, 0.0, 0.0, 0.0).kids(rows));
+            if !foot.is_empty() {
+                n = n.child(Node::new(format!("{key}/{bk}/f")).pad_each(6.0, 0.0, 0.0, 0.0).child(k.txt(format!("{key}/{bk}/f/t"), foot, 12.0, SUBTLE).wrap_text()));
+            }
+            n
         };
-        let mut desks = Node::new(format!("{key}/d/c")).row().wrap().gap(8.0).justify(taffy::JustifyContent::FLEX_END);
-        for d in &w.rules.desktops {
-            desks = desks.child(chip(format!("{key}/d/{d}"), &desktop_label(ctx, d), Some(format!("wsundesk:{i}|{d}"))));
-        }
+        let mut desks: Vec<Node> = w.rules.desktops.iter().map(|d| k.item_row(&format!("{key}/d/{d}"), &desktop_label(ctx, d), "Going here brings this up", Some(k.btn(&format!("{key}/d/{d}/x"), None, "Untie", format!("wsundesk:{i}|{d}"), Btn::Tonal)))).collect();
         match ctx.desktop {
-            Some(cur) if !w.rules.desktops.iter().any(|d| d.eq_ignore_ascii_case(cur)) => desks = desks.child(k.btn(&format!("{key}/d/add"), Some("add"), &format!("Add {}", desktop_label(ctx, cur)), format!("wsdesk:{i}"), Btn::Outline)),
-            None if w.rules.desktops.is_empty() => desks = desks.child(k.txt(format!("{key}/d/none"), "Make a second desktop with Win+Ctrl+D to use this.", 12.5, dim)),
+            Some(cur) if !w.rules.desktops.iter().any(|d| d.eq_ignore_ascii_case(cur)) => {
+                let name = desktop_label(ctx, cur);
+                desks.push(k.item_row(&format!("{key}/d/now"), &name, "The desktop you are on", Some(k.btn(&format!("{key}/d/add"), Some("add"), &format!("Add {name}"), format!("wsdesk:{i}"), Btn::Tonal))));
+            }
+            None if w.rules.desktops.is_empty() => desks.push(k.txt(format!("{key}/d/none"), "Make a second desktop with Win+Ctrl+D to use this.", 14.0, MUTED).wrap_text()),
             _ => {}
         }
         let mons = if w.rules.monitors.is_empty() {
-            Node::new(format!("{key}/m/c")).row().justify(taffy::JustifyContent::FLEX_END).child(k.btn(&format!("{key}/m/add"), Some("display"), "Use with the monitors connected now", format!("wsmon:{i}"), Btn::Outline))
+            k.item_row(&format!("{key}/m/now"), &monitors_count(ctx.setup), &format!("{}, connected now", monitors_label(ctx.setup)), Some(k.btn(&format!("{key}/m/add"), None, "Use this setup", format!("wsmon:{i}"), Btn::Tonal)))
         } else {
             let fit = match crate::workspace::setup_fit(&w.rules.monitors, ctx.setup) {
                 crate::workspace::SetupFit::No => "",
-                _ => "  ·  connected now",
+                _ => ", connected now",
             };
-            Node::new(format!("{key}/m/c")).row().justify(taffy::JustifyContent::FLEX_END).child(chip(format!("{key}/m/s"), &format!("{}{fit}", setup_label(&w.rules.monitors)), Some(format!("wsunmon:{i}"))))
+            k.item_row(&format!("{key}/m/s"), &monitors_count(&w.rules.monitors), &format!("{}{fit}", monitors_label(&w.rules.monitors)), Some(k.btn(&format!("{key}/m/s/x"), None, "Untie", format!("wsunmon:{i}"), Btn::Tonal)))
         };
-        let rules = Node::new(format!("{key}/r"))
+        let palette = if on { ctx.ws.theme.palette.clone() } else { w.theme.as_ref().map_or_else(|| ctx.ws.theme.palette.clone(), |t| t.palette.clone()) };
+        let tok = |n: &str, or: Color| ctx.lib.palette(&palette).tokens.get(n).map(|v| v.to_string()).and_then(|s| Color::parse(&s)).unwrap_or(or);
+        let mini = Node::new(format!("{key}/look/m"))
             .col()
-            .pad_xy(20.0, 6.0)
-            .child(k.row(&format!("{key}/rd"), "On virtual desktops", "Going to one of these desktops brings this up.", desks))
-            .child(k.row(&format!("{key}/rm"), "With a monitor setup", "Connecting these monitors brings this up, like docking a laptop.", mons));
-        let hr = Node::new(format!("{key}/hr")).h(1.0).no_shrink().fill(k.line());
-        Node::new(key.clone()).col().radius(14.0).fill(k.panel()).border(1.0, if confirm { k.c("danger") } else if on { accent.with_alpha(0.5) } else { k.line() }).clip().ease(150).enter(220, 6.0, (i as u32).min(8) * 30).child(head).child(hr).child(rules)
+            .wh(48.0, 32.0)
+            .no_shrink()
+            .pad(6.0)
+            .gap(3.0)
+            .justify(taffy::JustifyContent::FLEX_END)
+            .radius(2.0)
+            .fill(tok("surface", RAISED).with_alpha(1.0))
+            .child(Node::new(format!("{key}/look/m/a")).wh(28.0, 3.0).fill(tok("accent", k.accent())))
+            .child(Node::new(format!("{key}/look/m/b")).wh(16.0, 3.0).fill(tok("text-dim", MUTED)));
+        let mut look = Node::new(format!("{key}/look/r"))
+            .row()
+            .min_h(56.0)
+            .pad_xy(12.0, 8.0)
+            .gap(12.0)
+            .align(taffy::AlignItems::CENTER)
+            .radius(4.0)
+            .fill(RAISED)
+            .child(mini)
+            .child(Node::new(format!("{key}/look/c")).col().grow(1.0).min_w(0.0).child(k.medium(format!("{key}/look/n"), &palette, 14.0, FG)).child(k.txt(format!("{key}/look/s"), if on { "Change it in Appearance" } else { "Its own, while it is on screen" }, 12.0, MUTED)));
+        if on {
+            look = look.hover_fill(RAISED2).ease(120).on("nav:appearance").child(k.glyph(format!("{key}/look/g"), "chevron-right", 10.0, MUTED));
+        }
+        let content = Node::new(format!("{key}/p"))
+            .col()
+            .gap(24.0)
+            .child(Node::new(format!("{key}/name")).col().gap(8.0).child(k.txt(format!("{key}/name/l"), "Name", 12.0, MUTED)).child(k.input(&nk, &self.input_text(ctx, &nk), "Name", f, 0.0, false)))
+            .child(block("d", "On virtual desktops", "Going to one of these desktops brings this up.", desks, if w.rules.desktops.is_empty() { "Not tied to a desktop yet." } else { "" }))
+            .child(block("m", "With a monitor setup", "Connecting these monitors brings this up, like docking a laptop.", vec![mons], if w.rules.monitors.is_empty() { "Not tied to a monitor setup yet." } else { "" }))
+            .child(block("look", "Look", "", vec![look], ""));
+        let mut foot = Node::new(format!("{key}/foot")).col().no_shrink().gap(8.0).pad_each(16.0, 0.0, 0.0, 0.0).child(k.top_line(format!("{key}/foot/hr")));
+        if on {
+            foot = foot.child(Node::new(format!("{key}/dup")).row().gap(16.0).align(taffy::AlignItems::CENTER).child(k.txt(format!("{key}/dup/t"), "Start another from a copy", 14.0, MUTED).wrap_text().grow_text()).child(k.btn("ws/dup", Some("copy"), "Duplicate this one", "wsadd:copy".into(), Btn::Secondary)));
+        }
+        if ctx.ws.workspaces.len() > 1 {
+            let confirm = self.confirm_del.as_deref() == Some(format!("ws/{}", w.name).as_str());
+            let del = if confirm { k.btn(&format!("{key}/del"), Some("delete"), "Remove it and its widgets", format!("wsdel:{i}"), Btn::DangerFill) } else { k.btn(&format!("{key}/del"), Some("delete"), "Remove", format!("wsdel:{i}"), Btn::Danger) };
+            foot = foot.child(Node::new(format!("{key}/rm")).row().gap(16.0).align(taffy::AlignItems::CENTER).child(k.txt(format!("{key}/rm/t"), "Take it and its widgets away", 14.0, MUTED).wrap_text().grow_text()).child(del));
+        }
+        Node::new(format!("{key}/panel")).col().w(sw).no_shrink().pad(PAD).radius(4.0).fill(SURFACE).child(self.scrolling("ws/scroll", content.pad_each(0.0, 0.0, 24.0, 0.0))).child(foot)
     }
 
-    fn page_appearance(&self, k: &Kit, ctx: &Ctx, size: (f32, f32)) -> Node {
-        let cw = content_w(size, 1040.0);
-        let side = cw >= 860.0;
-        let main_w = if side { cw - PREVIEW_W - 28.0 } else { cw };
-        let f = |key: &str| matches!(&self.open, Some(Open::Dropdown(o)) if o == key);
+    fn page_appearance(&self, k: &Kit, ctx: &Ctx, size: (f32, f32)) -> (Vec<Node>, Node) {
+        let (_, sw) = side_widths(size);
+        let main_w = size.0 - 2.0 * PAD - sw - GAP;
+        let two = main_w >= 860.0;
         let glyph_axis = ctx.lib.glyphs(&ctx.ws.theme.glyphs);
         let fam = glyph_axis.tokens.get("font-glyph").map(|v| v.to_string()).unwrap_or_default();
-        let mut gl = Node::new("ap/glyphs").row().gap(14.0).align(taffy::AlignItems::CENTER).pad_xy(0.0, 3.0);
+        let mut gl = Node::new("ap/glyphs").row().gap(10.0).align(taffy::AlignItems::CENTER).pad_each(4.0, 0.0, 0.0, 0.0);
         for (i, g) in ["gear", "close", "folder", "edit", "check"].iter().enumerate() {
             let ch = glyph_axis.tokens.get(&format!("glyph-{g}")).map(|v| v.to_string()).unwrap_or_default();
             let fam = fam.clone();
-            gl = gl.child(Node::text(format!("ap/gl/{i}"), ch, 15.0, k.c("text-dim")).with_text(|t| t.family = fam));
+            gl = gl.child(Node::text(format!("ap/gl/{i}"), ch, 14.0, MUTED).with_text(|t| t.family = fam));
         }
-        let typo = k.group(
-            "ap/ty",
-            "Typography & icons",
-            vec![
-                k.row("ap/fonts", "Font set", "Body, display and monospace faces", k.dropdown("th:fonts", &ctx.ws.theme.fonts, CONTROL_W, f("th:fonts"))),
-                k.row_with("ap/glyphs-row", k.bold("ap/glyphs-row/lt".into(), "Glyph set", 13.5, k.c("text")), if ctx.lib.glyph_stand_in(&ctx.ws.theme.glyphs).is_some() { "Segoe Fluent Icons is not installed, so these are MDL2's." } else { "" }, Some(gl), k.dropdown("th:glyphs", &ctx.ws.theme.glyphs, CONTROL_W, f("th:glyphs"))),
-                k.row_with("ap/pack", k.bold("ap/pack/lt".into(), "App icon pack", 13.5, k.c("text")), "Replaces icons in Drawer and Icon List.", Some(k.link("ap/pack/open", "Open icon packs folder", "openpacks".into())), k.dropdown("th:pack", &ctx.ws.theme.icon_pack, CONTROL_W, f("th:pack"))),
-            ],
-        );
-        let mut surface: Vec<Node> = style_schema().iter().map(|pd| self.style_row(k, ctx, &Scope::Global, pd)).collect();
-        if !ctx.ws.style.is_empty() {
-            surface.push(k.row("ap/resetall", "Reset all", "Back to the defaults and each palette's own colours", k.btn("ap/resetall/b", None, "Reset all", "syreset:*|*".into(), Btn::Outline)));
-        }
-        let palettes = Node::new("ap/pal/g").col().gap(12.0).child(k.heading("ap/pal/t".into(), "Palette")).child(self.palette_grid(k, ctx, main_w, "ap/pal", true));
-        let main = Node::new("ap/main").col().grow(1.0).min_w(0.0).gap(30.0).child(palettes).child(typo).child(k.group("ap/sf", "Surface", surface));
-        let mut cols = Node::new("ap/cols").row().gap(28.0).align(taffy::AlignItems::FLEX_START).child(main);
-        if side {
-            cols = cols.child(self.theme_preview(k, ctx));
-        }
-        let body = Node::new("ap").col().gap(26.0).child(k.page_head("ap/head", Page::Appearance.heading(), Page::Appearance.subtitle(), None)).child(cols);
-        self.page("ap/scroll", cw, body)
+        let style = |names: &[&str]| -> Vec<Node> { names.iter().filter_map(|n| style_schema().iter().find(|p| p.name == *n)).map(|pd| self.style_row(k, ctx, &Scope::Global, pd)).collect() };
+        // a token this page does not place yet still gets a row, under Surface
+        let placed = ["accent", "tint", "radius-lg", "outlines", "shadow", "transparent", "bg-opacity", "blur", "font-body", "text-scale", "anim-speed"];
+        let mut surface = style(&["accent", "tint", "radius-lg", "outlines", "shadow"]);
+        surface.extend(style_schema().iter().filter(|p| !placed.contains(&p.name.as_str())).map(|pd| self.style_row(k, ctx, &Scope::Global, pd)));
+        let mut typo = vec![k.row("ap/fonts", "Font set", "Body, display and monospace faces", k.dropdown("th:fonts", &ctx.ws.theme.fonts, CONTROL_W, self.is_open_dd("th:fonts")))];
+        typo.extend(style(&["font-body", "text-scale"]));
+        let stand_in = if ctx.lib.glyph_stand_in(&ctx.ws.theme.glyphs).is_some() { "Segoe Fluent Icons is not installed, so these are MDL2's." } else { "" };
+        typo.push(k.row_with("ap/glyphs-row", k.medium("ap/glyphs-row/lt".into(), "Glyph set", 14.0, FG), stand_in, Some(gl), k.dropdown("th:glyphs", &ctx.ws.theme.glyphs, CONTROL_W, self.is_open_dd("th:glyphs"))));
+        typo.push(k.row_with("ap/pack", k.medium("ap/pack/lt".into(), "App icon pack", 14.0, FG), "Replaces icons in Drawer and Icon List.", Some(k.link("ap/pack/open", "Open icon packs folder", "openpacks".into())), k.dropdown("th:pack", &ctx.ws.theme.icon_pack, CONTROL_W, self.is_open_dd("th:pack"))));
+        let reset = k.panel("ap/reset", "", None, k.row("ap/resetall", "Reset all", "Back to the defaults and each palette's own colours", k.btn("ap/resetall/b", None, "Reset all", "syreset:*|*".into(), Btn::Secondary)));
+        let left = Node::new("ap/c1").col().gap(GAP).min_w(0.0).child(k.group("ap/sf", "Surface", surface)).child(k.group("ap/bg", "Background", style(&["transparent", "bg-opacity", "blur"])));
+        let right = Node::new("ap/c2").col().gap(GAP).min_w(0.0).child(k.group("ap/ty", "Type and icons", typo)).child(k.group("ap/mo", "Motion", style(&["anim-speed"]))).child(reset);
+        let lower = if two { Node::new("ap/cols").row().gap(GAP).align(taffy::AlignItems::FLEX_START).child(left.grow(1.0)).child(right.grow(1.0)) } else { Node::new("ap/cols").col().gap(GAP).child(left).child(right) };
+        let palettes = k.panel("ap/pal", "Palette", Some(k.more("ap/pal/more", "Get more from plugins", "nav:plugins".into())), Node::new("ap/pal/w").pad_each(12.0, 0.0, 16.0, 0.0).child(self.palette_grid(k, ctx, main_w - 2.0 * PAD, "ap/pal/g", 110.0)));
+        let main = self.scrolling("ap/scroll", Node::new("ap/main").col().gap(GAP).child(palettes).child(lower));
+        (vec![], Node::new("ap").row().grow(1.0).min_h(0.0).gap(GAP).child(main).child(self.theme_preview(k, ctx, sw)))
     }
 
-    /// A card per palette showing its colours, and one leading to the Plugins page.
-    fn palette_grid(&self, k: &Kit, ctx: &Ctx, w: f32, key: &str, more: bool) -> Node {
-        let (cols, pw) = columns(w, 150.0, 12.0, 4);
-        let mut cards: Vec<Node> = ctx.lib.palettes.iter().enumerate().map(|(i, a)| self.palette_card(k, ctx, a, pw, key, i)).collect();
-        if more {
-            cards.push(
-                Node::new(format!("{key}/more"))
-                    .col()
-                    .w(pw)
-                    .h(118.0)
-                    .center()
-                    .gap(8.0)
-                    .radius(12.0)
-                    .hover_fill(k.ink(0.04))
-                    .ease(150)
-                    .on("nav:plugins")
-                    .child(dashed(format!("{key}/more/d"), 12.0, k.ink(0.25)))
-                    .child(k.glyph(format!("{key}/more/g"), "add", 15.0, k.c("text-dim")))
-                    .child(k.txt(format!("{key}/more/t"), "Get more from plugins", 12.5, k.c("text-dim"))),
-            );
-        }
-        grid(key, cols, 12.0, cards)
+    /// A card per palette showing its colours, each at least `min` wide.
+    fn palette_grid(&self, k: &Kit, ctx: &Ctx, w: f32, key: &str, min: f32) -> Node {
+        let (cols, pw) = columns(w, min, GAP, 7);
+        grid(key, cols, GAP, ctx.lib.palettes.iter().enumerate().map(|(i, a)| self.palette_card(k, ctx, a, pw, key, i)).collect())
     }
 
     fn palette_card(&self, k: &Kit, ctx: &Ctx, a: &Axis, w: f32, prefix: &str, i: usize) -> Node {
         let on = a.name == ctx.ws.theme.palette;
         let tok = |n: &str, or: Color| a.tokens.get(n).map(|v| v.to_string()).and_then(|s| Color::parse(&s)).unwrap_or(or);
-        let (surface, text, dim, accent) = (tok("surface", k.bg()).with_alpha(1.0), tok("text", k.c("text")), tok("text-dim", k.c("text-dim")), tok("accent", k.c("accent")));
+        let (surface, text, dim, accent) = (tok("surface", RAISED).with_alpha(1.0), tok("text", FG), tok("text-dim", MUTED), tok("accent", k.accent()));
         let key = format!("{prefix}/{}", a.name);
-        let bar = (w - 32.0).max(20.0);
+        let bar = (w - 24.0).max(20.0);
         let top = Node::new(format!("{key}/top"))
             .col()
-            .h(76.0)
-            .pad_xy(14.0, 13.0)
-            .gap(14.0)
-            .kids(half_round(&format!("{key}/top"), surface, 10.0, true))
-            .child(Node::new(format!("{key}/r1")).row().align(taffy::AlignItems::CENTER).child(k.bold(format!("{key}/tm"), "01:30", 19.0, text).grow_text()).child(Node::new(format!("{key}/dot")).wh(8.0, 8.0).radius(4.0).fill(accent)))
-            .child(Node::new(format!("{key}/bars")).row().gap(6.0).child(Node::new(format!("{key}/b1")).wh((bar * 0.5).floor(), 4.0).radius(2.0).fill(accent)).child(Node::new(format!("{key}/b2")).wh((bar * 0.25).floor(), 4.0).radius(2.0).fill(dim)));
+            .h(64.0)
+            .no_shrink()
+            .pad(12.0)
+            .justify(taffy::JustifyContent::SPACE_BETWEEN)
+            .kids(half_round(&format!("{key}/top"), surface, 4.0, true))
+            .child(k.bold(format!("{key}/tm"), "01:30", 14.0, text))
+            .child(Node::new(format!("{key}/bars")).row().gap(4.0).child(Node::new(format!("{key}/b1")).wh((bar * 0.5).floor().min(48.0), 4.0).fill(accent)).child(Node::new(format!("{key}/b2")).wh((bar * 0.25).floor().min(24.0), 4.0).fill(dim)));
         let foot = Node::new(format!("{key}/ft"))
             .row()
-            .h(36.0)
-            .pad_xy(14.0, 0.0)
+            .h(40.0)
+            .no_shrink()
+            .pad_xy(12.0, 0.0)
+            .gap(8.0)
             .align(taffy::AlignItems::CENTER)
-            .kids(half_round(&format!("{key}/ft"), k.solid(0.05), 10.0, false))
-            .child(k.bold(format!("{key}/n"), &a.name, 13.0, k.c("text")).grow_text())
-            .child(k.glyph(format!("{key}/ck"), "check", 12.0, k.c("accent").with_alpha(if on { 1.0 } else { 0.0 })));
-        let mut card = Node::new(key.clone())
+            .child(k.txt(format!("{key}/n"), &a.name, 14.0, FG).with_text(|t| t.weight = if on { 500 } else { 400 }).grow_text())
+            .child(k.glyph(format!("{key}/ck"), "check", 11.0, k.accent().with_alpha(if on { 1.0 } else { 0.0 })));
+        Node::new(key.clone())
             .col()
             .w(w)
             .pad(2.0)
-            .radius(12.0)
-            .border(if on { 2.0 } else { 1.0 }, if on { k.c("accent") } else { k.line() })
-            .hover_fill(k.ink(0.05))
+            .radius(6.0)
+            .fill(RAISED)
+            .hover_fill(RAISED2)
+            .border(2.0, if on { k.accent() } else { CLEAR })
             .ease(150)
             .on(format!("pick:th:palette|{}", a.name))
             .enter(240, 8.0, (i as u32).min(10) * 40)
             .child(top)
-            .child(foot);
-        if on {
-            card = card.shadow(16.0, 0.0, k.c("accent").with_alpha(0.28));
-        }
-        card
+            .child(foot)
     }
 
     /// Two sample widgets in the global Theme, beside the Appearance settings.
-    fn theme_preview(&self, k: &Kit, ctx: &Ctx) -> Node {
+    fn theme_preview(&self, k: &Kit, ctx: &Ctx, w: f32) -> Node {
         let t = ctx.theme;
         let fam = t.str("font-body");
         let tx = |key: &str, s: &str, size: f32, col: Color, weight: u16| {
@@ -1919,249 +2119,387 @@ impl UiState {
             })
         };
         let card = |key: &str| {
-            let n = Node::new(key).col().pad(16.0).gap(6.0).radius((t.num("radius-lg") * 0.6).clamp(0.0, 18.0)).fill(t.color("surface"));
+            let n = Node::new(key).col().pad(24.0).gap(8.0).radius((t.num("radius-lg") * 0.6).clamp(0.0, 18.0)).fill(t.color("surface"));
             if t.flag("outlines") { n.border(1.0, t.color("border")) } else { n }
         };
         const DAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
         const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
         let now = ctx.calendar.now();
         let date = format!("{}, {} {}", DAYS[now.dow as usize % 7], now.day, MONTHS[(now.month as usize).clamp(1, 12) - 1]);
-        let clock = card("ap/pv/clock").child(tx("ap/pv/date", &date, 11.5, t.color("text-dim"), 400)).child(tx("ap/pv/time", &format!("{:02}:{:02}", now.hour, now.minute), 38.0, t.color("text"), 700));
+        let clock = card("ap/pv/clock").child(tx("ap/pv/date", &date, 14.0, t.color("text-dim"), 400)).child(tx("ap/pv/time", &format!("{:02}:{:02}", now.hour, now.minute), 48.0, t.color("text"), 600));
         let gauge = |key: &str, label: &str, pct: f32| {
             Node::new(key)
                 .col()
-                .gap(7.0)
-                .child(Node::new(format!("{key}/r")).row().child(tx(&format!("{key}/l"), label, 11.5, t.color("text-dim"), 400).grow_text()).child(tx(&format!("{key}/v"), &format!("{pct:.0}%"), 11.5, t.color("text"), 600)))
-                .child(Node::new(format!("{key}/tr")).row().h(5.0).radius(3.0).fill(t.color("track")).child(Node::new(format!("{key}/f")).w_pct(pct).radius(3.0).fill(t.color("accent"))))
+                .gap(8.0)
+                .child(Node::new(format!("{key}/r")).row().child(tx(&format!("{key}/l"), label, 14.0, t.color("text-dim"), 400).grow_text()).child(tx(&format!("{key}/v"), &format!("{pct:.0}%"), 14.0, t.color("text"), 500)))
+                .child(Node::new(format!("{key}/tr")).row().h(4.0).radius(2.0).fill(t.color("track")).child(Node::new(format!("{key}/f")).w_pct(pct / 100.0).radius(2.0).fill(t.color("accent"))))
         };
-        let sys = card("ap/pv/sys").gap(14.0).child(gauge("ap/pv/cpu", "CPU", 34.0)).child(gauge("ap/pv/mem", "Memory", 61.0));
-        let stage = Node::new("ap/pv/stage").col().gap(12.0).pad(16.0).radius(14.0).fill(k.ink(0.02)).border(1.0, k.line()).clip().child(dots("ap/pv/dots".into(), k.ink(0.1))).child(clock).child(sys);
-        Node::new("ap/pv")
-            .col()
-            .w(PREVIEW_W)
+        let sys = card("ap/pv/sys").gap(16.0).child(gauge("ap/pv/cpu", "CPU", 34.0)).child(gauge("ap/pv/mem", "Memory", 61.0));
+        let sel = &ctx.ws.theme;
+        let top = Node::new("ap/pv/h")
+            .row()
+            .h(56.0)
             .no_shrink()
-            .gap(10.0)
-            .child(k.bold("ap/pv/t".into(), "Preview", 13.0, k.c("text-dim")))
-            .child(stage)
-            .child(k.txt("ap/pv/cap".into(), "Sample widgets. Your desktop updates as you change settings.", 12.0, k.c("text-dim")).wrap_text())
+            .pad_xy(24.0, 0.0)
+            .gap(12.0)
+            .align(taffy::AlignItems::CENTER)
+            .fill(SURFACE)
+            .child(k.bold("ap/pv/t".into(), "Preview", 16.0, FG).grow_text())
+            .child(k.txt("ap/pv/sel".into(), &format!("{}, {}, {}", sel.palette, sel.fonts, sel.glyphs), 12.0, MUTED));
+        let mid = Node::new("ap/pv/stage").col().grow(1.0).min_h(0.0).justify(taffy::JustifyContent::CENTER).gap(16.0).pad_xy(32.0, 24.0).clip().child(dots("ap/pv/dots".into())).child(clock).child(sys);
+        let cap = Node::new("ap/pv/f").no_shrink().pad_xy(24.0, 16.0).fill(SURFACE).child(k.txt("ap/pv/cap".into(), "Sample widgets. Your desktop updates as you change settings.", 14.0, MUTED).wrap_text());
+        Node::new("ap/pv").col().w(w).no_shrink().radius(4.0).fill(STAGE).clip().child(top).child(mid).child(cap)
     }
 
-    fn page_plugins(&self, k: &Kit, ctx: &Ctx, size: (f32, f32)) -> Node {
-        let accent = k.c("accent");
-        let actions = Node::new("pl/acts").row().gap(8.0).child(k.btn("pl/folder", Some("folder"), "Open plugins folder", "pfolder".into(), Btn::Outline)).child(k.btn("pl/install", Some("download"), "Install from file…", "pinstall".into(), Btn::Primary));
+    fn page_plugins(&self, k: &Kit, ctx: &Ctx, size: (f32, f32), images: &mut Vec<String>) -> (Vec<Node>, Node) {
+        let accent = k.accent();
+        let folder = |key: &str| k.btn(key, Some("folder"), "Open plugins folder", "pfolder".into(), Btn::Secondary);
+        let install = |key: &str| k.btn(key, Some("download"), "Install from file…", "pinstall".into(), Btn::Primary);
         let hot = self.drop_hover;
-        let drop = Node::new("pl/drop")
-            .row()
-            .gap(16.0)
-            .align(taffy::AlignItems::CENTER)
-            .pad_xy(20.0, 18.0)
-            .radius(14.0)
-            .fill(if hot { accent.with_alpha(0.1) } else { k.ink(0.015) })
-            .ease(150)
-            .clip()
-            .child(dots("pl/drop/dots".into(), k.ink(0.08)))
-            .child(dashed("pl/drop/d".into(), 14.0, if hot { accent } else { k.ink(0.22) }))
-            .child(Node::new("pl/drop/ic").wh(44.0, 44.0).no_shrink().radius(11.0).center().fill(accent.with_alpha(0.14)).child(k.glyph("pl/drop/ic/g".into(), "upload", 16.0, accent)))
-            .child(
-                Node::new("pl/drop/tx")
-                    .col()
-                    .grow(1.0)
-                    .min_w(0.0)
-                    .gap(3.0)
-                    .child(k.bold("pl/drop/t".into(), if hot { "Drop to install" } else { "Drop a .wfplugin file here to install it" }, 14.0, k.c("text")))
-                    .child(k.txt("pl/drop/s".into(), "A plugin with code asks first and names what it can read and reach. Only install plugins from people you trust.", 12.5, k.c("text-dim")).wrap_text()),
-            );
-        let mut body = Node::new("pl").col().gap(24.0).child(k.page_head("pl/head", Page::Plugins.heading(), Page::Plugins.subtitle(), Some(actions))).child(drop);
-        if !ctx.plugin_note.is_empty() {
+        let drop_title = if hot { "Drop to install" } else { "Drop a .wfplugin file here to install it" };
+        let note = (!ctx.plugin_note.is_empty()).then(|| {
             let bad = ctx.plugin_note.starts_with("Could not");
-            body = body.child(k.txt("pl/note".into(), ctx.plugin_note, 13.0, if bad { k.c("danger") } else { accent }).wrap_text());
-        }
-        let mut list = Node::new("pl/list").col().gap(14.0).child(k.heading("pl/s1".into(), &format!("Installed · {}", ctx.plugins.len())));
+            k.txt("pl/note".into(), ctx.plugin_note, 14.0, if bad { DANGER } else { accent }).wrap_text()
+        });
         if ctx.plugins.is_empty() {
-            list = list.child(k.txt("pl/none".into(), "No plugins yet. Drop a .wfplugin file on this window, or put a plugin's folder in Wayfinder\\plugins.", 13.0, k.c("text-dim")).wrap_text());
+            let zone = Node::new("pl/drop/in")
+                .col()
+                .grow(1.0)
+                .center()
+                .gap(8.0)
+                .pad(24.0)
+                .radius(4.0)
+                .fill(accent.with_alpha(if hot { 0.08 } else { 0.0 }))
+                .ease(150)
+                .child(dashed("pl/drop/d".into(), 4.0, if hot { accent } else { LINE_STRONG }))
+                .child(k.glyph("pl/drop/g".into(), "upload", 28.0, if hot { accent } else { MUTED }))
+                .child(Node::new("pl/drop/sp").h(16.0))
+                .child(k.bold("pl/drop/t".into(), drop_title, 24.0, FG).wrap_text().with_text(|t| t.align = crate::text::TextAlign::Center).max_w(560.0))
+                .child(k.txt("pl/drop/s".into(), "A plugin with code asks first and names what it can read and reach. Only install plugins from people you trust.", 14.0, MUTED).wrap_text().with_text(|t| t.align = crate::text::TextAlign::Center).max_w(480.0))
+                .child(Node::new("pl/drop/b").row().gap(8.0).pad_each(24.0, 0.0, 0.0, 0.0).child(install("pl/install")).child(folder("pl/folder")))
+                .kids(note);
+            let drop = Node::new("pl/drop").col().grow(1.0).min_w(0.0).pad(24.0).radius(4.0).fill(STAGE).clip().child(dots("pl/drop/dots".into())).child(zone);
+            let empty = Node::new("pl/inst/b")
+                .col()
+                .gap(8.0)
+                .pad_each(16.0, 0.0, 16.0, 0.0)
+                .child(k.medium("pl/none/t".into(), "No plugins yet", 14.0, FG))
+                .child(k.txt("pl/none/s".into(), "Drop a .wfplugin file on this window, or put a plugin's folder in:", 14.0, MUTED).wrap_text())
+                .child(Node::new("pl/none/p").h(32.0).pad_xy(12.0, 0.0).align(taffy::AlignItems::CENTER).radius(4.0).fill(RAISED).child(k.mono("pl/none/p/t".into(), "Wayfinder\\plugins", 13.0, FG)));
+            let installed = k.panel("pl/inst", "Installed", Some(k.txt("pl/inst/n".into(), "0", 14.0, MUTED)), empty).grow(1.0).min_h(0.0);
+            let can = |key: &str, what: &str, where_: &str, action: &str| {
+                Node::new(key)
+                    .row()
+                    .min_h(56.0)
+                    .gap(16.0)
+                    .align(taffy::AlignItems::CENTER)
+                    .fill(CLEAR)
+                    .hover_fill(RAISED)
+                    .ease(120)
+                    .on(action)
+                    .child(Node::new(format!("{key}/w")).w(72.0).no_shrink().child(k.medium(format!("{key}/t"), what, 14.0, FG)))
+                    .child(k.txt(format!("{key}/s"), where_, 14.0, MUTED).wrap_text().grow_text().min_w(0.0))
+                    .child(k.glyph(format!("{key}/g"), "chevron-right", 10.0, MUTED))
+            };
+            let kinds = vec![
+                can("pl/can/w", "Widgets", "Show up under Add widget", "nav:widgets"),
+                can("pl/can/p", "Palettes", "Show up in Appearance, under Palette", "nav:appearance"),
+                can("pl/can/f", "Fonts", "Show up in Appearance, under Font set", "nav:appearance"),
+                can("pl/can/i", "Icons", "Show up as glyph sets and app icon packs", "nav:appearance"),
+            ];
+            let right = Node::new("pl/side").col().w(sw_plugins(size)).no_shrink().gap(GAP).child(installed).child(k.group("pl/can", "What a plugin can add", kinds));
+            return (vec![], Node::new("pl").row().grow(1.0).min_h(0.0).gap(GAP).child(drop).child(right));
         }
+        let lw = side_widths(size).0 + 40.0;
+        let sel = self.plugin_sel.as_deref().and_then(|s| ctx.plugins.iter().find(|r| r.id == s)).unwrap_or(&ctx.plugins[0]);
+        let mut items = Node::new("pl/list/items").col().gap(4.0);
         for (i, r) in ctx.plugins.iter().enumerate() {
-            list = list.child(self.plugin_card(k, ctx, r, i));
+            let on = r.id == sel.id;
+            let key = format!("pl/i/{}", r.id);
+            let sub = if r.enabled { r.summary.clone() } else { format!("Off · {}", r.summary) };
+            items = items.child(
+                k.list_item(&key, on, format!("plsel:{}", r.id))
+                    .min_h(56.0)
+                    .enter(220, 6.0, (i as u32).min(8) * 30)
+                    .child(Node::new(format!("{key}/c")).col().grow(1.0).min_w(0.0).child(k.txt(format!("{key}/n"), &r.name, 14.0, if r.enabled { FG } else { MUTED }).with_text(|t| t.weight = if on { 500 } else { 400 })).child(k.txt(format!("{key}/s"), &sub, 12.0, MUTED).wrap_text())),
+            );
         }
-        self.page("pl/scroll", content_w(size, 860.0), body.child(list))
+        let drop = Node::new("pl/drop")
+            .col()
+            .no_shrink()
+            .center()
+            .gap(8.0)
+            .pad_xy(16.0, 24.0)
+            .radius(4.0)
+            .fill(if hot { accent.with_alpha(0.08) } else { STAGE })
+            .ease(150)
+            .child(dashed("pl/drop/d".into(), 4.0, if hot { accent } else { LINE_STRONG }))
+            .child(k.glyph("pl/drop/g".into(), "upload", 18.0, if hot { accent } else { MUTED }))
+            .child(k.medium("pl/drop/t".into(), drop_title, 14.0, FG).wrap_text().with_text(|t| t.align = crate::text::TextAlign::Center))
+            .child(k.txt("pl/drop/s".into(), "Only install plugins from people you trust.", 12.0, MUTED).wrap_text().with_text(|t| t.align = crate::text::TextAlign::Center));
+        let list = k.side_list("pl/list", lw, "Installed", ctx.plugins.len(), self.scrolling("pl/list/scroll", items), Some(drop));
+        let detail_w = size.0 - 2.0 * PAD - lw - GAP;
+        let mut detail = Node::new("pl/detail").col().grow(1.0).min_w(0.0).gap(GAP).child(self.plugin_head(k, ctx, sel));
+        if let Some(n) = note {
+            detail = detail.child(Node::new("pl/note/w").no_shrink().pad_xy(24.0, 0.0).child(n));
+        }
+        detail = detail.child(self.scrolling("pl/scroll", self.plugin_bento(k, ctx, sel, detail_w, images)));
+        (vec![folder("pl/folder"), install("pl/install")], Node::new("pl").row().grow(1.0).min_h(0.0).gap(GAP).child(list).child(detail))
     }
 
-    fn plugin_card(&self, k: &Kit, ctx: &Ctx, r: &PluginRow, i: usize) -> Node {
+    /// A Plugin's name, version and author, its switch, and Uninstall.
+    fn plugin_head(&self, k: &Kit, ctx: &Ctx, r: &PluginRow) -> Node {
         let key = format!("pl/p/{}", r.id);
-        let (accent, dim) = (k.c("accent"), k.c("text-dim"));
         let confirm = self.confirm_del.as_deref() == Some(format!("plugin/{}", r.id).as_str());
-        let mut name = Node::new(format!("{key}/nm")).row().wrap().gap(10.0).align(taffy::AlignItems::CENTER).child(k.bold(format!("{key}/n"), &r.name, 16.0, k.c("text")).with_text(|t| t.weight = 700));
-        if !r.version.is_empty() {
-            name = name.child(k.tag(format!("{key}/v"), &format!("v{}", r.version), true));
-        }
-        if !r.author.is_empty() {
-            name = name.child(k.txt(format!("{key}/by"), &format!("by {}", r.author), 12.5, dim));
-        }
-        let mut info = Node::new(format!("{key}/info")).col().grow(1.0).min_w(0.0).gap(6.0).child(name);
-        if !r.description.is_empty() {
-            info = info.child(k.txt(format!("{key}/d"), &r.description, 13.0, dim).wrap_text());
-        }
-        let switch = Node::new(format!("{key}/sw"))
-            .row()
-            .no_shrink()
-            .gap(10.0)
-            .align(taffy::AlignItems::CENTER)
-            .child(k.bold(format!("{key}/st"), if r.enabled { "On" } else { "Off" }, 13.0, if r.enabled { accent } else { dim }))
-            .child(k.toggle(&format!("{key}/on"), r.enabled, format!("pon:{}", r.id)));
-        let head = Node::new(format!("{key}/h")).row().gap(16.0).align(taffy::AlignItems::FLEX_START).pad(20.0).child(k.tile(format!("{key}/ic"), "plugin", 44.0, accent)).child(info).child(switch);
-        let hr = |n: &str| Node::new(format!("{key}/hr{n}")).h(1.0).no_shrink().fill(k.line());
-        let mut card = Node::new(key.clone()).col().radius(14.0).fill(k.panel()).border(1.0, if confirm { k.c("danger") } else { k.line() }).clip().ease(150).enter(220, 6.0, (i as u32).min(8) * 30).child(head);
-
-        let c = &r.contents;
-        let mut adds = Node::new(format!("{key}/adds")).row();
-        let mut any = false;
-        for (kind, items) in [("widget", &c.widgets), ("palette", &c.palettes), ("font set", &c.fonts), ("glyph set", &c.glyphs), ("icon pack", &c.icon_packs)] {
-            if items.is_empty() {
-                continue;
-            }
-            if any {
-                adds = adds.child(Node::new(format!("{key}/vr/{kind}")).w(1.0).no_shrink().fill(k.line()));
-            }
-            any = true;
-            let mut chips = Node::new(format!("{key}/a/{kind}/c")).row().wrap().gap(8.0);
-            for it in items {
-                let ck = format!("{key}/a/{kind}/{it}");
-                let mut chip = Node::new(ck.clone()).row().h(32.0).pad_xy(10.0, 0.0).gap(8.0).align(taffy::AlignItems::CENTER).radius(8.0).fill(k.ink(0.03)).border(1.0, k.line());
-                let label = match kind {
-                    "widget" => {
-                        let m = self.def_of(ctx, it);
-                        chip = chip.child(k.glyph(format!("{ck}/g"), &k.widget_glyph(m), 12.0, accent));
-                        m.map_or(it.clone(), |m| m.name.clone())
-                    }
-                    "palette" => {
-                        let tok = |n: &str| ctx.lib.palettes.iter().find(|a| a.name == *it).and_then(|a| a.tokens.get(n)).map(|v| v.to_string()).and_then(|s| Color::parse(&s));
-                        let dot = Node::new(format!("{ck}/i")).wh(7.0, 7.0).radius(3.5).fill(tok("accent").unwrap_or(accent));
-                        chip = chip.child(Node::new(format!("{ck}/dot")).wh(16.0, 16.0).no_shrink().radius(8.0).center().fill(tok("surface").unwrap_or(k.bg()).with_alpha(1.0)).border(1.0, k.line()).child(dot));
-                        it.clone()
-                    }
-                    _ => it.clone(),
-                };
-                chips = chips.child(chip.child(k.txt(format!("{ck}/t"), &label, 13.0, k.c("text"))));
-            }
-            let n = items.len();
-            adds = adds.child(Node::new(format!("{key}/a/{kind}")).col().grow(n as f32).min_w(0.0).gap(10.0).pad_xy(20.0, 16.0).child(k.bold(format!("{key}/a/{kind}/t"), &format!("Adds {n} {kind}{}", if n == 1 { "" } else { "s" }), 12.5, dim)).child(chips));
-        }
-        if any {
-            card = card.child(hr("a")).child(adds);
-        }
-
-        if !r.code.is_empty() {
-            let mut code = Node::new(format!("{key}/code")).col().gap(2.0).pad_xy(20.0, 14.0).child(k.bold(format!("{key}/code/t"), "Runs sandboxed code", 12.5, dim));
-            for c in &r.code {
-                let ck = format!("{key}/code/{}", c.source);
-                let chip = |n: &str, g: &str, s: &str| {
-                    Node::new(format!("{ck}/{n}")).row().h(28.0).pad_xy(9.0, 0.0).gap(7.0).align(taffy::AlignItems::CENTER).radius(7.0).fill(k.ink(0.04)).child(k.glyph(format!("{ck}/{n}/g"), g, 11.0, dim)).child(k.txt(format!("{ck}/{n}/t"), s, 12.0, k.c("text")))
-                };
-                let mut chips = Node::new(format!("{ck}/chips")).row().wrap().grow(1.0).min_w(0.0).gap(6.0);
-                chips = chips.child(if c.net.is_empty() { chip("net", "blocked", "No network") } else { chip("net", "open", &format!("Reaches {}", c.net.join(", "))) });
-                if !c.reads.is_empty() {
-                    chips = chips.child(chip("rd", "folder", &format!("Reads {}", c.reads.join(", "))));
-                }
-                if !c.opens.is_empty() {
-                    chips = chips.child(chip("op", "launch", &format!("Opens {}", c.opens.join(", "))));
-                }
-                let (label, col) = code_status(k, r.enabled, c);
-                let status = Node::new(format!("{ck}/s"))
-                    .row()
-                    .no_shrink()
-                    .max_w(240.0)
-                    .gap(7.0)
-                    .align(taffy::AlignItems::CENTER)
-                    .child(Node::new(format!("{ck}/s/d")).wh(7.0, 7.0).no_shrink().radius(3.5).fill(col))
-                    .child(k.txt(format!("{ck}/s/t"), &label, 12.5, col).wrap_text());
-                code = code.child(
-                    Node::new(ck.clone())
-                        .row()
-                        .min_h(42.0)
-                        .gap(14.0)
-                        .align(taffy::AlignItems::CENTER)
-                        .child(Node::new(format!("{ck}/nw")).w(110.0).no_shrink().child(k.mono(format!("{ck}/n"), &c.source, 13.0, k.c("text")).with_text(|t| t.weight = 600)))
-                        .child(chips)
-                        .child(status),
-                );
-            }
-            card = card.child(hr("c")).child(code);
-        }
-
-        if !r.notes.is_empty() || !r.problems.is_empty() {
-            let mut msgs = Node::new(format!("{key}/msgs")).col().gap(6.0).pad_xy(20.0, 14.0);
-            for (j, n) in r.notes.iter().enumerate() {
-                msgs = msgs.child(k.txt(format!("{key}/note/{j}"), n, 12.5, dim).wrap_text());
-            }
-            for (j, e) in r.problems.iter().enumerate() {
-                msgs = msgs.child(Node::new(format!("{key}/err/{j}")).row().gap(8.0).child(k.glyph(format!("{key}/err/{j}/g"), "warning", 12.0, k.c("danger"))).child(k.txt(format!("{key}/err/{j}/t"), e, 12.5, k.c("danger")).wrap_text().grow_text()));
-            }
-            card = card.child(hr("m")).child(msgs);
-        }
-
-        let left = if confirm {
+        let by = match (r.version.is_empty(), r.author.is_empty()) {
+            (false, false) => format!("Version {}, by {}", r.version, r.author),
+            (false, true) => format!("Version {}", r.version),
+            (true, false) => format!("By {}", r.author),
+            (true, true) => format!("plugins\\{}", r.id),
+        };
+        let sub = if confirm {
             let orphans = r.orphans(ctx.ws);
             let what = if orphans.is_empty() { "Nothing on your desktop uses it.".to_string() } else { format!("This also removes from your desktop: {}.", orphans.join(", ")) };
-            k.txt(format!("{key}/orph"), &what, 12.5, k.c("danger")).wrap_text()
+            k.txt(format!("{key}/orph"), &what, 12.0, DANGER).wrap_text()
         } else {
-            k.mono(format!("{key}/dir"), &format!("plugins\\{}", r.id), 12.0, dim)
+            k.txt(format!("{key}/by"), &by, 12.0, MUTED).wrap_text()
         };
         let remove = if confirm {
             k.btn(&format!("{key}/rm"), Some("delete"), "Really uninstall?", format!("prm:{}", r.id), Btn::DangerFill)
         } else {
             k.btn(&format!("{key}/rm"), Some("delete"), "Uninstall", format!("prm:{}", r.id), Btn::Danger)
         };
-        let foot = Node::new(format!("{key}/f")).row().gap(12.0).align(taffy::AlignItems::CENTER).pad_xy(20.0, 12.0).child(Node::new(format!("{key}/fl")).col().grow(1.0).min_w(0.0).child(left)).child(remove);
-        card.child(hr("f")).child(foot)
+        Node::new(key.clone())
+            .row()
+            .wrap()
+            .min_h(72.0)
+            .no_shrink()
+            .pad_xy(24.0, 12.0)
+            .gap(16.0)
+            .align(taffy::AlignItems::CENTER)
+            .radius(4.0)
+            .fill(SURFACE)
+            .child(Node::new(format!("{key}/hl")).col().grow(1.0).min_w(200.0).child(k.bold(format!("{key}/n"), &r.name, 16.0, FG)).child(sub))
+            .child(Node::new(format!("{key}/sw")).row().gap(8.0).align(taffy::AlignItems::CENTER).child(k.txt(format!("{key}/st"), if r.enabled { "Turned on" } else { "Turned off" }, 14.0, MUTED)).child(k.toggle(&format!("{key}/on"), r.enabled, format!("pon:{}", r.id))))
+            .child(remove)
     }
 
-    fn page_general(&self, k: &Kit, ctx: &Ctx, size: (f32, f32)) -> Node {
-        let f = |key: &str| matches!(&self.open, Some(Open::Dropdown(o)) if o == key);
+    /// What a Plugin brings, a block per kind: its code and what that reaches, its widgets,
+    /// palettes, icons and fonts.
+    fn plugin_bento(&self, k: &Kit, ctx: &Ctx, r: &PluginRow, w: f32, images: &mut Vec<String>) -> Node {
+        let key = format!("pl/b/{}", r.id);
+        let wide = w >= 720.0;
+        let pair = |pk: &str, a: Node, ga: f32, b: Node, gb: f32| {
+            if wide {
+                Node::new(format!("{key}/{pk}")).row().gap(GAP).child(a.grow(ga).min_w(0.0)).child(b.grow(gb).min_w(0.0))
+            } else {
+                Node::new(format!("{key}/{pk}")).col().gap(GAP).child(a).child(b)
+            }
+        };
+        let share = |g: f32| if wide { (w - GAP) * g / 12.0 - 2.0 * PAD } else { w - 2.0 * PAD };
+        let count = |n: usize, what: &str| k.txt(format!("{key}/n/{what}"), &n.to_string(), 14.0, MUTED);
+        let none = |nk: &str, s: &str| Node::new(format!("{key}/{nk}/none")).pad_each(12.0, 0.0, 16.0, 0.0).child(k.txt(format!("{key}/{nk}/none/t"), s, 14.0, MUTED).wrap_text());
+        let c = &r.contents;
+        let mut out = Node::new(key.clone()).col().gap(GAP);
+        if !r.description.is_empty() || !r.notes.is_empty() || !r.problems.is_empty() {
+            let mut about = Node::new(format!("{key}/about/b")).col().gap(6.0).pad_each(4.0, 0.0, 16.0, 0.0);
+            if !r.description.is_empty() {
+                about = about.child(k.txt(format!("{key}/d"), &r.description, 14.0, MUTED).wrap_text());
+            }
+            for (j, n) in r.notes.iter().enumerate() {
+                about = about.child(k.txt(format!("{key}/note/{j}"), n, 12.0, MUTED).wrap_text());
+            }
+            for (j, e) in r.problems.iter().enumerate() {
+                about = about.child(Node::new(format!("{key}/err/{j}")).row().gap(8.0).child(k.glyph(format!("{key}/err/{j}/g"), "warning", 12.0, DANGER)).child(k.txt(format!("{key}/err/{j}/t"), e, 14.0, DANGER).wrap_text().grow_text()));
+            }
+            out = out.child(k.panel(&format!("{key}/about"), "About", None, about));
+        }
+        if !r.code.is_empty() {
+            let mut runs = Node::new(format!("{key}/code/b")).col().gap(8.0).pad_each(4.0, 0.0, 16.0, 0.0).child(k.txt(format!("{key}/code/help"), "Sandboxed code this plugin runs. It stops when you turn the plugin off or remove it.", 14.0, MUTED).wrap_text());
+            for cr in &r.code {
+                let ck = format!("{key}/code/{}", cr.source);
+                let (label, col) = code_status(r.enabled, cr);
+                runs = runs.child(
+                    Node::new(ck.clone())
+                        .row()
+                        .wrap()
+                        .min_h(56.0)
+                        .pad_xy(16.0, 12.0)
+                        .gap(16.0)
+                        .align(taffy::AlignItems::CENTER)
+                        .radius(4.0)
+                        .fill(RAISED)
+                        .child(k.mono(format!("{ck}/n"), &cr.source, 13.0, FG).grow_text().min_w(80.0))
+                        .child(Node::new(format!("{ck}/s")).row().gap(8.0).align(taffy::AlignItems::CENTER).child(Node::new(format!("{ck}/s/d")).wh(8.0, 8.0).no_shrink().radius(2.0).fill(col)).child(k.medium(format!("{ck}/s/t"), &label, 14.0, col).wrap_text().max_w(220.0))),
+                );
+            }
+            let all = |f: fn(&crate::plugins::CodeRow) -> &Vec<String>| {
+                let mut v: Vec<String> = r.code.iter().flat_map(|c| f(c).iter().cloned()).collect();
+                v.dedup();
+                v
+            };
+            let (reads, net, opens) = (all(|c| &c.reads), all(|c| &c.net), all(|c| &c.opens));
+            let val = |vk: &str, s: String, mono: bool| {
+                let t = if mono { k.mono(format!("{key}/rr/{vk}/t"), &s, 13.0, FG) } else { k.txt(format!("{key}/rr/{vk}/t"), &s, 14.0, FG) };
+                t.wrap_text().with_text(|t| t.align = crate::text::TextAlign::Right).grow_text().min_w(0.0)
+            };
+            let mut reach = vec![
+                k.kv(&format!("{key}/rr/r"), "Reads", val("r", if reads.is_empty() { "Nothing on this PC".into() } else { reads.join(", ") }, false)),
+                k.kv(&format!("{key}/rr/n"), "Reaches", val("n", if net.is_empty() { "No network".into() } else { net.join(", ") }, !net.is_empty())),
+            ];
+            if !opens.is_empty() {
+                reach.push(k.kv(&format!("{key}/rr/o"), "Opens", val("o", opens.join(", "), false)));
+            }
+            let reach = Node::new(format!("{key}/rr/w")).col().child(k.txt(format!("{key}/rr/help"), "What it asked for when you installed it.", 14.0, MUTED).wrap_text()).child(k.rows(&format!("{key}/rr/rows"), reach));
+            out = out.child(pair("p1", k.panel(&format!("{key}/code"), "Runs on this PC", Some(k.txt(format!("{key}/code/n"), &plural(r.code.len(), "source"), 14.0, MUTED)), runs), 8.0, k.panel(&format!("{key}/rr"), "Can read and reach", None, reach), 4.0));
+        }
+        // widgets, live
+        let ww = share(7.0);
+        let widgets = if c.widgets.is_empty() {
+            none("w", "This plugin adds no widgets.")
+        } else {
+            let (cols, cw) = columns(ww, 160.0, GAP, 2);
+            let cards = c
+                .widgets
+                .iter()
+                .map(|id| {
+                    let wk = format!("{key}/w/{id}");
+                    let def = self.def_of(ctx, id);
+                    let pv = self.widget_preview(ctx, id, (cw - 24.0, 120.0), &format!("{wk}/pv"), images).unwrap_or_else(|| Node::new(format!("{wk}/ic")).wh(40.0, 40.0).radius(4.0).center().fill(RAISED2).child(k.glyph(format!("{wk}/ic/g"), &k.widget_glyph(def), 16.0, k.accent())));
+                    let mut col = Node::new(wk.clone()).col().w(cw).gap(2.0).child(Node::new(format!("{wk}/st")).h(144.0).no_shrink().center().radius(4.0).fill(STAGE).clip().child(dots(format!("{wk}/dots"))).child(pv)).child(Node::new(format!("{wk}/sp")).h(10.0)).child(k.medium(format!("{wk}/n"), &def.map_or(id.clone(), |d| d.name.clone()), 14.0, FG));
+                    if let Some(d) = def {
+                        col = col.child(k.txt(format!("{wk}/d"), &d.description, 12.0, MUTED).wrap_text());
+                    }
+                    col
+                })
+                .collect();
+            Node::new(format!("{key}/w/g")).pad_each(12.0, 0.0, 16.0, 0.0).child(grid(&format!("{key}/w/grid"), cols, GAP, cards))
+        };
+        let note = |nk: &str, s: String, action: Option<&str>| match action {
+            Some(a) => k.more(&format!("{key}/{nk}/more"), &s, a.into()),
+            None => k.txt(format!("{key}/{nk}/n"), &s, 14.0, MUTED),
+        };
+        let widgets = k.panel(&format!("{key}/w"), "Widgets", Some(if c.widgets.is_empty() { count(0, "w") } else { note("w", format!("{}, under Add widget", c.widgets.len()), None) }), widgets);
+        let palettes = if c.palettes.is_empty() {
+            none("p", "This plugin adds no palettes.")
+        } else {
+            let pw = share(5.0);
+            let (cols, cw) = columns(pw, 140.0, GAP, 2);
+            let cards = c
+                .palettes
+                .iter()
+                .filter_map(|n| ctx.lib.palettes.iter().find(|a| a.name == *n))
+                .map(|a| {
+                    let pk = format!("{key}/p/{}", a.name);
+                    let on = a.name == ctx.ws.theme.palette;
+                    let tok = |n: &str, or: Color| a.tokens.get(n).map(|v| v.to_string()).and_then(|s| Color::parse(&s)).unwrap_or(or);
+                    let top = Node::new(format!("{pk}/top"))
+                        .col()
+                        .h(96.0)
+                        .pad(16.0)
+                        .justify(taffy::JustifyContent::SPACE_BETWEEN)
+                        .radius(4.0)
+                        .fill(tok("surface", RAISED).with_alpha(1.0))
+                        .child(k.bold(format!("{pk}/tm"), "01:30", 20.0, tok("text", FG)))
+                        .child(Node::new(format!("{pk}/bars")).row().gap(4.0).child(Node::new(format!("{pk}/b1")).wh(48.0, 4.0).fill(tok("accent", k.accent()))).child(Node::new(format!("{pk}/b2")).wh(24.0, 4.0).fill(tok("text-dim", MUTED))));
+                    Node::new(pk.clone())
+                        .col()
+                        .w(cw)
+                        .gap(2.0)
+                        .on(format!("pick:th:palette|{}", a.name))
+                        .child(top)
+                        .child(Node::new(format!("{pk}/sp")).h(10.0))
+                        .child(k.medium(format!("{pk}/n"), &a.name, 14.0, FG))
+                        .child(k.txt(format!("{pk}/s"), if on { "In use" } else { "Not in use" }, 12.0, if on { k.accent() } else { MUTED }))
+                })
+                .collect();
+            Node::new(format!("{key}/p/g")).pad_each(12.0, 0.0, 16.0, 0.0).child(grid(&format!("{key}/p/grid"), cols, GAP, cards))
+        };
+        let palettes = k.panel(&format!("{key}/p"), "Palettes", Some(if c.palettes.is_empty() { count(0, "p") } else { note("p", format!("{}, in Appearance", c.palettes.len()), Some("nav:appearance")) }), palettes);
+        out = out.child(pair("p2", widgets, 7.0, palettes, 5.0));
+        let mut icons: Vec<Node> = c
+            .glyphs
+            .iter()
+            .map(|n| {
+                let gk = format!("{key}/g/{n}");
+                let axis = ctx.lib.glyphs.iter().find(|a| a.name == *n);
+                let fam = axis.and_then(|a| a.tokens.get("font-glyph")).map(|v| v.to_string()).unwrap_or_default();
+                let mut row = Node::new(gk.clone()).row().min_h(56.0).pad_xy(16.0, 8.0).gap(16.0).align(taffy::AlignItems::CENTER).radius(4.0).fill(RAISED).child(k.medium(format!("{gk}/n"), n, 14.0, FG).grow_text().min_w(0.0));
+                for (j, g) in ["gear", "folder", "edit", "check", "clock", "display"].iter().enumerate() {
+                    let ch = axis.and_then(|a| a.tokens.get(&format!("glyph-{g}"))).map(|v| v.to_string()).unwrap_or_default();
+                    let fam = fam.clone();
+                    row = row.child(Node::text(format!("{gk}/{j}"), ch, 14.0, MUTED).with_text(|t| t.family = fam));
+                }
+                row
+            })
+            .collect();
+        icons.extend(c.icon_packs.iter().map(|n| k.item_row(&format!("{key}/ip/{n}"), n, "App icon pack, for Drawer and Icon List", None)));
+        let icon_n = c.glyphs.len() + c.icon_packs.len();
+        let icons = if icons.is_empty() { none("i", "This plugin adds no icons.") } else { Node::new(format!("{key}/i/l")).col().gap(8.0).pad_each(12.0, 0.0, 16.0, 0.0).kids(icons) };
+        let icon_note = match (c.glyphs.len(), c.icon_packs.len()) {
+            (0, 0) => None,
+            (g, 0) => Some(format!("{}, in Appearance", plural(g, "glyph set"))),
+            (0, p) => Some(format!("{}, in Appearance", plural(p, "icon pack"))),
+            _ => Some(format!("{icon_n}, in Appearance")),
+        };
+        let icons = k.panel(&format!("{key}/i"), "Icons", Some(icon_note.map_or_else(|| count(0, "i"), |s| note("i", s, Some("nav:appearance")))), icons);
+        let fonts = if c.fonts.is_empty() { none("f", "This plugin adds no fonts.") } else { Node::new(format!("{key}/f/l")).col().gap(8.0).pad_each(12.0, 0.0, 16.0, 0.0).kids(c.fonts.iter().map(|n| k.item_row(&format!("{key}/f/{n}"), n, "Font set", None))) };
+        let fonts = k.panel(&format!("{key}/f"), "Fonts", Some(if c.fonts.is_empty() { count(0, "f") } else { note("f", format!("{}, in Appearance", c.fonts.len()), Some("nav:appearance")) }), fonts);
+        out.child(pair("p3", icons, 7.0, fonts, 5.0))
+    }
+
+    fn page_general(&self, k: &Kit, ctx: &Ctx, size: (f32, f32)) -> (Vec<Node>, Node) {
         let ws = ctx.ws;
-        let mut gfx = Vec::new();
-        if ctx.gpu_info.split(" / ").nth(2) == Some("Cpu") && ws.gpu != "software" {
-            let warn = k.warn();
-            gfx.push(
-                Node::new("gn/warn")
-                    .row()
-                    .gap(14.0)
-                    .align(taffy::AlignItems::CENTER)
-                    .pad_xy(20.0, 14.0)
-                    .kids(half_round("gn/warn", k.solid(0.03).lerp(warn, 0.08), 11.0, true))
-                    .child(k.glyph("gn/warn/g".into(), "warning", 18.0, warn))
-                    .child(Node::new("gn/warn/tx").col().grow(1.0).min_w(0.0).gap(2.0).child(k.bold("gn/warn/t".into(), "Widgets are rendering on the CPU", 13.5, warn)).child(k.txt("gn/warn/s".into(), "Your integrated GPU is plenty for widgets and keeps the desktop at near-zero cost.", 12.0, warn.mul_alpha(0.8)).wrap_text()))
-                    .child(k.btn("gn/warn/b", None, "Use integrated GPU", "gpufix".into(), Btn::Warn)),
-            );
-        }
-        let help = if ws.gpu == "high" { "The dedicated GPU keeps a CPU core busy on some AMD drivers. Applies after a restart." } else { "Applies after a restart." };
-        let mut adapter = Node::new("gn/gpu/c").row().gap(10.0).align(taffy::AlignItems::CENTER).child(k.dropdown("gpu", &self.dropdown_label(ctx, "gpu"), CONTROL_W, f("gpu")));
-        if self.gpu_picked {
-            adapter = adapter.child(k.btn("gn/restart", Some("refresh"), "Restart", "restart".into(), Btn::Primary));
-        }
-        gfx.push(k.row("gn/gpu", "Adapter", help, adapter));
-        let chips = Node::new("gn/info/c").row().wrap().gap(6.0).justify(taffy::JustifyContent::FLEX_END).kids(gpu_parts(ctx.gpu_info).iter().enumerate().map(|(i, p)| k.tag(format!("gn/info/{i}"), p, true)));
-        gfx.push(k.row("gn/info", "In use now", "", chips));
+        let two = size.0 >= 1100.0;
         let grid = self.slider_spec(ctx, "grid").unwrap_or((0.0, 32.0, 4.0, 8.0));
-        let snap = Node::new("gn/grid/c").row().align(taffy::AlignItems::CENTER).gap(12.0).child(k.slider("sl:grid", (grid.3 / grid.1) as f32, 190.0, "sl:grid".into())).child(Node::new("gn/grid/vw").w(48.0).child(k.txt("gn/grid/v".into(), &with_unit(grid.3, "px"), 12.5, k.c("text"))));
+        let snap = k.slider_val("sl:grid", (grid.3 / grid.1) as f32, if two { 200.0 } else { 160.0 }, "sl:grid".into(), &with_unit(grid.3, "px"));
         let behaviour = vec![
             k.row("gn/auto", "Start with Windows", "Launch quietly into the tray when you sign in.", k.toggle("tg:autostart", ws.autostart, "autostart:toggle".into())),
             flag_row(k, ctx, "gn/hd", Flag::HeaderDrag),
             k.row("gn/grid", "Snap grid", "0 turns snapping off. Hold Shift to ignore it while dragging.", snap),
-            k.row("gn/hk", "Edit layout shortcut", "Works from anywhere in Windows.", k.keys("gn/hk/k", EDIT_KEYS)),
+            k.row("gn/hk", "Edit layout shortcut", "Works from anywhere in Windows.", k.shortcut("gn/hk/k", EDIT_KEYS)),
         ];
-        let folder = Node::new("gn/files/c").row().gap(8.0).child(k.btn("gn/open", Some("folder"), "Open folder", "openfolder".into(), Btn::Outline)).child(k.btn("gn/reload", Some("refresh"), "Reload all", "reload".into(), Btn::Outline));
-        let files = vec![k.row("gn/files", "Your widgets folder", "Drop .toml widget definitions here — they reload as you save.", folder), self.plugin_files_row(k, ctx)];
-        let version_ctl = Node::new("gn/ver/c")
-            .row()
-            .gap(10.0)
-            .align(taffy::AlignItems::CENTER)
-            .child(k.tag("gn/ver/v".into(), &format!("v{}", env!("CARGO_PKG_VERSION")), true))
-            .child(k.btn("gn/ver/check", Some("refresh"), "Check for Updates", "checkupdate".into(), Btn::Outline))
-            .child(k.btn(CHANGELOG_BTN, Some("info"), "Changelog", "changelog".into(), Btn::Outline));
-        let version = vec![k.row("gn/ver/row", "Version", "Checks the channel below; a pre-release only counts as \"latest\" when that's switched on.", version_ctl)];
-        let mut updates = vec![flag_row(k, ctx, "gn/pre", Flag::Prerelease)];
+        let folder = Node::new("gn/files/c").row().gap(8.0).child(k.btn("gn/open", Some("folder"), "Open folder", "openfolder".into(), Btn::Secondary)).child(k.btn("gn/reload", Some("refresh"), "Reload all", "reload".into(), Btn::Secondary));
+        let files = vec![k.row("gn/files", "Your widgets folder", "Drop .toml widget definitions here. They reload as you save.", folder), self.plugin_files_row(k, ctx)];
+
+        let parts = gpu_parts(ctx.gpu_info);
+        let mut gfx = Node::new("gn/gfx/b").col().child(k.bold("gn/gfx/name".into(), parts.first().map_or("", |s| s.as_str()), 20.0, FG).wrap_text().pad_each(12.0, 0.0, 8.0, 0.0));
+        let facts: Vec<Node> = [("Type", 2), ("Backend", 1), ("Present mode", 3)].iter().filter_map(|(l, i)| parts.get(*i).map(|v| k.kv(&format!("gn/info/{i}"), l, k.txt(format!("gn/info/{i}/val"), v, 14.0, FG)))).collect();
+        if !facts.is_empty() {
+            gfx = gfx.child(k.rows("gn/info", facts)).child(k.hr("gn/info/hr".into()));
+        }
+        if ctx.gpu_info.split(" / ").nth(2) == Some("Cpu") && ws.gpu != "software" {
+            gfx = gfx.child(
+                Node::new("gn/warn")
+                    .row()
+                    .wrap()
+                    .gap(12.0)
+                    .align(taffy::AlignItems::CENTER)
+                    .pad(16.0)
+                    .radius(4.0)
+                    .fill(RAISED)
+                    .child(k.glyph("gn/warn/g".into(), "warning", 16.0, WARN))
+                    .child(Node::new("gn/warn/tx").col().grow(1.0).min_w(180.0).gap(2.0).child(k.medium("gn/warn/t".into(), "Widgets are rendering on the CPU", 14.0, WARN)).child(k.txt("gn/warn/s".into(), "Your integrated GPU is plenty for widgets and keeps the desktop at near-zero cost.", 12.0, MUTED).wrap_text()))
+                    .child(k.btn("gn/warn/b", None, "Use integrated GPU", "gpufix".into(), Btn::Warn)),
+            );
+        }
+        let help = if ws.gpu == "high" { "The dedicated GPU keeps a CPU core busy on some AMD drivers. Applies after a restart." } else { "Applies after a restart." };
+        let mut adapter = Node::new("gn/gpu/c").row().gap(8.0).align(taffy::AlignItems::CENTER).child(k.dropdown("gpu", &self.dropdown_label(ctx, "gpu"), if two { 264.0 } else { 240.0 }, self.is_open_dd("gpu")));
+        if self.gpu_picked {
+            adapter = adapter.child(k.btn("gn/restart", Some("refresh"), "Restart", "restart".into(), Btn::Primary));
+        }
+        gfx = gfx.child(k.row("gn/gpu", "Adapter", help, adapter));
+        let graphics = k.panel("gn/gfx", "Graphics", Some(k.txt("gn/gfx/now".into(), "In use now", 12.0, MUTED)), gfx);
+
+        let version_ctl = Node::new("gn/ver/c").row().gap(8.0).child(k.btn("gn/ver/check", Some("refresh"), "Check for Updates", "checkupdate".into(), Btn::Secondary)).child(k.btn(CHANGELOG_BTN, Some("info"), "Changelog", "changelog".into(), Btn::Secondary));
+        let ver = Node::new("gn/ver/tt").row().gap(8.0).align(taffy::AlignItems::CENTER).child(k.medium("gn/ver/n".into(), "Wayfinder", 14.0, FG)).child(k.mono("gn/ver/v".into(), &format!("v{}", env!("CARGO_PKG_VERSION")), 13.0, FG));
+        let channel = if ws.flag(Flag::Prerelease) { "On the pre-release channel" } else { "On the stable channel" };
+        let mut updates = vec![
+            k.row_with("gn/ver/row", ver, channel, None, version_ctl),
+            flag_row(k, ctx, "gn/pre", Flag::Prerelease),
+        ];
         if ws.flag(Flag::Prerelease) {
-            let mut picker = Node::new("gn/upd/c").row().gap(10.0).align(taffy::AlignItems::CENTER).child(k.dropdown("update_version", &self.dropdown_label(ctx, "update_version"), CONTROL_W, f("update_version")));
+            let mut picker = Node::new("gn/upd/c").row().wrap().gap(8.0).align(taffy::AlignItems::CENTER).child(k.dropdown("update_version", &self.dropdown_label(ctx, "update_version"), CONTROL_W, self.is_open_dd("update_version")));
             if self.update_pick.is_some() {
                 picker = picker.child(k.btn("gn/upd/install", Some("refresh"), "Install", "installupdate".into(), Btn::Primary));
             }
@@ -2169,22 +2507,17 @@ impl UiState {
             // checker always re-derives "latest" itself, so there is nothing here that can
             // leave the app stuck on an old or pre-release build.
             let help = if ctx.update_releases.is_empty() { "Fetching releases…" } else { "Downloads and installs it now, then restarts. Never changes what the background checker treats as newest." };
-            updates.push(k.row("gn/upd/pick", "Install a specific version", help, picker));
+            updates.push(k.stack("gn/upd/pick", "Install a specific version", help, picker));
         }
-        let mut body = Node::new("gn")
-            .col()
-            .gap(30.0)
-            .child(k.page_head("gn/head", Page::General.heading(), Page::General.subtitle(), None))
-            .child(k.group("gn/gfx", "Graphics", gfx))
-            .child(k.group("gn/beh", "Behaviour", behaviour))
-            .child(k.group("gn/ver", "Version", version))
-            .child(k.group("gn/upd", "Updates", updates))
-            .child(k.group("gn/fs", "Files", files));
         if !ctx.update_note.is_empty() {
             let bad = ctx.update_note.starts_with("could not");
-            body = body.child(k.txt("gn/upd/note".into(), ctx.update_note, 13.0, if bad { k.c("danger") } else { k.c("accent") }).wrap_text());
+            updates.push(Node::new("gn/upd/note").pad_xy(0.0, 12.0).child(k.txt("gn/upd/note/t".into(), ctx.update_note, 14.0, if bad { DANGER } else { k.accent() }).wrap_text()));
         }
-        self.page("gn/scroll", content_w(size, 780.0), body)
+        let quit = k.panel("gn/quit", "", None, k.row("gn/quit/r", "Quit Wayfinder", "Takes every widget off your desktop until you start it again. Closing this window leaves them running.", k.btn("gn/quit/b", Some("power"), "Quit", "quit".into(), Btn::Danger)));
+        let left = Node::new("gn/c1").col().gap(GAP).min_w(0.0).child(k.group("gn/beh", "Behaviour", behaviour)).child(k.group("gn/fs", "Files", files));
+        let right = Node::new("gn/c2").col().gap(GAP).min_w(0.0).child(graphics).child(k.group("gn/upd", "Version and updates", updates)).child(quit);
+        let cols = if two { Node::new("gn/cols").row().gap(GAP).align(taffy::AlignItems::FLEX_START).child(left.grow(1.0)).child(right.grow(1.0)) } else { Node::new("gn/cols").col().gap(GAP).child(left).child(right) };
+        (vec![], self.scrolling("gn/scroll", cols))
     }
 
     /// Which app a double-clicked `.wfplugin` opens, and a way to make it this one.
@@ -2195,100 +2528,147 @@ impl UiState {
             FileOwner::Nobody => "Nothing installs them on a double-click yet.".to_string(),
         };
         let control = match ctx.plugin_files {
-            FileOwner::Me => Node::new("gn/pf/t").row().gap(8.0).align(taffy::AlignItems::CENTER).child(k.glyph("gn/pf/t/g".into(), "check", 12.0, k.c("accent"))).child(k.bold("gn/pf/t/t".into(), "Opens with Wayfinder", 13.0, k.c("accent"))),
-            _ => k.btn("gn/pf/b", None, "Use this app", "claimfiles".into(), Btn::Outline),
+            FileOwner::Me => Node::new("gn/pf/t").row().gap(8.0).align(taffy::AlignItems::CENTER).child(k.glyph("gn/pf/t/g".into(), "check", 12.0, SUCCESS)).child(k.txt("gn/pf/t/t".into(), "Opens with Wayfinder", 14.0, FG)),
+            _ => k.btn("gn/pf/b", None, "Use this app", "claimfiles".into(), Btn::Secondary),
         };
         k.row("gn/pf", ".wfplugin files", &help, control)
     }
 
-    /// The log lines the Log page's level and search let through.
-    fn log_rows<'a>(&self, ctx: &Ctx<'a>) -> Vec<&'a LogLine> {
+    /// The log lines the Log page's level and search let through, with their place in the log.
+    fn log_rows<'a>(&self, ctx: &Ctx<'a>) -> Vec<(usize, &'a LogLine)> {
         let q = self.query("q:log").to_lowercase();
-        ctx.log.iter().filter(|l| self.log_level.is_none_or(|v| l.level == v)).filter(|l| q.is_empty() || l.text.to_lowercase().contains(&q) || l.source.to_lowercase().contains(&q)).collect()
+        ctx.log.iter().enumerate().filter(|(_, l)| self.log_level.is_none_or(|v| l.level == v)).filter(|(_, l)| q.is_empty() || l.text.to_lowercase().contains(&q) || l.source.to_lowercase().contains(&q)).collect()
     }
 
-    fn page_log(&self, k: &Kit, ctx: &Ctx, size: (f32, f32)) -> Node {
-        let actions = Node::new("lg/acts").row().gap(8.0).child(k.btn("lg/copy", Some("copy"), "Copy", "logcopy".into(), Btn::Outline)).child(k.btn("lg/open", Some("open"), "Open log file", "openlog".into(), Btn::Outline));
-        let mut seg = Node::new("lg/lv").row().gap(2.0).pad(4.0).radius(12.0).fill(k.panel()).border(1.0, k.line());
+    /// The entry the Log page shows in full: the one clicked, else the latest that is not Info.
+    fn log_selected(&self, rows: &[(usize, &LogLine)]) -> Option<usize> {
+        self.log_sel.filter(|s| rows.iter().any(|(i, _)| i == s)).or_else(|| rows.iter().rev().find(|(_, l)| l.level != Level::Info).map(|(i, _)| *i))
+    }
+
+    fn page_log(&self, k: &Kit, ctx: &Ctx, size: (f32, f32)) -> (Vec<Node>, Node) {
+        let (_, sw) = side_widths(size);
+        let rows = self.log_rows(ctx);
+        let sel = self.log_selected(&rows);
         let levels = std::iter::once((None, "all", "All")).chain(Level::ALL.into_iter().map(|l| (Some(l), l.id(), l.plural())));
-        for (lvl, id, label) in levels {
-            let on = self.log_level == lvl;
-            let n = ctx.log.iter().filter(|l| lvl.is_none_or(|v| l.level == v)).count();
-            seg = seg.child(
-                Node::new(format!("lg/lv/{id}"))
-                    .row()
-                    .h(32.0)
-                    .pad_xy(12.0, 0.0)
-                    .gap(8.0)
-                    .align(taffy::AlignItems::CENTER)
-                    .radius(9.0)
-                    .fill(k.ink(if on { 0.08 } else { 0.0 }))
-                    .hover_fill(k.ink(if on { 0.1 } else { 0.05 }))
-                    .ease(140)
-                    .on(format!("lvl:{id}"))
-                    .child(Node::new(format!("lg/lv/{id}/d")).wh(7.0, 7.0).radius(3.5).fill(lvl.map_or(k.c("text-dim"), |l| level_color(k, l))))
-                    .child(k.txt(format!("lg/lv/{id}/t"), label, 13.0, if on { k.c("text") } else { k.c("text-dim") }).with_text(|t| t.weight = if on { 600 } else { 400 }))
-                    .child(k.txt(format!("lg/lv/{id}/n"), &n.to_string(), 11.5, k.c("text-dim"))),
-            );
-        }
+        let seg = levels
+            .map(|(lvl, id, label)| {
+                let n = ctx.log.iter().filter(|l| lvl.is_none_or(|v| l.level == v)).count();
+                let col = match lvl {
+                    Some(l) if n > 0 && l != Level::Info => level_color(l),
+                    _ => MUTED,
+                };
+                k.seg_item(format!("lg/lv/{id}"), label, self.log_level == lvl, format!("lvl:{id}")).child(k.txt(format!("lg/lv/{id}/n"), &n.to_string(), 14.0, col))
+            })
+            .collect();
         let fq = self.focus.as_ref().filter(|f| f.key == "q:log").map(|f| (f.caret, self.caret_on));
-        let tools = Node::new("lg/tools").row().wrap().gap(12.0).align(taffy::AlignItems::CENTER).child(seg).child(Node::new("lg/tools/sp").grow(1.0)).child(k.input("q:log", &self.input_text(ctx, "q:log"), "Search the log…", fq, 260.0, false));
-        let cell = |key: String, w: f32, n: Node| Node::new(key).w(w).h(22.0).no_shrink().align(taffy::AlignItems::CENTER).child(n);
+        let tools = Node::new("lg/tools")
+            .row()
+            .wrap()
+            .min_h(64.0)
+            .no_shrink()
+            .pad(16.0)
+            .gap(8.0)
+            .align(taffy::AlignItems::CENTER)
+            .child(k.segmented("lg/lv", seg))
+            .child(Node::new("lg/tools/sp").grow(1.0))
+            .child(k.input("q:log", &self.input_text(ctx, "q:log"), "Search the log…", fq, 200.0, false))
+            .child(k.btn("lg/copy", Some("copy"), "Copy", "logcopy".into(), Btn::Secondary))
+            .child(k.btn("lg/open", Some("open"), "Open log file", "openlog".into(), Btn::Secondary));
+        let cell = |key: String, w: f32, n: Node| Node::new(key).w(w).no_shrink().row().align(taffy::AlignItems::CENTER).clip().child(n);
         let head = Node::new("lg/th")
             .row()
-            .gap(16.0)
-            .pad_xy(20.0, 12.0)
-            .child(cell("lg/th/tm".into(), 96.0, k.bold("lg/th/tm/t".into(), "Time", 12.5, k.c("text-dim"))))
-            .child(cell("lg/th/lv".into(), 104.0, k.bold("lg/th/lv/t".into(), "Level", 12.5, k.c("text-dim"))))
-            .child(cell("lg/th/src".into(), 96.0, k.bold("lg/th/src/t".into(), "Source", 12.5, k.c("text-dim"))))
-            .child(Node::new("lg/th/m").h(22.0).grow(1.0).align(taffy::AlignItems::CENTER).child(k.bold("lg/th/m/t".into(), "Message", 12.5, k.c("text-dim"))));
-        let mut table = Node::new("lg/table").col().radius(12.0).fill(k.panel()).border(1.0, k.line()).clip().child(head);
-        let rows = self.log_rows(ctx);
+            .h(32.0)
+            .no_shrink()
+            .pad_xy(8.0, 0.0)
+            .align(taffy::AlignItems::CENTER)
+            .child(cell("lg/th/tm".into(), 96.0, k.txt("lg/th/tm/t".into(), "Time", 12.0, MUTED)))
+            .child(cell("lg/th/lv".into(), 104.0, k.txt("lg/th/lv/t".into(), "Level", 12.0, MUTED)))
+            .child(cell("lg/th/src".into(), 72.0, k.txt("lg/th/src/t".into(), "Source", 12.0, MUTED)))
+            .child(k.txt("lg/th/m".into(), "Message", 12.0, MUTED).grow_text());
+        let mut list = Node::new("lg/rows").col();
         // ponytail: the last 200 match; the log file keeps the rest
-        let skip = rows.len().saturating_sub(200);
-        for (i, l) in rows.iter().enumerate().skip(skip) {
-            let col = level_color(k, l.level);
+        for (i, l) in rows.iter().skip(rows.len().saturating_sub(200)) {
             let key = format!("lg/r{i}");
-            let mut msg = Node::new(format!("{key}/m")).col().grow(1.0).min_w(0.0).gap(6.0).pad_xy(0.0, 3.0).child(k.mono(format!("{key}/m/t"), &l.text, 12.5, k.c("text")).wrap_text());
-            if l.level == Level::Warning && l.source == "gpu" {
-                msg = msg.child(k.link(&format!("{key}/go"), "Change adapter in General →", "nav:general".into()));
-            }
-            let badge = Node::new(format!("{key}/b")).row().h(22.0).pad_xy(8.0, 0.0).gap(6.0).align(taffy::AlignItems::CENTER).radius(6.0).fill(col.with_alpha(0.14)).child(Node::new(format!("{key}/b/d")).wh(6.0, 6.0).radius(3.0).fill(col)).child(k.bold(format!("{key}/b/t"), l.level.label(), 11.5, col));
-            let fill = if l.level == Level::Info { TRANSPARENT } else { col.with_alpha(0.05) };
-            table = table.child(Node::new(format!("{key}/hr")).h(1.0).no_shrink().fill(k.line())).child(
+            let on = sel == Some(*i);
+            let level = match l.level {
+                Level::Info => k.txt(format!("{key}/lv/t"), "Info", 14.0, MUTED),
+                lv => Node::new(format!("{key}/lv/r")).row().gap(8.0).align(taffy::AlignItems::CENTER).child(k.glyph(format!("{key}/lv/g"), "warning", 12.0, level_color(lv))).child(k.medium(format!("{key}/lv/t"), lv.label(), 14.0, level_color(lv))),
+            };
+            list = list.child(
                 Node::new(key.clone())
                     .row()
-                    .gap(16.0)
-                    .align(taffy::AlignItems::FLEX_START)
-                    .pad_xy(20.0, 11.0)
-                    .fill(fill)
-                    .child(cell(format!("{key}/tm"), 96.0, k.mono(format!("{key}/tm/t"), &l.time, 12.5, k.c("text-dim"))))
-                    .child(cell(format!("{key}/lv"), 104.0, badge))
-                    .child(cell(format!("{key}/src"), 96.0, k.mono(format!("{key}/src/t"), &l.source, 12.5, k.c("text"))))
-                    .child(msg),
+                    .h(40.0)
+                    .no_shrink()
+                    .pad_xy(8.0, 0.0)
+                    .align(taffy::AlignItems::CENTER)
+                    .radius(4.0)
+                    .fill(if on { RAISED } else { CLEAR })
+                    .hover_fill(RAISED)
+                    .ease(100)
+                    .on(format!("logsel:{i}"))
+                    .child(cell(format!("{key}/tm"), 96.0, k.mono(format!("{key}/tm/t"), &l.time, 13.0, MUTED)))
+                    .child(cell(format!("{key}/lv"), 104.0, level))
+                    .child(cell(format!("{key}/src"), 72.0, k.mono(format!("{key}/src/t"), &l.source, 13.0, MUTED)))
+                    .child(Node::new(format!("{key}/m")).row().grow(1.0).min_w(0.0).align(taffy::AlignItems::CENTER).clip().child(k.mono(format!("{key}/m/t"), &l.text, 13.0, FG))),
             );
         }
         if rows.is_empty() {
-            let what = if ctx.log.is_empty() { "Nothing yet." } else { "Nothing matches." };
-            table = table.child(Node::new("lg/none/hr").h(1.0).fill(k.line())).child(Node::new("lg/none").pad_xy(20.0, 16.0).child(k.txt("lg/none/t".into(), what, 13.0, k.c("text-dim"))));
+            list = list.child(Node::new("lg/none").pad_xy(8.0, 16.0).child(k.txt("lg/none/t".into(), if ctx.log.is_empty() { "Nothing yet." } else { "Nothing matches." }, 14.0, MUTED)));
         }
-        let body = Node::new("lg")
-            .col()
-            .gap(20.0)
-            .child(k.page_head("lg/head", Page::Log.heading(), Page::Log.subtitle(), Some(actions)))
-            .child(tools)
-            .child(table)
-            .child(k.txt("lg/foot".into(), "Showing this session. Older entries are in the log file.", 12.0, k.c("text-dim")));
-        self.page("lg/scroll", content_w(size, 1040.0), body)
+        let table = Node::new("lg/table").col().grow(1.0).min_h(0.0).pad_xy(8.0, 0.0).child(head).child(k.hr("lg/th/hr".into())).child(self.scrolling("lg/scroll", list));
+        let foot = Node::new("lg/foot").row().h(48.0).no_shrink().pad_xy(16.0, 0.0).align(taffy::AlignItems::CENTER).child(k.top_line("lg/foot/hr".into())).child(k.txt("lg/foot/t".into(), "Showing this session. Older entries are in the log file.", 12.0, SUBTLE));
+        let left = Node::new("lg/main").col().grow(1.0).min_w(0.0).radius(4.0).fill(SURFACE).clip().child(tools).child(table).child(foot);
+
+        let detail = match sel.and_then(|i| ctx.log.get(i).map(|l| (i, l))) {
+            Some((i, l)) => {
+                let col = level_color(l.level);
+                let d = Node::new("lg/d")
+                    .col()
+                    .no_shrink()
+                    .gap(8.0)
+                    .pad(PAD)
+                    .radius(4.0)
+                    .fill(SURFACE)
+                    .child(
+                        Node::new("lg/d/h")
+                            .row()
+                            .gap(8.0)
+                            .align(taffy::AlignItems::CENTER)
+                            .child(k.medium("lg/d/lv".into(), l.level.label(), 14.0, if l.level == Level::Info { MUTED } else { col }))
+                            .child(Node::new("lg/d/sp").grow(1.0))
+                            .child(k.mono("lg/d/at".into(), &format!("{} {}", l.time, l.source), 13.0, MUTED)),
+                    )
+                    .child(Node::new("lg/d/m").pad(12.0).radius(4.0).fill(RAISED).child(k.mono("lg/d/m/t".into(), &l.text, 13.0, FG).wrap_text()));
+                let mut btns = Node::new("lg/d/b").row().wrap().gap(8.0).pad_each(8.0, 0.0, 0.0, 0.0);
+                if l.level == Level::Warning && l.source == "gpu" {
+                    btns = btns.child(k.btn("lg/go", None, "Change adapter in General", "nav:general".into(), Btn::Secondary).child(k.glyph("lg/go/c".into(), "chevron-right", 9.0, FG)));
+                }
+                d.child(btns.child(k.btn("lg/d/copy", None, "Copy entry", format!("logcopy:{i}"), Btn::Ghost)))
+            }
+            None => k.panel("lg/d", "", None, Node::new("lg/d/none").pad_xy(0.0, 16.0).child(k.txt("lg/d/none/t".into(), "Pick an entry to see all of it.", 14.0, MUTED).wrap_text())),
+        };
+        let parts = gpu_parts(ctx.gpu_info);
+        let since = ctx.log.first().map(|l| format!("Since {}", l.time.get(..5).unwrap_or(&l.time))).unwrap_or_default();
+        let theme = &ctx.ws.theme;
+        let val = |vk: &str, s: &str| k.txt(format!("lg/s/{vk}/val"), s, 14.0, FG).wrap_text().with_text(|t| t.align = crate::text::TextAlign::Right).grow_text().min_w(0.0);
+        let facts = vec![
+            k.kv("lg/s/mon", "Monitors", val("mon", &monitors_label(ctx.setup))),
+            k.kv("lg/s/gpu", "Graphics", val("gpu", &parts.iter().take(2).cloned().collect::<Vec<_>>().join(", "))),
+            k.kv("lg/s/th", "Theme", val("th", &format!("{}, {}, {}", theme.palette, theme.fonts, theme.glyphs))),
+            k.kv("lg/s/n", "Widgets running", val("n", &ctx.ws.instances.len().saturating_sub(ctx.hidden.len()).to_string())),
+        ];
+        let session = k.panel("lg/s", "This session", Some(k.txt("lg/s/since".into(), &since, 14.0, MUTED)), k.rows("lg/s/rows", facts));
+        let side = Node::new("lg/side").col().w(sw).no_shrink().gap(GAP).child(detail).child(session);
+        (vec![], Node::new("lg").row().grow(1.0).min_h(0.0).gap(GAP).child(left).child(side))
     }
 
     /// The first-run setup, filling the window until it is finished or skipped.
     fn setup(&self, k: &Kit, ctx: &Ctx, size: (f32, f32), images: &mut Vec<String>) -> Node {
         let step = self.step.min(SETUP_STEPS - 1);
-        let (accent, text, dim) = (k.c("accent"), k.c("text"), k.c("text-dim"));
-        let title = |key: &str, s: &str| k.bold(key.into(), s, 30.0, text).with_text(|t| t.weight = 700);
-        let sub = |key: &str, s: &str| k.txt(key.into(), s, 15.0, dim).wrap_text().with_text(|t| t.align = crate::textspec::TextAlign::Center).max_w(500.0);
-        let wide = (size.0 - 2.0 * PAGE_PAD).min(840.0);
+        let accent = k.accent();
+        let title = |key: &str, s: &str| k.bold(key.into(), s, 30.0, FG);
+        let sub = |key: &str, s: &str| k.txt(key.into(), s, 15.0, MUTED).wrap_text().with_text(|t| t.align = crate::text::TextAlign::Center).max_w(500.0);
+        let wide = (size.0 - 96.0).min(840.0);
         let content = match step {
             0 => Node::new("ob/0")
                 .col()
@@ -2296,9 +2676,9 @@ impl UiState {
                 .gap(18.0)
                 .child(k.logo("ob/logo", 88.0).shadow(36.0, 6.0, accent.with_alpha(0.35)))
                 .child(Node::new("ob/0/sp").h(12.0))
-                .child(k.bold("ob/0/t".into(), "Wayfinder", 46.0, text).with_text(|t| t.weight = 700))
+                .child(k.bold("ob/0/t".into(), "Wayfinder", 46.0, FG))
                 .child(sub("ob/0/s", "Small, fast widgets for your Windows desktop. Let's set things up — it takes under a minute.")),
-            1 => Node::new("ob/1").col().align(taffy::AlignItems::CENTER).gap(12.0).child(title("ob/1/t", "Pick a look")).child(sub("ob/1/s", "Every widget follows the palette. You can change it any time in Appearance.")).child(Node::new("ob/1/sp").h(14.0)).child(self.palette_grid(k, ctx, wide.min(720.0), "ob/pal", false)),
+            1 => Node::new("ob/1").col().align(taffy::AlignItems::CENTER).gap(12.0).child(title("ob/1/t", "Pick a look")).child(sub("ob/1/s", "Every widget follows the palette. You can change it any time in Appearance.")).child(Node::new("ob/1/sp").h(14.0)).child(self.palette_grid(k, ctx, wide.min(720.0), "ob/pal", 160.0)),
             2 => {
                 let ids: Vec<String> = self.catalog(ctx).into_iter().map(|(id, _)| id).collect();
                 Node::new("ob/2").col().align(taffy::AlignItems::CENTER).gap(12.0).child(title("ob/2/t", "Put a few widgets out")).child(sub("ob/2/s", "Some are on your desktop already. Add more now, or later from Widgets.")).child(Node::new("ob/2/sp").h(14.0)).child(Node::new("ob/2/g").w(wide).child(self.widget_grid(k, ctx, wide, "ob/w", &ids, images)))
@@ -2307,39 +2687,39 @@ impl UiState {
                 let rows = vec![
                     k.row("ob/auto", "Start with Windows", "Launch quietly into the tray when you sign in.", k.toggle("tg:autostart", ctx.ws.autostart, "autostart:toggle".into())),
                     flag_row(k, ctx, "ob/hd", Flag::HeaderDrag),
-                    k.row("ob/hk", "Edit layout shortcut", "Move and resize widgets from anywhere in Windows.", k.keys("ob/hk/k", EDIT_KEYS)),
+                    k.row("ob/hk", "Edit layout shortcut", "Move and resize widgets from anywhere in Windows.", k.shortcut("ob/hk/k", EDIT_KEYS)),
                 ];
                 Node::new("ob/3").col().align(taffy::AlignItems::CENTER).gap(12.0).child(title("ob/3/t", "You're all set")).child(sub("ob/3/s", "Two last choices. They're in General too, whenever you want them.")).child(Node::new("ob/3/sp").h(14.0)).child(Node::new("ob/3/g").w(wide.min(580.0)).child(k.group("ob/3/grp", "", rows)))
             }
         };
-        let inner = Node::new("ob/inner").col().align(taffy::AlignItems::CENTER).justify(taffy::JustifyContent::CENTER).min_h(size.1 - 72.0).pad_xy(PAGE_PAD, 56.0).child(content);
+        let inner = Node::new("ob/inner").col().align(taffy::AlignItems::CENTER).justify(taffy::JustifyContent::CENTER).min_h(size.1 - 72.0 - HEADER_H).pad_xy(48.0, 56.0).child(content);
         let stage = Node::new("ob/stage").col().grow(1.0).min_h(0.0).scroll(self.scroll_of("ob/stage")).hit().enter(260, 12.0, 0).child(inner);
         // a new key per step replays the enter animation
         let stage = Node::new(format!("ob/step/{step}")).col().grow(1.0).min_h(0.0).child(stage);
-        let dots_row = Node::new("ob/dots").row().gap(8.0).align(taffy::AlignItems::CENTER).kids((0..SETUP_STEPS).map(|i| Node::new(format!("ob/dot/{i}")).h(6.0).w(if i == step { 22.0 } else { 6.0 }).radius(3.0).fill(if i == step { accent } else { k.ink(0.22) }).ease(220)));
+        let dots_row = Node::new("ob/dots").row().gap(8.0).align(taffy::AlignItems::CENTER).kids((0..SETUP_STEPS).map(|i| Node::new(format!("ob/dot/{i}")).h(6.0).w(if i == step { 22.0 } else { 6.0 }).radius(3.0).fill(if i == step { accent } else { RAISED2 }).ease(220)));
         let mut btns = Node::new("ob/btns").row().grow(1.0).gap(8.0).justify(taffy::JustifyContent::FLEX_END);
         if step > 0 {
-            btns = btns.child(k.btn("ob/back", None, "Back", "ob:back".into(), Btn::Outline).h(40.0));
+            btns = btns.child(k.btn("ob/back", None, "Back", "ob:back".into(), Btn::Secondary).h(40.0));
         }
         let (label, next) = if step + 1 == SETUP_STEPS { ("Finish", "ob:done") } else if step == 0 { ("Get started", "ob:next") } else { ("Continue", "ob:next") };
-        btns = btns.child(k.btn("ob/next", None, label, next.into(), Btn::Primary).h(40.0).pad_xy(18.0, 0.0).child(k.glyph("ob/next/chev".into(), "chevron-right", 11.0, k.c("accent-text"))));
+        btns = btns.child(k.btn("ob/next", None, label, next.into(), Btn::Primary).h(40.0).pad_xy(18.0, 0.0).child(k.glyph("ob/next/chev".into(), "chevron-right", 10.0, k.on_accent())));
         let foot = Node::new("ob/foot")
             .row()
             .h(72.0)
             .no_shrink()
             .align(taffy::AlignItems::CENTER)
             .pad_xy(28.0, 0.0)
-            .child(Node::new("ob/foot/hr").abs(Some(0.0), Some(0.0), Some(0.0), None).h(1.0).fill(k.line()))
-            .child(Node::new("ob/foot/l").grow(1.0).child(k.txt("ob/foot/n".into(), &format!("Step {} of {SETUP_STEPS}", step + 1), 13.0, dim)))
+            .fill(SURFACE)
+            .child(Node::new("ob/foot/l").grow(1.0).child(k.txt("ob/foot/n".into(), &format!("Step {} of {SETUP_STEPS}", step + 1), 14.0, MUTED)))
             .child(dots_row)
             .child(btns);
         let glow = Node::new("ob/glow").abs(Some(size.0 / 2.0 - 280.0), Some(-220.0), None, None).wh(560.0, 400.0).radius(200.0).shadow(170.0, 0.0, accent.with_alpha(0.13));
-        let skip = Node::new("ob/skip").abs(None, Some(16.0), Some(20.0), None).h(32.0).pad_xy(10.0, 0.0).center().radius(8.0).hover_fill(k.ink(0.06)).ease(120).on("ob:done").child(k.txt("ob/skip/t".into(), "Skip setup", 13.0, dim));
-        Node::new("ob").col().grow(1.0).min_h(0.0).child(dots("ob/bg".into(), k.ink(0.06))).child(glow).child(stage).child(foot).child(skip)
+        let skip = Node::new("ob/skip").abs(None, Some(16.0), Some(20.0), None).h(32.0).pad_xy(10.0, 0.0).center().radius(4.0).fill(CLEAR).hover_fill(RAISED).ease(120).on("ob:done").child(k.txt("ob/skip/t".into(), "Skip setup", 14.0, MUTED));
+        Node::new("ob").col().grow(1.0).min_h(0.0).clip().child(dots("ob/bg".into())).child(glow).child(stage).child(foot).child(skip)
     }
 
     fn popup(&self, k: &Kit, ctx: &Ctx, open: &Open, size: (f32, f32)) -> Node {
-        let pop_fill = k.bg().lerp(k.c("text"), 0.05).with_alpha(0.98);
+        let pop = |x: f32, y: f32, w: f32, below: bool| Node::new("s/ov/pop").col().abs(Some(x), Some(y), None, None).w(w).radius(4.0).fill(RAISED).border(1.0, LINE_STRONG).shadow(18.0, 6.0, Color([0.0, 0.0, 0.0, 0.5])).enter(160, if below { -6.0 } else { 6.0 }, 0).hit();
         let scrim = Node::new("s/ov/scrim").abs_fill().overlay().on("popup-close");
         let mut root = Node::new("s/ov").abs_fill().overlay().child(scrim);
         match open {
@@ -2349,19 +2729,22 @@ impl UiState {
                 let items = self.dropdown_shown(ctx, key);
                 let cur = self.dropdown_current(ctx, key);
                 let (ax, ay, aw, ah) = self.popup_anchor_rects.get(key).copied().unwrap_or((size.0 / 2.0 - 120.0, size.1 / 2.0, 240.0, 32.0));
-                let list_h = (items.len().max(1) as f32 * DD_ROW + 10.0).min(DD_LIST_H);
-                let h = list_h + if search { 49.0 } else { 0.0 };
-                let below = ay + ah + 6.0 + h <= size.1 - 8.0;
-                let y = if below { ay + ah + 6.0 } else { (ay - 6.0 - h).max(8.0) };
-                let w = aw.max(if font { 280.0 } else { 220.0 });
+                let list_h = (items.len().max(1) as f32 * DD_ROW + 8.0).min(DD_LIST_H);
+                let h = list_h + if search { 45.0 } else { 0.0 };
+                let below = ay + ah + 4.0 + h <= size.1 - 8.0;
+                let y = if below { ay + ah + 4.0 } else { (ay - 4.0 - h).max(8.0) };
+                // ponytail: about 7.5 px a character; measure the labels if one ever overflows
+                let longest = self.dropdown_items(ctx, key).iter().map(|(_, l)| l.chars().count()).max().unwrap_or(0) as f32;
+                let w = aw.max(if font { 280.0 } else { 220.0 }).max(longest * 7.5 + 56.0).min(size.0 - 16.0);
+                let x = ax.min(size.0 - w - 8.0).max(8.0);
                 // ponytail: only the rows in view are built, so every installed font, each in its own face, stays cheap
                 let off = self.scroll_of("s/ov/list");
                 let first = ((off - DD_ROW * 2.0) / DD_ROW).floor().max(0.0) as usize;
                 let last = (((off + list_h) / DD_ROW).ceil() as usize + 2).min(items.len());
-                let mut col = Node::new("s/ov/items").col().pad(5.0).child(Node::new("s/ov/above").h(first.min(last) as f32 * DD_ROW));
+                let mut col = Node::new("s/ov/items").col().pad(4.0).child(Node::new("s/ov/above").h(first.min(last) as f32 * DD_ROW));
                 for (i, (v, label)) in items.iter().enumerate().take(last).skip(first) {
                     let on = *v == cur;
-                    let mut t = k.txt(format!("s/ov/i/{i}/t"), label, 13.0, k.c("text")).grow_text();
+                    let mut t = k.txt(format!("s/ov/i/{i}/t"), label, 14.0, FG).grow_text();
                     if font && !v.is_empty() {
                         t = t.with_text(|t| t.family = v.clone());
                     }
@@ -2373,38 +2756,27 @@ impl UiState {
                             .align(taffy::AlignItems::CENTER)
                             .pad_xy(10.0, 0.0)
                             .gap(8.0)
-                            .radius(8.0)
-                            .fill(k.c("accent").with_alpha(if on { 0.16 } else { 0.0 }))
-                            .hover_fill(k.ink(0.08))
+                            .radius(2.0)
+                            .fill(if on { RAISED2 } else { CLEAR })
+                            .hover_fill(RAISED2)
                             .ease(100)
                             .on(format!("pick:{key}|{v}"))
                             .child(t)
-                            .child(k.glyph(format!("s/ov/i/{i}/c"), "check", 11.0, k.c("accent").with_alpha(if on { 1.0 } else { 0.0 }))),
+                            .child(k.glyph(format!("s/ov/i/{i}/c"), "check", 10.0, k.accent().with_alpha(if on { 1.0 } else { 0.0 }))),
                     );
                 }
                 col = col.child(Node::new("s/ov/below").h(items.len().saturating_sub(last) as f32 * DD_ROW));
                 if items.is_empty() {
-                    col = col.child(Node::new("s/ov/none").h(DD_ROW).pad_xy(10.0, 0.0).align(taffy::AlignItems::CENTER).child(k.txt("s/ov/none/t".into(), "Nothing matches.", 13.0, k.c("text-dim"))));
+                    col = col.child(Node::new("s/ov/none").h(DD_ROW).pad_xy(10.0, 0.0).align(taffy::AlignItems::CENTER).child(k.txt("s/ov/none/t".into(), "Nothing matches.", 14.0, MUTED)));
                 }
                 let list = Node::new("s/ov/list").col().grow(1.0).min_h(0.0).scroll(self.scroll_of("s/ov/list")).hit().child(col);
-                let mut pop = Node::new("s/ov/pop")
-                    .col()
-                    .abs(Some(ax), Some(y), None, None)
-                    .w(w)
-                    .h(h)
-                    .radius(12.0)
-                    .fill(pop_fill)
-                    .border(1.0, k.line())
-                    .shadow(18.0, 6.0, Color([0.0, 0.0, 0.0, 0.45]))
-                    .clip()
-                    .enter(160, if below { -6.0 } else { 6.0 }, 0)
-                    .hit();
+                let mut p = pop(x, y, w, below).h(h).clip();
                 if search {
                     let f = self.focus.as_ref().filter(|f| f.key == "q:dd").map(|f| (f.caret, self.caret_on));
-                    let field = k.input("q:dd", &self.input_text(ctx, "q:dd"), if font { "Search fonts…" } else { "Search…" }, f, w - 12.0, false);
-                    pop = pop.child(Node::new("s/ov/q").h(48.0).no_shrink().pad(6.0).child(field)).child(Node::new("s/ov/q/hr").h(1.0).no_shrink().fill(k.line()));
+                    let field = k.input("q:dd", &self.input_text(ctx, "q:dd"), if font { "Search fonts…" } else { "Search…" }, f, w - 10.0, false);
+                    p = p.child(Node::new("s/ov/q").h(44.0).no_shrink().pad(5.0).child(field)).child(k.hr("s/ov/q/hr".into()));
                 }
-                root = root.child(pop.child(list));
+                root = root.child(p.child(list));
             }
             Open::Color(target) => {
                 let (ax, ay, aw, ah) = self.popup_anchor_rects.get(&format!("cp:{target}")).copied().unwrap_or((size.0 / 2.0 - 130.0, size.1 / 2.0 - 100.0, 26.0, 26.0));
@@ -2415,7 +2787,7 @@ impl UiState {
                 let y = if below { ay + ah + 8.0 } else { (ay - 8.0 - ph).max(8.0) };
                 let (h, s, v) = self.hsv;
                 let cur = Color::from_hsv(h, s, v);
-                let mut grid = Node::new("cp/sv").col().gap(0.0).radius(8.0).clip();
+                let mut grid = Node::new("cp/sv").col().gap(0.0).radius(4.0).clip();
                 let cell = 224.0 / SV_N as f32;
                 for j in 0..SV_N {
                     let mut row = Node::new(format!("cp/sv/{j}")).row();
@@ -2425,7 +2797,7 @@ impl UiState {
                     }
                     grid = grid.child(row);
                 }
-                let mut hue = Node::new("cp/hue").row().radius(7.0).clip();
+                let mut hue = Node::new("cp/hue").row().radius(4.0).clip();
                 for i in 0..HUE_N {
                     hue = hue.child(Node::new(format!("cp/hue/{i}")).wh(224.0 / HUE_N as f32, 16.0).fill(Color::from_hsv((i as f32 + 0.5) / HUE_N as f32, 1.0, 1.0)).on(format!("cph:{i}")));
                 }
@@ -2434,27 +2806,19 @@ impl UiState {
                 let sv_wrap = Node::new("cp/svw").w(224.0).h(224.0).child(grid).child(Node::new("cp/svm").wh(14.0, 14.0).radius(7.0).border(2.0, Color([1.0, 1.0, 1.0, 1.0])).abs(Some(mx - 21.0), Some(my - 21.0), None, None));
                 let mut presets = Node::new("cp/pre").row().wrap().gap(6.0);
                 for (i, tok) in ["accent", "text", "danger", "text-dim"].iter().enumerate() {
-                    presets = presets.child(k.swatch(&format!("cp/pre/{i}"), ctx.theme.color(tok), 22.0, Some(format!("cpset:{}", ctx.theme.color(tok).to_hex())), false));
+                    let c = ctx.theme.color(tok);
+                    presets = presets.child(Node::new(format!("cp/pre/{i}")).wh(22.0, 22.0).radius(4.0).fill(c).border(1.0, LINE).on(format!("cpset:{}", c.to_hex())));
                 }
                 for (i, hx) in ["#ff6b6b", "#ffb454", "#7ee787", "#5ef2c8", "#6ea8ff", "#b18cff", "#ff8fd8", "#ffffff"].iter().enumerate() {
-                    presets = presets.child(k.swatch(&format!("cp/hx/{i}"), Color::parse(hx).unwrap(), 22.0, Some(format!("cpset:{hx}")), false));
+                    presets = presets.child(Node::new(format!("cp/hx/{i}")).wh(22.0, 22.0).radius(4.0).fill(Color::parse(hx).unwrap()).border(1.0, LINE).on(format!("cpset:{hx}")));
                 }
                 root = root.child(
-                    Node::new("s/ov/pop")
-                        .col()
-                        .abs(Some(x), Some(y), None, None)
-                        .w(pw)
+                    pop(x, y, pw, below)
                         .gap(10.0)
                         .pad(14.0)
-                        .radius(14.0)
-                        .fill(pop_fill)
-                        .border(1.0, k.line())
-                        .shadow(20.0, 8.0, Color([0.0, 0.0, 0.0, 0.5]))
-                        .enter(170, if below { -6.0 } else { 6.0 }, 0)
-                        .hit()
                         .child(sv_wrap)
                         .child(hue)
-                        .child(Node::new("cp/cur").row().align(taffy::AlignItems::CENTER).gap(10.0).child(Node::new("cp/cur/sw").wh(28.0, 28.0).radius(14.0).fill(cur).border(1.0, k.line())).child(k.mono("cp/cur/t".into(), &cur.to_hex(), 13.0, k.c("text"))))
+                        .child(Node::new("cp/cur").row().align(taffy::AlignItems::CENTER).gap(10.0).child(Node::new("cp/cur/sw").wh(28.0, 28.0).radius(4.0).fill(cur).border(1.0, LINE)).child(k.mono("cp/cur/t".into(), &cur.to_hex(), 13.0, FG)))
                         .child(presets),
                 );
             }
@@ -2467,11 +2831,11 @@ impl UiState {
                 let y = if below { ay + ah + 6.0 } else { (ay - 6.0 - ph).max(8.0) };
                 let mut col = Node::new("cl/col").col().pad(16.0).gap(10.0);
                 if ctx.update_releases.is_empty() {
-                    col = col.child(k.txt("cl/none".into(), "No releases found yet.", 13.0, k.c("text-dim")));
+                    col = col.child(k.txt("cl/none".into(), "No releases found yet.", 14.0, MUTED));
                 }
                 for (ri, asset) in ctx.update_releases.iter().enumerate() {
                     if ri > 0 {
-                        col = col.child(Node::new(format!("cl/hr{ri}")).h(1.0).no_shrink().fill(k.line()));
+                        col = col.child(k.hr(format!("cl/hr{ri}")));
                     }
                     let notes = if asset.NotesMarkdown.is_empty() { format!("## {}", asset.Version) } else { asset.NotesMarkdown.clone() };
                     for (li, line) in notes.lines().enumerate() {
@@ -2481,33 +2845,19 @@ impl UiState {
                         }
                         let key = format!("cl/{ri}/{li}");
                         let node = if let Some(h) = line.strip_prefix("## ") {
-                            k.bold(format!("{key}/t"), h, 15.0, k.c("text"))
+                            k.bold(format!("{key}/t"), h, 16.0, FG)
                         } else if let Some(h) = line.strip_prefix("### ") {
-                            k.bold(format!("{key}/t"), h, 12.5, k.c("accent"))
+                            k.medium(format!("{key}/t"), h, 12.0, k.accent())
                         } else if let Some(b) = line.strip_prefix("- ") {
-                            k.txt(format!("{key}/t"), &format!("•  {}", b.replace("**", "")), 12.5, k.c("text-dim")).wrap_text()
+                            k.txt(format!("{key}/t"), &format!("•  {}", b.replace("**", "")), 13.0, MUTED).wrap_text()
                         } else {
-                            k.txt(format!("{key}/t"), line, 12.5, k.c("text-dim")).wrap_text()
+                            k.txt(format!("{key}/t"), line, 13.0, MUTED).wrap_text()
                         };
                         col = col.child(node);
                     }
                 }
                 let list = Node::new("cl/scroll").col().grow(1.0).min_h(0.0).scroll(self.scroll_of("cl/scroll")).hit().child(col);
-                root = root.child(
-                    Node::new("s/ov/pop")
-                        .col()
-                        .abs(Some(x), Some(y), None, None)
-                        .w(pw)
-                        .h(ph)
-                        .radius(12.0)
-                        .fill(pop_fill)
-                        .border(1.0, k.line())
-                        .shadow(18.0, 6.0, Color([0.0, 0.0, 0.0, 0.45]))
-                        .clip()
-                        .enter(160, if below { -6.0 } else { 6.0 }, 0)
-                        .hit()
-                        .child(list),
-                );
+                root = root.child(pop(x, y, pw, below).h(ph).clip().child(list));
             }
         }
         root
@@ -2520,19 +2870,44 @@ const GALLERY_PV_H: f32 = 150.0;
 /// A dropdown longer than this gets a search.
 const SEARCH_FROM: usize = 12;
 /// A dropdown row, and the most of its list that shows at once.
-const DD_ROW: f32 = 36.0;
+const DD_ROW: f32 = 32.0;
 const DD_LIST_H: f32 = 300.0;
 /// The Changelog button's own key, reused to anchor its popover beneath it.
 const CHANGELOG_BTN: &str = "gn/upd/changelog";
 
 /// Where a dropdown list of `n` rows can scroll to.
 fn dd_max_scroll(n: usize) -> f32 {
-    let content = n as f32 * DD_ROW + 10.0;
+    let content = n as f32 * DD_ROW + 8.0;
     (content - content.min(DD_LIST_H)).max(0.0)
 }
-const PREVIEW_W: f32 = 290.0;
+/// A page's list on the left and its panel on the right, in a window `size` wide.
+fn side_widths(size: (f32, f32)) -> (f32, f32) {
+    if size.0 >= 1360.0 { (240.0, 400.0) } else { (208.0, 360.0) }
+}
 
-/// The width a page's column gets in a window `size` wide.
+/// The Plugins page's column beside its drop zone.
+fn sw_plugins(size: (f32, f32)) -> f32 {
+    side_widths(size).1 + 40.0
+}
+
+/// "1 widget", "3 widgets".
+fn plural(n: usize, what: &str) -> String {
+    format!("{n} {what}{}", if n == 1 { "" } else { "s" })
+}
+
+/// "2560 × 1440, 1920 × 1080".
+fn monitors_label(setup: &[crate::workspace::MonitorRef]) -> String {
+    if setup.is_empty() {
+        return "None found".into();
+    }
+    setup.iter().map(|m| format!("{} × {}", m.width, m.height)).collect::<Vec<_>>().join(", ")
+}
+
+/// "2 monitors".
+fn monitors_count(setup: &[crate::workspace::MonitorRef]) -> String {
+    plural(setup.len(), "monitor")
+}
+
 /// A virtual desktop's name as Task View shows it, or that it is gone.
 fn desktop_label(ctx: &Ctx, id: &str) -> String {
     match ctx.desktops.iter().find(|d| d.id.eq_ignore_ascii_case(id)) {
@@ -2552,9 +2927,6 @@ fn setup_label(setup: &[crate::workspace::MonitorRef]) -> String {
     }
 }
 
-fn content_w(size: (f32, f32), max_w: f32) -> f32 {
-    (size.0 - 2.0 * PAGE_PAD).min(max_w)
-}
 
 /// How many cards of at least `min` fit in `w`, at most `max`, and how wide each is.
 fn columns(w: f32, min: f32, gap: f32, max: usize) -> (usize, f32) {
@@ -2584,9 +2956,13 @@ fn grid(key: &str, cols: usize, gap: f32, cards: Vec<Node>) -> Node {
 /// A Module's preview, small: one with a set width (a gauge) squeezed narrow, one that stretches
 /// (a graph) in a short, wide box. Its text keeps its size, so a gauge only gets so small.
 fn thumb_stage(key: String, thumb: Node) -> Node {
-    let set_width = !thumb.style.max_size.width.is_auto() || thumb.style.size.width.into_option().is_some();
     let stage = Node::new(key).row().no_shrink().justify(taffy::JustifyContent::CENTER).clip();
-    if set_width { stage.w(64.0).align(taffy::AlignItems::CENTER).child(thumb) } else { stage.wh(128.0, 64.0).child(thumb) }
+    if set_width(&thumb) { stage.w(64.0).align(taffy::AlignItems::CENTER).child(thumb) } else { stage.wh(128.0, 64.0).child(thumb) }
+}
+
+/// A Module with a set width (a gauge), not one that stretches (a graph).
+fn set_width(n: &Node) -> bool {
+    !n.style.max_size.width.is_auto() || n.style.size.width.into_option().is_some()
 }
 
 /// Nothing in `n` takes a click: a preview's Modules would otherwise start a drag.
@@ -2622,26 +2998,26 @@ fn gpu_parts(info: &str) -> Vec<String> {
     out
 }
 
-fn level_color(k: &Kit, l: Level) -> Color {
+fn level_color(l: Level) -> Color {
     match l {
-        Level::Info => Color([0.43, 0.66, 1.0, 1.0]),
-        Level::Warning => k.warn(),
-        Level::Error => k.c("danger"),
+        Level::Info => MUTED,
+        Level::Warning => WARN,
+        Level::Error => DANGER,
     }
 }
 
 /// A Code Source's state on its Plugin's card, and its colour.
-fn code_status(k: &Kit, plugin_on: bool, c: &crate::plugins::CodeRow) -> (String, Color) {
+fn code_status(plugin_on: bool, c: &crate::plugins::CodeRow) -> (String, Color) {
     if !plugin_on {
-        return ("Off".into(), k.c("text-dim"));
+        return ("Off".into(), MUTED);
     }
     if !c.runs {
-        return ("Not running".into(), k.c("text-dim"));
+        return ("Not running".into(), MUTED);
     }
     match c.status.as_str() {
-        "" | "Starting" => ("Starting…".into(), k.warn()),
-        "Running" => ("Running".into(), k.c("accent")),
-        s => (s.to_string(), k.c("danger")),
+        "" | "Starting" => ("Starting…".into(), WARN),
+        "Running" => ("Running".into(), SUCCESS),
+        s => (s.to_string(), DANGER),
     }
 }
 
@@ -2762,14 +3138,29 @@ impl UiState {
                 self.open = None;
                 self.tier_tab = None;
                 self.sel_module = None;
+                self.sec = None;
                 vec![]
             }
             "tier" => {
                 self.tier_tab = Some(rest.into());
                 vec![]
             }
-            "adv" => {
-                self.advanced = !self.advanced;
+            "sec" => {
+                // the open one closes; any other opens in its place
+                let has_modules = self.selected_cfg(ctx).and_then(|c| self.def_of(ctx, &c.widget)).is_some_and(|d| !d.modules.is_empty());
+                self.sec = Sec::parse(rest).map(|s| if self.open_sec(has_modules) == s { Sec::Closed } else { s });
+                vec![]
+            }
+            "wssel" => {
+                self.ws_sel = rest.parse().ok();
+                vec![]
+            }
+            "plsel" => {
+                self.plugin_sel = Some(rest.into());
+                vec![]
+            }
+            "logsel" => {
+                self.log_sel = rest.parse().ok();
                 vec![]
             }
             "layreset" => rest.split_once('|').map(|(id, tier)| vec![Cmd::Layout(id.into(), tier.into(), None)]).unwrap_or_default(),
@@ -2922,7 +3313,10 @@ impl UiState {
                 cmds
             }
             "pon" => ctx.plugins.iter().find(|r| r.id == rest).map(|r| vec![Cmd::PluginEnabled(rest.into(), !r.enabled)]).unwrap_or_default(),
-            "wsadd" => vec![Cmd::Ws(WsCmd::Add { copy: rest == "copy" })],
+            "wsadd" => {
+                self.ws_sel = Some(ctx.ws.workspaces.len()); // the new one, at the end
+                vec![Cmd::Ws(WsCmd::Add { copy: rest == "copy" })]
+            }
             "wsgo" | "wsdel" | "wsdesk" | "wsundesk" | "wsmon" | "wsunmon" => {
                 let (i, extra) = rest.split_once('|').unwrap_or((rest, ""));
                 let Some(name) = i.parse::<usize>().ok().and_then(|i| ctx.ws.workspaces.get(i)).map(|w| w.name.clone()) else { return vec![] };
@@ -2932,6 +3326,7 @@ impl UiState {
                         let armed = format!("ws/{name}");
                         if self.confirm_del.as_deref() == Some(armed.as_str()) {
                             self.confirm_del = None;
+                            self.ws_sel = None;
                             vec![Cmd::Ws(WsCmd::Delete(name))]
                         } else {
                             self.confirm_del = Some(armed);
@@ -2982,7 +3377,12 @@ impl UiState {
                 vec![]
             }
             "logcopy" => {
-                let lines: Vec<String> = self.log_rows(ctx).iter().map(|l| format!("{} {:<7} {:<8} {}", l.time, l.level.label(), l.source, l.text)).collect();
+                // one entry by its index, or every line the filters let through
+                let rows = match rest.parse::<usize>() {
+                    Ok(i) => ctx.log.get(i).map(|l| vec![(i, l)]).unwrap_or_default(),
+                    Err(_) => self.log_rows(ctx),
+                };
+                let lines: Vec<String> = rows.iter().map(|(_, l)| format!("{} {:<7} {:<8} {}", l.time, l.level.label(), l.source, l.text)).collect();
                 native.set_clipboard(&lines.join("\r\n"));
                 vec![]
             }
@@ -3157,11 +3557,10 @@ fn names_module(list: &str, id: &str) -> bool {
 }
 
 impl UiState {
-    /// The preview of Instance `cfg`'s widget as a card on a dim backdrop, and what it placed.
+    /// Instance `cfg`'s widget as the stage shows it, or why it cannot, and what it placed.
     fn preview(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, images: &mut Vec<String>) -> (Node, Option<Arrangement>) {
         let id = &cfg.id;
-        let backdrop = |child: Node| Node::new(format!("ip/{id}/pv")).col().align(taffy::AlignItems::CENTER).pad(20.0).radius(14.0).fill(k.ink(0.02)).border(1.0, k.line()).clip().child(dots(format!("ip/{id}/pv/dots"), k.ink(0.1))).child(child);
-        let note = |s: &str| backdrop(k.txt(format!("ip/{id}/pvn"), s, 12.5, k.c("text-dim")).wrap_text());
+        let note = |s: &str| k.txt(format!("ip/{id}/pvn"), s, 14.0, MUTED).wrap_text().with_text(|t| t.align = crate::text::TextAlign::Center).max_w(360.0);
         let Some(Ok(w)) = ctx.reg.get(&cfg.widget) else { return (note("No preview: the definition failed to load."), None) };
         let meta = w.meta();
         let unmet = meta.unmet(|n| ctx.sources.iter().any(|s| s == n));
@@ -3173,7 +3572,7 @@ impl UiState {
         match self.build_widget(ctx, cfg, &cfg.layout, forced.map(|t| t.name.as_str()), size, &format!("pv/{id}")) {
             Ok(b) => {
                 images.extend(b.image_ids.iter().cloned());
-                (backdrop(b.root), b.arrangement)
+                (b.root, b.arrangement)
             }
             Err(e) => (note(&format!("No preview: {e}")), None),
         }
@@ -3191,14 +3590,24 @@ impl UiState {
         let state = std::collections::BTreeMap::new();
         let arrange = crate::format::Arrange { layout, tier, preview: true };
         let inp = crate::widgets::Inputs { params: &params, state: &state, card_size: size, key_prefix: key, read_source: &read, arrange: Some(arrange) };
-        w.build(&inp, &theme, &|_| None)
+        let mut b = w.build(&inp, &theme, &|_| None)?;
+        // live data: the window redraws as soon as the fastest preview needs it
+        if let Some(d) = ctx.data.next_wake(&b.deps, &scx) {
+            self.preview_wake.set(Some(self.preview_wake.get().map_or(d, |w| w.min(d))));
+        }
+        // the Style the engine puts on every card (outlines, shadow, see-through, tint, text
+        // size), as on the desktop, less the window's gutter
+        let card = crate::card::Card { gutter: 0.0, ..crate::card::Card::new(&theme) };
+        b.root = card.window_node(key, size, b.root);
+        Ok(b)
     }
 
     /// Hidden Module `m` on its own, for the tray: the widget built with nothing but `m`, in the
     /// first slot of this tier that takes it, and `m`'s node lifted out. With its kind (`Graph`)
-    /// when its label alone does not say it, as a gauge and a graph of one GPU share a label.
+    /// when its label alone does not say it, as a gauge and a graph of one GPU share a label,
+    /// and that slot's label.
     // ponytail: a build per hidden Module per frame; cache them per layout and tier if the Widgets page ever drags
-    fn module_thumb(&self, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, a: &Arrangement, m: &crate::format::Placed, prefix: &str, images: &mut Vec<String>) -> Option<(Node, Option<String>)> {
+    fn module_thumb(&self, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, a: &Arrangement, m: &crate::format::Placed, prefix: &str, images: &mut Vec<String>) -> Option<(Node, Option<String>, String)> {
         let meta = self.def_of(ctx, &cfg.widget)?;
         let def = meta.modules.iter().find(|d| d.name == m.module)?;
         let slot = a.slots.iter().find(|s| def.slots.is_empty() || def.slots.contains(&s.name))?;
@@ -3211,94 +3620,77 @@ impl UiState {
         // the tile around it is what drags
         node.action = None;
         node.hit_testable = false;
-        Some((node, (def.label != m.label).then(|| capitalized(&def.label))))
+        Some((node, (def.label != m.label).then(|| capitalized(&def.label)), slot.label.clone()))
     }
 
-    /// Tier tabs, the preview, the tray of hidden Modules and the reset buttons.
-    fn preview_block(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, images: &mut Vec<String>) -> Node {
+    /// The Modules this size leaves out, as tiles to drag into the preview, grouped by the
+    /// slot each would land in (Gauges, Graphs). `w` is the panel's inner width.
+    fn module_tray(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, a: &Arrangement, w: f32, images: &mut Vec<String>) -> Node {
         let id = &cfg.id;
-        let (pv, arr) = self.preview(k, ctx, cfg, images);
-        *self.tray_key.borrow_mut() = format!("ip/{id}/tray");
-        *self.preview_arr.borrow_mut() = arr.clone();
-        let mut b = Node::new(format!("ip/{id}/pvb")).col().gap(10.0);
-        let Some(meta) = self.def_of(ctx, &cfg.widget) else { return b.child(pv) };
-        if let Some(a) = &arr {
-            let mut tabs = Node::new(format!("ip/{id}/tabs")).row().wrap().align(taffy::AlignItems::CENTER).gap(6.0);
-            for t in &meta.tiers {
-                let on = t.name == a.tier;
-                tabs = tabs.child(
-                    Node::new(format!("ip/{id}/tab/{}", t.name))
-                        .h(32.0)
-                        .pad_xy(12.0, 0.0)
-                        .center()
-                        .radius(9.0)
-                        .fill(k.c("accent").with_alpha(if on { 0.12 } else { 0.0 }))
-                        .border(1.0, if on { k.c("accent").with_alpha(0.5) } else { k.line() })
-                        .hover_fill(if on { k.c("accent").with_alpha(0.16) } else { k.ink(0.05) })
-                        .ease(120)
-                        .on(format!("tier:{}", t.name))
-                        .child(k.bold(format!("ip/{id}/tab/{}/t", t.name), &t.label, 12.5, if on { k.c("text") } else { k.c("text-dim") })),
-                );
-            }
-            tabs = tabs.child(Node::new(format!("ip/{id}/tabs/sp")).grow(1.0));
-            if cfg.layout.contains_key(&a.tier) {
-                tabs = tabs.child(k.btn(&format!("ip/{id}/lr"), None, "Reset this size", format!("layreset:{id}|{}", a.tier), Btn::Outline));
-            }
-            if cfg.layout.len() > 1 || (cfg.layout.len() == 1 && !cfg.layout.contains_key(&a.tier)) {
-                tabs = tabs.child(k.btn(&format!("ip/{id}/lra"), None, "Reset all sizes", format!("layresetall:{id}"), Btn::Outline));
-            }
-            b = b.child(tabs).child(pv);
-            let head = Node::new(format!("ip/{id}/tray/h"))
-                .col()
-                .gap(2.0)
-                .child(k.bold(format!("ip/{id}/tray/h/t"), "Available modules", 13.5, k.c("text")))
-                .child(k.txt(format!("ip/{id}/tray/h/s"), "Drag one into the preview to show it, or a module out of it to put it here.", 12.0, k.c("text-dim")).wrap_text());
-            let mut tiles = Node::new(format!("ip/{id}/tray/l")).row().wrap().gap(8.0).align(taffy::AlignItems::FLEX_START);
-            if a.hidden.is_empty() {
-                tiles = tiles.child(k.txt(format!("ip/{id}/tray/e"), "Everything fits on the widget at this size.", 12.5, k.c("text-dim")));
-            }
-            for m in &a.hidden {
-                let tk = format!("ip/{id}/tray/{}", m.id);
-                let (stage, kind) = match self.module_thumb(ctx, cfg, a, m, "tray", images) {
-                    Some((thumb, kind)) => (thumb_stage(format!("{tk}/pv"), thumb), kind),
-                    None => (Node::new(format!("{tk}/pv")), None),
-                };
-                let mut cap = Node::new(format!("{tk}/cap")).row().gap(5.0).align(taffy::AlignItems::CENTER).child(k.bold(format!("{tk}/n"), &m.label, 11.5, k.c("text")));
-                if let Some(kind) = kind {
-                    cap = cap.child(k.txt(format!("{tk}/k"), &kind, 11.0, k.c("text-dim")));
-                }
-                tiles = tiles.child(Node::new(tk.clone()).col().gap(6.0).pad(6.0).align(taffy::AlignItems::CENTER).radius(9.0).fill(k.ink(0.03)).border(1.0, k.line()).hover_fill(k.ink(0.07)).ease(120).on(format!("mod:{}", m.id)).child(stage).child(cap));
-            }
-            b = b.child(Node::new(format!("ip/{id}/tray")).col().gap(12.0).pad(14.0).min_h(64.0).radius(12.0).fill(k.panel()).border(1.0, k.line()).child(head).child(tiles));
-            let cut: Vec<String> = a.slots.iter().flat_map(|s| s.cut.iter().map(|m| m.label.clone())).collect();
-            if !cut.is_empty() {
-                b = b.child(k.txt(format!("ip/{id}/cut"), &format!("No room at this size, left out: {}.", cut.join(", ")), 11.5, k.c("text-dim")).wrap_text());
-            }
-            b = b.child(k.txt(format!("ip/{id}/hint"), "Drag modules to rearrange them for this size. Click one to change its options.", 11.5, k.c("text-dim")).wrap_text());
-        } else {
-            b = b.child(pv);
+        let mut c = Node::new(format!("ip/{id}/tray/l")).col().gap(8.0).pad_each(4.0, 0.0, 0.0, 0.0).child(k.txt(format!("ip/{id}/tray/h/s"), "Drag one into the preview to show it, or a module out of it to put it back here.", 14.0, MUTED).wrap_text());
+        if a.hidden.is_empty() {
+            c = c.child(Node::new(format!("ip/{id}/tray/e")).pad_each(16.0, 0.0, 0.0, 0.0).child(k.txt(format!("ip/{id}/tray/e/t"), "Everything fits on the widget at this size.", 14.0, SUBTLE).wrap_text()));
         }
-        b
+        let mut groups: Vec<(String, bool, Vec<Node>)> = Vec::new();
+        for m in &a.hidden {
+            let tk = format!("ip/{id}/tray/{}", m.id);
+            let (stage, kind, slot, small) = match self.module_thumb(ctx, cfg, a, m, "tray", images) {
+                Some((thumb, kind, slot)) => {
+                    let small = set_width(&thumb);
+                    (thumb_stage(format!("{tk}/pv"), thumb), kind, slot, small)
+                }
+                None => (Node::new(format!("{tk}/pv")), None, String::new(), true),
+            };
+            let mut cap = Node::new(format!("{tk}/cap")).col().grow(1.0).min_w(0.0).child(k.medium(format!("{tk}/n"), &m.label, 14.0, FG).wrap_text());
+            if let Some(kind) = kind {
+                cap = cap.child(k.txt(format!("{tk}/k"), &kind, 12.0, MUTED));
+            }
+            let tile = Node::new(tk.clone()).row().min_h(64.0).pad_xy(12.0, 8.0).gap(12.0).align(taffy::AlignItems::CENTER).radius(4.0).fill(RAISED).hover_fill(RAISED2).ease(120).on(format!("mod:{}", m.id)).child(stage).child(cap);
+            match groups.iter_mut().find(|g| g.0 == slot) {
+                Some(g) => g.2.push(tile),
+                None => groups.push((slot, small, vec![tile])),
+            }
+        }
+        for (i, (slot, small, tiles)) in groups.into_iter().enumerate() {
+            if !slot.is_empty() {
+                c = c.child(k.sub(format!("ip/{id}/tray/g{i}"), &slot));
+            }
+            let cols = if small && w >= 300.0 { 2 } else { 1 };
+            let tw = ((w - GAP * (cols - 1) as f32) / cols as f32).floor();
+            c = c.child(grid(&format!("ip/{id}/tray/g{i}/grid"), cols, GAP, tiles.into_iter().map(|t| t.w(tw)).collect()));
+        }
+        c
     }
 
-    /// Widget-wide options, then the selected Module's own.
-    fn module_options(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, meta: &WidgetMeta, images: &mut Vec<String>) -> Node {
+    /// Under Options: the Widget's own params, then those of the Module picked in the preview.
+    fn option_rows(&self, k: &Kit, ctx: &Ctx, cfg: &crate::workspace::InstanceCfg, def: Option<&WidgetMeta>, images: &mut Vec<String>) -> Node {
         let id = &cfg.id;
-        let mut c = Node::new(format!("ip/{id}/mo")).col().gap(22.0);
+        let Some(meta) = def else { return k.txt(format!("ip/{id}/err"), "This widget's definition failed to load; see the Log page.", 14.0, DANGER).wrap_text() };
+        let mut c = Node::new(format!("ip/{id}/mo")).col();
         let mut section = |c: Node, key: String, title: &str, params: Vec<ParamDef>| {
             let mut c = c;
             for (i, (group, ps)) in ParamDef::grouped(&params).into_iter().enumerate() {
-                let title = match group {
-                    Some(g) => format!("{title}: {g}"),
-                    None => title.to_string(),
+                let title = match (title.is_empty(), group) {
+                    (true, Some(g)) => g.to_string(),
+                    (false, Some(g)) => format!("{title}: {g}"),
+                    (_, None) => title.to_string(),
                 };
+                if !title.is_empty() {
+                    c = c.child(k.sub(format!("{key}/{i}/t"), &title));
+                }
                 let rows = ps.into_iter().map(|pd| self.param_row(k, ctx, cfg, pd, images)).collect();
-                c = c.child(k.group(&format!("{key}/{i}"), &title, rows));
+                c = c.child(k.rows(&format!("{key}/{i}"), rows));
             }
             c
         };
+        if meta.modules.is_empty() {
+            if meta.params.is_empty() {
+                return c.child(Node::new(format!("ip/{id}/mo/n")).pad_xy(0.0, 16.0).child(k.txt(format!("ip/{id}/mo/n/t"), "This widget has no options.", 14.0, MUTED)));
+            }
+            return section(c, format!("ip/{id}/wo"), "", meta.params.clone());
+        }
         let wide: Vec<ParamDef> = meta.params.iter().filter(|p| p.module.is_none()).cloned().collect();
-        c = section(c, format!("ip/{id}/wo"), "Widget options", wide);
+        c = section(c, format!("ip/{id}/wo"), "Widget", wide);
         let arr = self.preview_arr.borrow();
         let picked = self.sel_module.as_deref().and_then(|s| {
             let all = arr.iter().flat_map(|a| a.slots.iter().flat_map(|s| s.modules.iter().chain(&s.cut)).chain(&a.hidden));
@@ -3308,13 +3700,12 @@ impl UiState {
             Some((mid, label)) => {
                 let own: Vec<ParamDef> = meta.params.iter().filter(|p| p.module.as_deref().is_some_and(|l| names_module(l, &mid))).cloned().collect();
                 if own.is_empty() {
-                    let none = Node::new(format!("ip/{id}/mo/n")).pad_xy(20.0, 14.0).child(k.txt(format!("ip/{id}/mo/n/t"), "This module has no options of its own.", 12.5, k.c("text-dim")));
-                    c = c.child(k.group(&format!("ip/{id}/mo/t"), &label, vec![none]));
+                    c = c.child(k.sub(format!("ip/{id}/mo/t"), &label)).child(Node::new(format!("ip/{id}/mo/n")).pad_xy(0.0, 12.0).child(k.txt(format!("ip/{id}/mo/n/t"), "This module has no options of its own.", 14.0, MUTED)));
                 } else {
                     c = section(c, format!("ip/{id}/mo/o"), &label, own);
                 }
             }
-            None => {}
+            None => c = c.child(Node::new(format!("ip/{id}/mo/hint")).pad_xy(0.0, 12.0).child(k.txt(format!("ip/{id}/mo/hint/t"), "Click a module in the preview for its own options.", 12.0, SUBTLE).wrap_text())),
         }
         c
     }
@@ -3366,6 +3757,7 @@ impl UiState {
         self.mdrag = None;
         if !active {
             self.sel_module = Some(id);
+            self.sec = Some(Sec::Options);
             return vec![];
         }
         let (Some(t), Some(arr), Some(cfg)) = (target, self.preview_arr.borrow().clone(), self.selected_cfg(ctx)) else { return vec![] };
@@ -3411,7 +3803,7 @@ impl UiState {
         let mut o = Node::new("s/mo").abs_fill().overlay();
         let mut any = false;
         if let Some(r) = self.sel_module.as_ref().and_then(|s| self.preview_rects.get(&format!("mod:{s}"))) {
-            o = o.child(Node::new("s/mo/sel").abs(Some(r[0] - 2.0), Some(r[1] - 2.0), None, None).wh(r[2] + 4.0, r[3] + 4.0).radius(8.0).border(2.0, k.c("accent")));
+            o = o.child(Node::new("s/mo/sel").abs(Some(r[0] - 2.0), Some(r[1] - 2.0), None, None).wh(r[2] + 4.0, r[3] + 4.0).radius(4.0).border(2.0, k.accent()));
             any = true;
         }
         if let Some(d) = self.mdrag.as_ref().filter(|d| d.active) {
@@ -3422,10 +3814,10 @@ impl UiState {
             if let Some(a) = arr.as_ref() {
                 let cfg = self.selected_cfg(ctx);
                 let placed = a.slots.iter().flat_map(|s| s.modules.iter().chain(&s.cut)).chain(&a.hidden).find(|m| m.id == d.id);
-                lifted = cfg.zip(placed).and_then(|(c, m)| self.module_thumb(ctx, c, a, m, "ghost", images)).map(|(n, _)| thumb_stage("s/mo/ghost/pv".into(), n));
+                lifted = cfg.zip(placed).and_then(|(c, m)| self.module_thumb(ctx, c, a, m, "ghost", images)).map(|(n, _, _)| thumb_stage("s/mo/ghost/pv".into(), n));
                 // and where it was, faded, so it reads as picked up rather than copied
                 if let Some(r) = self.preview_rects.get(&format!("mod:{}", d.id)) {
-                    o = o.child(Node::new("s/mo/from").abs(Some(r[0]), Some(r[1]), None, None).wh(r[2], r[3]).radius(8.0).fill(k.bg().with_alpha(0.65)).border(1.0, k.c("accent").with_alpha(0.35)));
+                    o = o.child(Node::new("s/mo/from").abs(Some(r[0]), Some(r[1]), None, None).wh(r[2], r[3]).radius(4.0).fill(BG.with_alpha(0.65)).border(1.0, k.accent().with_alpha(0.35)));
                 }
                 let module = placed.map(|m| m.module.clone());
                 let allowed = cfg.and_then(|c| self.def_of(ctx, &c.widget)).and_then(|m| m.modules.iter().find(|x| Some(&x.name) == module.as_ref())).map(|m| m.slots.clone()).unwrap_or_default();
@@ -3435,7 +3827,7 @@ impl UiState {
                         continue;
                     }
                     let hot = drop.as_ref().is_some_and(|t| t.slot.as_deref() == Some(s.name.as_str()));
-                    o = o.child(Node::new(format!("s/mo/slot/{}", s.name)).abs(Some(r[0]), Some(r[1]), None, None).wh(r[2], r[3]).radius(8.0).fill(k.c("accent").with_alpha(if hot { 0.14 } else { 0.05 })).border(1.0, k.c("accent").with_alpha(if hot { 0.9 } else { 0.4 })));
+                    o = o.child(Node::new(format!("s/mo/slot/{}", s.name)).abs(Some(r[0]), Some(r[1]), None, None).wh(r[2], r[3]).radius(4.0).fill(k.accent().with_alpha(if hot { 0.14 } else { 0.05 })).border(1.0, k.accent().with_alpha(if hot { 0.9 } else { 0.4 })));
                 }
                 if let Some(Drop { slot: Some(slot), index }) = &drop {
                     if let Some(s) = a.slots.iter().find(|s| s.name == *slot) {
@@ -3449,24 +3841,24 @@ impl UiState {
                             self.preview_rects.get(&format!("slot:{slot}")).map(|r| (r[0] + 4.0, r[1] + 4.0, 3.0, (r[3] - 8.0).max(8.0)))
                         };
                         if let Some((x, y, w, h)) = bar {
-                            o = o.child(Node::new("s/mo/bar").abs(Some(x), Some(y), None, None).wh(w, h).radius(1.5).fill(k.c("accent")));
+                            o = o.child(Node::new("s/mo/bar").abs(Some(x), Some(y), None, None).wh(w, h).radius(1.5).fill(k.accent()));
                         }
                     }
                 }
                 if drop.as_ref().is_some_and(|t| t.slot.is_none()) {
                     if let Some(r) = self.preview_rects.get("tray") {
-                        o = o.child(Node::new("s/mo/tray").abs(Some(r[0]), Some(r[1]), None, None).wh(r[2], r[3]).radius(10.0).border(2.0, k.c("accent")));
+                        o = o.child(Node::new("s/mo/tray").abs(Some(r[0]), Some(r[1]), None, None).wh(r[2], r[3]).radius(4.0).border(2.0, k.accent()));
                     }
                 }
             }
-            let body = lifted.unwrap_or_else(|| k.txt("s/mo/ghost/t".into(), &d.label, 12.0, k.c("text")));
+            let body = lifted.unwrap_or_else(|| k.txt("s/mo/ghost/t".into(), &d.label, 12.0, FG));
             o = o.child(
                 Node::new("s/mo/ghost")
                     .abs(Some(d.pos.0 + 14.0), Some(d.pos.1 + 12.0), None, None)
                     .pad(6.0)
-                    .radius(10.0)
-                    .fill(k.bg().lerp(k.c("text"), 0.05).with_alpha(0.96))
-                    .border(1.5, k.c("accent"))
+                    .radius(4.0)
+                    .fill(RAISED.with_alpha(0.97))
+                    .border(1.5, k.accent())
                     .shadow(16.0, 6.0, Color([0.0, 0.0, 0.0, 0.45]))
                     .opacity(0.94)
                     .child(body),
@@ -3490,6 +3882,11 @@ pub struct SettingsWin {
     redraw: bool,
     animating: bool,
     last: Instant,
+    cursor: CursorIcon,
+    /// The last press on the title bar, so a second one soon after maximizes.
+    last_drag: Option<Instant>,
+    /// When a preview's live data next changes.
+    wake: Option<Instant>,
 }
 
 impl SettingsWin {
@@ -3530,6 +3927,9 @@ impl SettingsWin {
             .with_visible(false)
             .with_inner_size(LogicalSize::new(win.0, win.1))
             .with_min_inner_size(LogicalSize::new(MIN_WIN.0 as f64, MIN_WIN.1 as f64))
+            // the header is the title bar: it drags, and draws minimize, maximize and close
+            .with_decorations(false)
+            .with_undecorated_shadow(true)
             .with_no_redirection_bitmap(true);
         if let Some(p) = pos {
             attrs = attrs.with_position(p);
@@ -3545,7 +3945,7 @@ impl SettingsWin {
         };
         window.set_visible(true);
         window.focus_window();
-        Ok(SettingsWin { window, target, ui: UiState::default(), anim: Anim::default(), hover: None, frame: None, mouse: (-1.0, -1.0), down: false, drag: None, redraw: true, animating: false, last: Instant::now() })
+        Ok(SettingsWin { window, target, ui: UiState::default(), anim: Anim::default(), hover: None, frame: None, mouse: (-1.0, -1.0), down: false, drag: None, redraw: true, animating: false, last: Instant::now(), cursor: CursorIcon::Default, last_drag: None, wake: None })
     }
 
     fn scale(&self) -> f64 {
@@ -3565,11 +3965,22 @@ impl SettingsWin {
     fn dispatch(&mut self, action: &str, ctx: &Ctx, text: &mut TextEngine) -> Vec<Cmd> {
         match action.split_once(':').map_or(action, |(v, _)| v) {
             "drag" => {
-                let _ = self.window.drag_window();
+                let now = Instant::now();
+                if self.last_drag.is_some_and(|t| now.duration_since(t) < Duration::from_millis(400)) {
+                    self.last_drag = None;
+                    self.window.set_maximized(!self.window.is_maximized());
+                } else {
+                    self.last_drag = Some(now);
+                    let _ = self.window.drag_window();
+                }
                 vec![]
             }
             "min" => {
                 self.window.set_minimized(true);
+                vec![]
+            }
+            "max" => {
+                self.window.set_maximized(!self.window.is_maximized());
                 vec![]
             }
             "sl" => {
@@ -3599,6 +4010,29 @@ impl SettingsWin {
         }
     }
 
+    /// The edge or corner a press at the mouse resizes from; Windows draws no frame to grab.
+    fn edge(&self) -> Option<ResizeDirection> {
+        if self.window.is_maximized() {
+            return None;
+        }
+        let s = self.scale() as f32;
+        let size = self.window.inner_size();
+        let (w, h) = (size.width as f32 / s, size.height as f32 / s);
+        let (x, y) = self.mouse;
+        use ResizeDirection::*;
+        Some(match (x < EDGE, x >= w - EDGE, y < EDGE, y >= h - EDGE) {
+            (true, _, true, _) => NorthWest,
+            (_, true, true, _) => NorthEast,
+            (true, _, _, true) => SouthWest,
+            (_, true, _, true) => SouthEast,
+            (true, ..) => West,
+            (_, true, ..) => East,
+            (_, _, true, _) => North,
+            (_, _, _, true) => South,
+            _ => return None,
+        })
+    }
+
     fn slide_now(&mut self, action: &str, ctx: &Ctx) -> Vec<Cmd> {
         let Some(frame) = &self.frame else { return vec![] };
         self.ui.slide(action, self.mouse.0, frame, ctx)
@@ -3622,14 +4056,19 @@ impl SettingsWin {
                     Some((k, a)) => (Some(k), a),
                     None => (None, None),
                 };
+                let cursor = match (self.edge().filter(|_| !self.down), action.as_deref()) {
+                    (Some(d), _) => resize_cursor(d),
+                    (_, Some(a)) if a.starts_with("in:") => CursorIcon::Text,
+                    (_, Some("drag") | None) => CursorIcon::Default,
+                    _ => CursorIcon::Pointer,
+                };
+                if cursor != self.cursor {
+                    self.cursor = cursor;
+                    self.window.set_cursor(cursor);
+                }
                 if self.hover != key {
                     self.hover = key;
                     self.redraw = true;
-                    self.window.set_cursor(match action.as_deref() {
-                        Some(a) if a.starts_with("in:") => CursorIcon::Text,
-                        Some("drag") | None => CursorIcon::Default,
-                        Some(_) => CursorIcon::Pointer,
-                    });
                 }
                 if self.down {
                     self.ui.mod_move(self.mouse);
@@ -3646,6 +4085,10 @@ impl SettingsWin {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
+                if let Some(d) = self.edge() {
+                    let _ = self.window.drag_resize_window(d);
+                    return cmds;
+                }
                 self.down = true;
                 let action = self.frame.as_ref().and_then(|f| f.hit_at(self.mouse.0, self.mouse.1)).and_then(|h| h.action.clone());
                 match action {
@@ -3702,6 +4145,7 @@ impl SettingsWin {
         let phys = self.window.inner_size();
         gpu.fit(&mut self.target, phys.width, phys.height);
         let size = (phys.width as f32 / s, phys.height as f32 / s);
+        self.ui.maximized = self.window.is_maximized();
         let (root, images) = self.ui.build(ctx, size);
         for id in &images {
             store.ensure(id);
@@ -3714,6 +4158,7 @@ impl SettingsWin {
             Err(RenderError::Skip(e)) | Err(RenderError::Lost(e)) => eprintln!("wayfinder: settings render: {e}"),
         }
         self.animating = frame.animating;
+        self.wake = self.ui.preview_wake.get().map(|d| now + d);
         self.ui.record_anchors(&frame);
         self.ui.record_preview(&frame);
         // an open popup needs its anchor rect to position itself; one more frame settles it
@@ -3731,13 +4176,18 @@ impl SettingsWin {
         if self.redraw {
             return Some(now);
         }
-        if self.animating {
-            return Some(self.last + Duration::from_millis(16));
-        }
-        if self.ui.wants_caret() {
-            return Some(self.ui.caret_at + Duration::from_millis(530));
-        }
-        None
+        let animating = self.animating.then(|| self.last + Duration::from_millis(16));
+        let caret = self.ui.wants_caret().then(|| self.ui.caret_at + Duration::from_millis(530));
+        [animating, caret, self.wake].into_iter().flatten().min()
+    }
+}
+
+fn resize_cursor(d: ResizeDirection) -> CursorIcon {
+    match d {
+        ResizeDirection::East | ResizeDirection::West => CursorIcon::EwResize,
+        ResizeDirection::North | ResizeDirection::South => CursorIcon::NsResize,
+        ResizeDirection::NorthWest | ResizeDirection::SouthEast => CursorIcon::NwseResize,
+        _ => CursorIcon::NeswResize,
     }
 }
 
@@ -3807,8 +4257,10 @@ mod tests {
         let setup = [crate::workspace::MonitorRef { name: "\\\\.\\DISPLAY1".into(), width: 2560, height: 1440 }];
         let c = Ctx { desktops: &desks, desktop: Some("{A}"), setup: &setup, ..ctx(&w) };
         let root = ui.build(&c, WIN).0;
-        assert!(find_node(&root, "ws/w/1/go").is_some() && !find_node(&root, "ws/w/0/go").is_some(), "only one not on screen can be shown");
+        assert!(find_node(&root, "ws/w/0/go").is_none(), "the one on screen opens first, and has no Show");
         assert!(find_node(&root, "ws/w/0/d/add").is_some() && find_node(&root, "ws/w/0/m/add").is_some());
+        ui.act("wssel:1", &c, &mut Headless);
+        assert!(find_node(&ui.build(&c, WIN).0, "ws/w/1/go").is_some(), "one not on screen can be shown");
         assert_eq!(ui.act("wsgo:1", &c, &mut Headless), [Cmd::Ws(WsCmd::Switch("Work".into()))]);
         assert!(ui.act("wsdel:1", &c, &mut Headless).is_empty(), "the first click arms it");
         assert_eq!(ui.act("wsdel:1", &c, &mut Headless), [Cmd::Ws(WsCmd::Delete("Work".into()))]);
@@ -3822,6 +4274,7 @@ mod tests {
         assert!(ui.act("wsgo:7", &c, &mut Headless).is_empty());
         w.ws.rules_mut("Work").unwrap().desktops.push("{GONE}".into());
         let c = Ctx { desktops: &desks, desktop: Some("{A}"), setup: &setup, ..ctx(&w) };
+        ui.act("wssel:1", &c, &mut Headless);
         let root = ui.build(&c, WIN).0;
         let t = find_node(&root, "ws/w/1/d/{GONE}/t").expect("a chip for it");
         assert!(matches!(&t.kind, crate::ui::Kind::Text(x) if x.text == "a removed desktop"), "a desktop that went away says so");
@@ -3865,7 +4318,7 @@ mod tests {
         let [_, _, _, dh] = f.rect_of("ip/essay-1/hs").unwrap();
         assert!(dh > 20.0, "the description wraps onto more lines ({dh} px tall)");
         ui.selected = Some("system_monitor-1".into());
-        ui.advanced = true; // Placement and Style sit under "Advanced"
+        ui.sec = Some(Sec::Advanced); // Placement and Style sit under "Advanced"
         let f = laid(&ui);
         for (k, [x, _, w, _]) in f.rects.iter().filter(|(k, _)| k.starts_with("sr/system_monitor-1/") || k.starts_with("ip/system_monitor-1/tp")) {
             assert!(x + w <= MIN_WIN.0, "`{k}` ends at {} in a {} px window", x + w, MIN_WIN.0);
@@ -4004,11 +4457,27 @@ mod tests {
         ui.selected = Some("system_monitor-1".into());
         let f = monitor_frame(&mut ui, &w, WIN);
         assert!(f.rect_of("z:system_monitor-1").is_none(), "Layer is under Advanced");
-        assert!(ui.act("adv:toggle", &c, &mut Headless).is_empty() && ui.advanced);
+        assert!(ui.act("sec:advanced", &c, &mut Headless).is_empty() && ui.sec == Some(Sec::Advanced));
+        assert!(monitor_frame(&mut ui, &w, WIN).rect_of("z:system_monitor-1").is_some(), "open, it shows Layer");
+        ui.act("sec:advanced", &c, &mut Headless);
+        assert_eq!(ui.sec, Some(Sec::Closed), "clicking the open one shuts it");
         assert!(ui.act("tier:large", &c, &mut Headless).is_empty());
         monitor_frame(&mut ui, &w, WIN);
         assert_eq!(ui.preview_arr.borrow().as_ref().map(|a| a.tier.clone()).as_deref(), Some("large"));
         assert_eq!(ui.act("layreset:system_monitor-1|large", &c, &mut Headless), vec![Cmd::Layout("system_monitor-1".into(), "large".into(), None)]);
+    }
+
+    #[test]
+    fn the_preview_wears_the_widgets_own_style_and_keeps_up_with_its_data() {
+        let mut w = world();
+        w.ws.instances[0].style.insert("transparent".into(), serde_json::json!(true));
+        w.ws.instances[0].style.insert("bg-opacity".into(), serde_json::json!(40));
+        let mut ui = UiState::default();
+        ui.selected = Some("clock-1".into());
+        let (root, _) = ui.build(&ctx(&w), WIN);
+        let card = find_node(&root, "pv/clock-1").expect("the clock's card");
+        assert!((card.look.fill.0[3] - 0.4).abs() < 1e-3, "see-through at its own 40%, as on the desktop: {}", card.look.fill.0[3]);
+        assert!(ui.preview_wake.get().is_some_and(|d| d <= Duration::from_millis(1002)), "a clock's hands move every second, so the window wakes for them");
     }
 
     #[test]
@@ -4232,12 +4701,20 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("weather.toml"), "name = 'Weather'\ndescription = 'Rain or shine.'\n[root]\ntype = 'box'").unwrap();
         w.reg.load_dir(&dir);
+        w.ws.instances.push(InstanceCfg { id: "system_monitor-1".into(), widget: "system_monitor".into(), w: 340.0, h: 190.0, ..Default::default() });
         let mut screens: Vec<(String, UiState)> = Vec::new();
         for page in Page::ALL {
             let mut ui = UiState::default();
             ui.page = page;
             ui.selected = Some("icon_folder-1".into());
             screens.push((format!("{page:?}"), ui));
+        }
+        // a Widget with Modules: the stage's tiers, footer and the tray, then Advanced
+        for sec in [None, Some(Sec::Options), Some(Sec::Advanced)] {
+            let mut ui = UiState::default();
+            ui.selected = Some("system_monitor-1".into());
+            ui.sec = sec;
+            screens.push((format!("System Monitor, {sec:?}"), ui));
         }
         let mut gallery = UiState::default();
         gallery.adding = true;
@@ -4341,11 +4818,14 @@ mod tests {
         ui.act("nav:log", &c, &mut Headless);
         assert_eq!(ui.log_rows(&c).len(), 3);
         ui.act("lvl:warning", &c, &mut Headless);
-        assert_eq!(ui.log_rows(&c).iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), ["Using the software adapter"]);
+        assert_eq!(ui.log_rows(&c).iter().map(|(_, l)| l.text.as_str()).collect::<Vec<_>>(), ["Using the software adapter"]);
         let mut shown = Vec::new();
         texts(&ui.build(&c, WIN).0, &mut shown);
         assert!(shown.iter().any(|t| t.starts_with("Change adapter in General")), "{shown:?}");
         ui.act("lvl:all", &c, &mut Headless);
+        assert_eq!(ui.log_selected(&ui.log_rows(&c)), Some(2), "shows the latest that is not Info in full");
+        ui.act("logsel:0", &c, &mut Headless);
+        assert_eq!(ui.log_selected(&ui.log_rows(&c)), Some(0), "or the one clicked");
         ui.queries.insert("q:log".into(), "PLUGINS".into());
         assert_eq!(ui.log_rows(&c).len(), 1, "search matches the source too, ignoring case");
         assert_eq!(ui.act("openlog", &c, &mut Headless), [Cmd::OpenData("wayfinder.log")]);
@@ -4499,7 +4979,7 @@ mod tests {
             for advanced in [false, true] {
                 let mut ui = UiState::default();
                 ui.selected = Some(id.into());
-                ui.advanced = advanced;
+                ui.sec = advanced.then_some(Sec::Advanced);
                 show(&format!("widgets, {id} selected, advanced {advanced}"), &ui, &w, &mut out);
             }
         }

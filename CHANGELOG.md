@@ -1,6 +1,58 @@
 # Changelog
 
 All notable changes to Wayfinder are documented here.
+## v0.7.1 - 2026-10-02
+
+
+### CI
+
+- **release:** Add a velopack switch to Manual Release
+## v0.7.0 - 2026-10-02
+
+
+### Bug Fixes
+
+- **settings:** Forget a switched-away workspace's state
+- **app:** Follow monitor rules only when the setup changes
+- **theme:** Show MDL2 icons where Segoe Fluent Icons is missing
+- **widgets:** Let nil leave out an optional colour
+
+### CI
+
+- **release:** Auto-bump versions and flag PR preview builds
+- **release:** Download the previous release to enable deltas
+
+### Documentation
+
+- **widgets:** Add a widgets guide, ship it everywhere
+- **settings:** Render the workspaces page
+- Describe workspaces and how they follow desktops
+- **settings:** Render the media and photo widgets' pages
+- Describe the calendar
+- Rework the readme with screenshots and diagrams
+- Say only that the classic widgets render on windows
+- Split the readme into linked guides
+
+### Features
+
+- **update:** Add Velopack installer and silent auto-update
+- **workspace:** Keep several named workspaces
+- **platform:** Read and watch virtual desktops
+- **app:** Follow virtual desktops and monitor setups
+- **settings:** Add a workspaces page
+- **widgets:** Add a calendar
+- **elements:** Add a 3d block and a graph minimum
+- **audio:** Expose a triggered waveform
+- **visualizer:** Add oscilloscope and 3d bars
+- **elements:** Add a graph area opacity
+- **audio:** Keep a second of band history
+- **visualizer:** Add a 3d waterfall
+- **settings:** Add a pre-release update channel
+- **settings:** Add a Version section with update and changelog
+
+### Miscellaneous
+
+- License under mit
 ## v0.6.0 - 2026-10-01
 
 

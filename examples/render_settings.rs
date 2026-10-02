@@ -79,6 +79,7 @@ fn main() {
         line("01:29:59", Level::Info, "plugins", "wayfinder-extra v0.2.0 loaded: 5 widgets, 3 palettes"),
         line("01:29:59", Level::Info, "plugins", "agents: starting (no network; reads ~/.claude, ~/.copilot, ~/.gemini)"),
         line("01:29:59", Level::Error, "plugins", "could not install broken.wfplugin: no plugin.toml at the top of the plugin"),
+        line("01:30:02", Level::Warning, "core", r"hotkey Ctrl+Shift+E unavailable (HotKey already registered: HotKey { mods: Modifiers(CONTROL | SHIFT), key: KeyE, id: 34078743 }); use the tray menu for Edit Mode, or C:\Users\someone\AppData\Local\Wayfinder\current\wayfinder.exe"),
     ];
     let sources = wayfinder::data::DataSources::fixed();
     let names = sources.names();
@@ -97,39 +98,43 @@ fn main() {
     let games = spaces.add_workspace("Games", false);
     spaces.rules_mut(&games).unwrap().desktops = vec![desktops[1].id.clone()];
 
+    let (big, small) = ((1440.0, 900.0), (960.0, 600.0));
     let states: Vec<(&str, Vec<&str>, (f32, f32))> = vec![
-        ("setup_1", vec![], (1180.0, 780.0)),
-        ("setup_2", vec!["ob:next"], (1180.0, 780.0)),
-        ("setup_3", vec!["ob:next", "ob:next"], (1180.0, 780.0)),
-        ("setup_4", vec!["ob:next", "ob:next", "ob:next"], (1180.0, 780.0)),
-        ("widgets_gallery", vec!["gallery:open"], (1180.0, 780.0)),
-        ("widgets_gallery_narrow", vec!["gallery:open", "cat:Launchers"], (860.0, 560.0)),
-        ("widgets_gallery_photos", vec!["gallery:open", "cat:Photos"], (1180.0, 780.0)),
-        ("widgets_media", vec!["sel:media_controller-1"], (1180.0, 780.0)),
-        ("widgets_frame", vec!["sel:photo_frame-1"], (1180.0, 780.0)),
-        ("widgets_folder", vec!["sel:icon_folder-1"], (1180.0, 780.0)),
-        ("widgets_monitor", vec!["sel:system_monitor-1"], (1180.0, 780.0)),
-        ("widgets_monitor_large", vec!["sel:system_monitor-1", "tier:large"], (1180.0, 780.0)),
-        ("widgets_clock_dropdown", vec!["sel:clock-1", "adv:toggle", "dd:z:clock-1"], (1180.0, 780.0)),
-        ("appearance", vec!["nav:appearance"], (1180.0, 780.0)),
-        ("appearance_picker", vec!["nav:appearance", "cp:sy:*:accent"], (1180.0, 780.0)),
-        ("appearance_narrow", vec!["nav:appearance"], (860.0, 560.0)),
-        ("general", vec!["nav:general"], (1180.0, 780.0)),
-        ("plugins", vec!["nav:plugins"], (1180.0, 780.0)),
-        ("log", vec!["nav:log"], (1180.0, 780.0)),
-        ("workspaces", vec!["nav:workspaces"], (1180.0, 780.0)),
+        ("setup_1", vec![], big),
+        ("setup_2", vec!["ob:next"], big),
+        ("setup_3", vec!["ob:next", "ob:next"], big),
+        ("setup_4", vec!["ob:next", "ob:next", "ob:next"], big),
+        ("widgets_gallery", vec!["gallery:open"], big),
+        ("widgets_gallery_narrow", vec!["gallery:open", "cat:Launchers"], small),
+        ("widgets_gallery_photos", vec!["gallery:open", "cat:Photos"], big),
+        ("widgets_media", vec!["sel:media_controller-1"], big),
+        ("widgets_frame", vec!["sel:photo_frame-1"], big),
+        ("widgets_folder", vec!["sel:icon_folder-1"], big),
+        ("widgets_monitor", vec!["sel:system_monitor-1"], big),
+        ("widgets_monitor_large", vec!["sel:system_monitor-1", "tier:large"], big),
+        ("widgets_monitor_narrow", vec!["sel:system_monitor-1"], small),
+        ("widgets_clock_dropdown", vec!["sel:clock-1", "sec:advanced", "dd:z:clock-1"], big),
+        ("appearance", vec!["nav:appearance"], big),
+        ("appearance_picker", vec!["nav:appearance", "cp:sy:*:accent"], big),
+        ("appearance_narrow", vec!["nav:appearance"], small),
+        ("general", vec!["nav:general"], big),
+        ("general_narrow", vec!["nav:general"], small),
+        ("plugins", vec!["nav:plugins"], big),
+        ("plugins_empty", vec!["nav:plugins"], big),
+        ("log", vec!["nav:log"], big),
+        ("log_narrow", vec!["nav:log"], small),
+        ("workspaces", vec!["nav:workspaces"], big),
+        ("workspaces_other", vec!["nav:workspaces", "wssel:2"], big),
     ];
     for (name, acts, size) in states {
-        let ws = if name.starts_with("setup") { &fresh } else if name == "workspaces" { &spaces } else { &ws };
-        let (desks, desk, setup): (&[wayfinder::platform::vdesk::Desktop], Option<&str>, &[MonitorRef]) = if name == "workspaces" { (&desktops, Some(desktops[1].id.as_str()), &dock) } else { (&[], None, &[]) };
+        let ws = if name.starts_with("setup") { &fresh } else if name.starts_with("workspaces") { &spaces } else { &ws };
+        let (desks, desk, setup): (&[wayfinder::platform::vdesk::Desktop], Option<&str>, &[MonitorRef]) = if name.starts_with("workspaces") { (&desktops, Some(desktops[1].id.as_str()), &dock) } else { (&[], None, std::slice::from_ref(&mon)) };
+        let plugins: &[PluginRow] = if name == "plugins_empty" { &[] } else { &plugins };
         let theme = ws.global_theme(&lib);
         let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources, calendar: &wayfinder::ambient::FixedCalendar::default(), desktops: desks, desktop: desk, setup, update_releases: &[], update_note: "" };
         let mut ui = UiState::default();
         for a in acts {
             let _ = ui.act(a, &ctx, &mut wayfinder::native::Headless);
-        }
-        if name.ends_with("_large") {
-            ui.scroll.insert("w/scroll-r".into(), 330.0); // down to the tray
         }
         let mut anim = Anim::default();
         let base = Instant::now();

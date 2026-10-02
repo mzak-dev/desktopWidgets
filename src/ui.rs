@@ -175,6 +175,11 @@ impl Node {
         self.style.padding = Rect { left: length(x), right: length(x), top: length(y), bottom: length(y) };
         self
     }
+    /// Top, right, bottom, left, as CSS has it.
+    pub fn pad_each(mut self, t: f32, r: f32, b: f32, l: f32) -> Self {
+        self.style.padding = Rect { left: length(l), right: length(r), top: length(t), bottom: length(b) };
+        self
+    }
     pub fn gap(mut self, v: f32) -> Self {
         self.style.gap = Size { width: length(v), height: length(v) };
         self
