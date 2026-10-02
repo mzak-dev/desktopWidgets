@@ -1,8 +1,11 @@
 //! Each Data Source declares how often its fields change, so a window wakes
 //! only when a bound value can differ (decision 16, ADR-0004).
 
+mod agents;
 mod audio;
+mod calendar;
 mod clock;
+mod gallery;
 pub(crate) mod media;
 mod shortcuts;
 mod sys;
@@ -15,8 +18,11 @@ use std::time::{Duration, Instant};
 use crate::ambient::Ambient;
 use crate::value::Value;
 
+pub use agents::Agents;
 pub use audio::Audio;
+pub use calendar::{Calendar, calendar_value};
 pub use clock::{Clock, Tm, clock_value};
+pub use gallery::Gallery;
 pub use media::Media;
 pub use crate::shortcut::{ID_SEP, Shortcut, file_stem, icon_id};
 pub use shortcuts::{Shortcuts, folder_items, shortcuts_value, starter_apps};
@@ -235,7 +241,7 @@ impl Default for DataSources {
 /// The built-in sources over `ambient`. The app builds them over `Ambient::windows`.
 impl From<&Ambient> for DataSources {
     fn from(ambient: &Ambient) -> Self {
-        Self::new(vec![Box::new(Clock::new(ambient.calendar.clone())), Box::new(Sys::new(ambient.sys.clone())), Box::new(Shortcuts::default()), Box::new(Media::new(ambient.media.clone())), Box::new(Audio::new(ambient.capture.clone()))])
+        Self::new(vec![Box::new(Clock::new(ambient.calendar.clone())), Box::new(Sys::new(ambient.sys.clone())), Box::new(Shortcuts::default()), Box::new(Media::new(ambient.media.clone())), Box::new(Audio::new(ambient.capture.clone())), Box::new(Gallery::default()), Box::new(Agents::default()), Box::new(Calendar)])
     }
 }
 

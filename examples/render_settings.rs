@@ -40,7 +40,7 @@ fn main() {
     ws.onboarded = true;
     ws.theme.palette = std::env::var("WAYFINDER_PALETTE").unwrap_or_else(|_| "Aurora".into());
     let mon = MonitorRef { name: "\\\\.\\DISPLAY1".into(), width: 1920, height: 1080 };
-    for (id, w, sz) in [("clock-1", "clock", (260.0, 260.0)), ("digital_clock-1", "digital_clock", (340.0, 172.0)), ("system_monitor-1", "system_monitor", (340.0, 190.0)), ("drawer-1", "drawer", (260.0, 220.0)), ("icon_list-1", "icon_list", (280.0, 360.0)), ("icon_folder-1", "icon_folder", (132.0, 152.0))] {
+    for (id, w, sz) in [("clock-1", "clock", (260.0, 260.0)), ("digital_clock-1", "digital_clock", (340.0, 172.0)), ("system_monitor-1", "system_monitor", (340.0, 190.0)), ("drawer-1", "drawer", (260.0, 220.0)), ("icon_list-1", "icon_list", (280.0, 360.0)), ("icon_folder-1", "icon_folder", (132.0, 152.0)), ("media_controller-1", "media_controller", (340.0, 160.0)), ("photo_frame-1", "photo_frame", (320.0, 240.0)), ("agent_status-1", "agent_status", (340.0, 160.0))] {
         let mut c = InstanceCfg { id: id.into(), widget: w.into(), monitor: mon.clone(), w: sz.0, h: sz.1, ..Default::default() };
         if w.starts_with("icon_") {
             c.set_items(&items);
@@ -84,6 +84,18 @@ fn main() {
     let names = sources.names();
     let mut fresh = ws.clone();
     fresh.onboarded = false;
+    // the Workspaces page: one tied to a desktop and the dock's monitors, one to a desktop alone
+    let desktops = [
+        wayfinder::platform::vdesk::Desktop { id: "{0B6E3A2C-1F4D-4E0A-9C1B-2D3E4F5A6B7C}".into(), name: "Desktop 1".into() },
+        wayfinder::platform::vdesk::Desktop { id: "{7C1D2E3F-4A5B-4C6D-8E9F-0A1B2C3D4E5F}".into(), name: "Games".into() },
+    ];
+    let dock = vec![MonitorRef { name: "\\\\.\\DISPLAY2".into(), width: 2560, height: 1440 }, mon.clone()];
+    let mut spaces = ws.clone();
+    let work = spaces.add_workspace("Work", true);
+    spaces.rules_mut(&work).unwrap().monitors = dock.clone();
+    spaces.rules_mut(&work).unwrap().desktops = vec![desktops[0].id.clone()];
+    let games = spaces.add_workspace("Games", false);
+    spaces.rules_mut(&games).unwrap().desktops = vec![desktops[1].id.clone()];
 
     let states: Vec<(&str, Vec<&str>, (f32, f32))> = vec![
         ("setup_1", vec![], (1180.0, 780.0)),
@@ -92,6 +104,9 @@ fn main() {
         ("setup_4", vec!["ob:next", "ob:next", "ob:next"], (1180.0, 780.0)),
         ("widgets_gallery", vec!["gallery:open"], (1180.0, 780.0)),
         ("widgets_gallery_narrow", vec!["gallery:open", "cat:Launchers"], (860.0, 560.0)),
+        ("widgets_gallery_photos", vec!["gallery:open", "cat:Photos"], (1180.0, 780.0)),
+        ("widgets_media", vec!["sel:media_controller-1"], (1180.0, 780.0)),
+        ("widgets_frame", vec!["sel:photo_frame-1"], (1180.0, 780.0)),
         ("widgets_folder", vec!["sel:icon_folder-1"], (1180.0, 780.0)),
         ("widgets_monitor", vec!["sel:system_monitor-1"], (1180.0, 780.0)),
         ("widgets_monitor_large", vec!["sel:system_monitor-1", "tier:large"], (1180.0, 780.0)),
@@ -102,11 +117,13 @@ fn main() {
         ("general", vec!["nav:general"], (1180.0, 780.0)),
         ("plugins", vec!["nav:plugins"], (1180.0, 780.0)),
         ("log", vec!["nav:log"], (1180.0, 780.0)),
+        ("workspaces", vec!["nav:workspaces"], (1180.0, 780.0)),
     ];
     for (name, acts, size) in states {
-        let ws = if name.starts_with("setup") { &fresh } else { &ws };
+        let ws = if name.starts_with("setup") { &fresh } else if name == "workspaces" { &spaces } else { &ws };
+        let (desks, desk, setup): (&[wayfinder::platform::vdesk::Desktop], Option<&str>, &[MonitorRef]) = if name == "workspaces" { (&desktops, Some(desktops[1].id.as_str()), &dock) } else { (&[], None, &[]) };
         let theme = ws.global_theme(&lib);
-        let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources, calendar: &wayfinder::ambient::FixedCalendar::default() };
+        let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources, calendar: &wayfinder::ambient::FixedCalendar::default(), desktops: desks, desktop: desk, setup };
         let mut ui = UiState::default();
         for a in acts {
             let _ = ui.act(a, &ctx, &mut wayfinder::native::Headless);

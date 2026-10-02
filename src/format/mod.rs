@@ -682,9 +682,10 @@ impl<'a> TreeBuilder<'a> {
         }
     }
 
+    /// `nil` leaves it out, as if it were not set: `area = "{on ? '$accent' : nil}"`.
     fn color(&mut self, e: &Elem, k: &str, path: &str) -> Result<Option<Color>, String> {
         let ctx = format!("{path}.{k}");
-        Ok(self.get(e, k, path)?.map(|v| self.color_of(&v, &ctx)))
+        Ok(self.get(e, k, path)?.filter(|v| *v != Value::Nil).map(|v| self.color_of(&v, &ctx)))
     }
 
     fn dimension(v: &Value) -> Option<Dimension> {
@@ -1172,7 +1173,7 @@ mod tests {
             assert!(k.own_attrs.iter().all(|a| !COMMON_ATTRS.contains(a)), "`{}` redeclares a common attribute", k.name);
         }
         let e = WidgetDef::parse("t", "[root]\ntype='nope'").unwrap_err();
-        assert!(e.contains("box, text, image, hand, ticks, arc, graph, repeat, slot"), "{e}");
+        assert!(e.contains("box, text, image, hand, ticks, arc, graph, block, repeat, slot"), "{e}");
         assert!(WidgetDef::parse("t", "[root]\ntype='arc'\nsweep=90\nvalue=50").is_ok());
         let e = WidgetDef::parse("t", "[root]\ntype='arc'\nangle=90").unwrap_err();
         assert!(e.contains("unknown attribute `angle` on `arc`"), "an attribute of another kind is rejected: {e}");

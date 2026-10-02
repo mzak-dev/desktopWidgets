@@ -56,6 +56,11 @@ pub struct Ctx<'a> {
     pub data: &'a crate::data::DataSources,
     /// The time the previews show.
     pub calendar: &'a dyn crate::ambient::Calendar,
+    /// Windows' virtual desktops, and the one on screen, when it says (ADR-0011).
+    pub desktops: &'a [crate::platform::vdesk::Desktop],
+    pub desktop: Option<&'a str>,
+    /// The monitors connected now.
+    pub setup: &'a [crate::workspace::MonitorRef],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -134,6 +139,7 @@ fn classify(line: &str) -> (Level, &str, &str) {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cmd {
+    Ws(WsCmd),
     Add(String),
     Remove(String),
     Param(String, String, Value),
@@ -171,6 +177,20 @@ pub enum Cmd {
     Restart,
     Close,
     Minimize,
+}
+
+/// What the Workspaces page asks for, by Workspace name.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WsCmd {
+    Switch(String),
+    /// A new one: empty, or a copy of the one on screen.
+    Add { copy: bool },
+    Rename(String, String),
+    Delete(String),
+    /// Tie (`true`) or untie a Workspace and a virtual desktop, by its id.
+    Desktop(String, String, bool),
+    /// Tie a Workspace to the monitors connected now (`true`), or untie it.
+    Monitors(String, bool),
 }
 
 /// Where a Style change lands: the Workspace or one Instance (`*` or its id in action keys).
@@ -222,6 +242,7 @@ fn capitalized(s: &str) -> String {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
     Widgets,
+    Workspaces,
     Appearance,
     Plugins,
     General,
@@ -229,11 +250,12 @@ pub enum Page {
 }
 
 impl Page {
-    const ALL: [Page; 5] = [Page::Widgets, Page::Appearance, Page::Plugins, Page::General, Page::Log];
+    const ALL: [Page; 6] = [Page::Widgets, Page::Workspaces, Page::Appearance, Page::Plugins, Page::General, Page::Log];
 
     fn id(self) -> &'static str {
         match self {
             Page::Widgets => "widgets",
+            Page::Workspaces => "workspaces",
             Page::Appearance => "appearance",
             Page::Plugins => "plugins",
             Page::General => "general",
@@ -243,6 +265,7 @@ impl Page {
     fn title(self) -> &'static str {
         match self {
             Page::Widgets => "Widgets",
+            Page::Workspaces => "Workspaces",
             Page::Appearance => "Appearance",
             Page::Plugins => "Plugins",
             Page::General => "General",
@@ -259,6 +282,7 @@ impl Page {
     fn subtitle(self) -> &'static str {
         match self {
             Page::Widgets => "Pick a widget to configure it. Changes show on your desktop right away.",
+            Page::Workspaces => "Sets of widgets, each in its own look. Tie one to a virtual desktop or to the monitors you dock with, and it comes up by itself.",
             Page::Appearance => "Colours, fonts and icons — applied to every widget at once.",
             Page::Plugins => "Widgets, palettes, fonts and icons made by others.",
             Page::General => "Graphics, startup and behaviour.",
@@ -268,6 +292,7 @@ impl Page {
     fn glyph(self) -> &'static str {
         match self {
             Page::Widgets => "widgets",
+            Page::Workspaces => "display",
             Page::Appearance => "palette",
             Page::Plugins => "plugin",
             Page::General => "sliders",
@@ -303,7 +328,7 @@ const CONTROL_W: f32 = 250.0;
 /// Amber, for what works but not as it should; no palette has a token for it.
 const WARN: Color = Color([0.95, 0.77, 0.38, 1.0]);
 /// Where Add a widget lists a category; unknown ones follow in name order.
-const CATEGORIES: [&str; 4] = ["Time", "System", "Media", "Launchers"];
+const CATEGORIES: [&str; 6] = ["Time", "System", "Media", "Photos", "Launchers", "Developer"];
 const SV_N: usize = 14;
 const HUE_N: usize = 28;
 
@@ -1055,6 +1080,9 @@ impl UiState {
         if let Some(t) = key.strip_prefix("hx:") {
             return self.color_of_target(ctx, t).to_hex();
         }
+        if let Some(w) = key.strip_prefix("wsn:").and_then(|i| i.parse::<usize>().ok()).and_then(|i| ctx.ws.workspaces.get(i)) {
+            return w.name.clone();
+        }
         if let Some(rest) = key.strip_prefix("n:") {
             if let Some((id, name)) = rest.split_once(':') {
                 return ctx.ws.instances.iter().find(|c| c.id == id).and_then(|c| c.params.get(name)).map(|v| Value::from(v).to_string()).unwrap_or_default();
@@ -1081,6 +1109,9 @@ impl UiState {
         }
         if let Some((id, name)) = key.strip_prefix("n:").and_then(|r| r.split_once(':')) {
             return vec![Cmd::Param(id.into(), name.into(), Value::Str(text.into()))];
+        }
+        if let Some(w) = key.strip_prefix("wsn:").and_then(|i| i.parse::<usize>().ok()).and_then(|i| ctx.ws.workspaces.get(i)) {
+            return vec![Cmd::Ws(WsCmd::Rename(w.name.clone(), text.into()))];
         }
         for (prefix, name_field) in [("sn:", true), ("st:", false)] {
             if let Some((id, idx)) = key.strip_prefix(prefix).and_then(|r| r.split_once(':')) {
@@ -1111,6 +1142,7 @@ impl UiState {
         if ctx.ws.onboarded {
             let body = match self.page {
                 Page::Widgets => self.page_widgets(&k, ctx, size, &mut images),
+                Page::Workspaces => self.page_workspaces(&k, ctx, size),
                 Page::Appearance => self.page_appearance(&k, ctx, size),
                 Page::Plugins => self.page_plugins(&k, ctx, size),
                 Page::General => self.page_general(&k, ctx, size),
@@ -1679,6 +1711,86 @@ impl UiState {
         col
     }
 
+    fn page_workspaces(&self, k: &Kit, ctx: &Ctx, size: (f32, f32)) -> Node {
+        let actions = Node::new("ws/acts").row().gap(8.0).child(k.btn("ws/dup", Some("copy"), "Duplicate this one", "wsadd:copy".into(), Btn::Outline)).child(k.btn("ws/new", Some("add"), "New workspace", "wsadd:new".into(), Btn::Primary));
+        // where this PC is now, which is what a rule ties a Workspace to
+        let here = |key: &str, glyph: &str, text: &str| Node::new(format!("ws/now/{key}")).row().h(30.0).pad_xy(10.0, 0.0).gap(8.0).align(taffy::AlignItems::CENTER).radius(8.0).fill(k.ink(0.04)).child(k.glyph(format!("ws/now/{key}/g"), glyph, 12.0, k.c("text-dim"))).child(k.txt(format!("ws/now/{key}/t"), text, 12.5, k.c("text")));
+        let desk = match ctx.desktop {
+            Some(id) => format!("On {}", desktop_label(ctx, id)),
+            None => "One desktop (Windows lists no virtual desktops)".to_string(),
+        };
+        let now = Node::new("ws/now").row().wrap().gap(8.0).align(taffy::AlignItems::CENTER).child(k.txt("ws/now/l".into(), "Now:", 12.5, k.c("text-dim"))).child(here("d", "widgets", &desk)).child(here("m", "display", &setup_label(ctx.setup)));
+        let mut list = Node::new("ws/list").col().gap(14.0);
+        for (i, w) in ctx.ws.workspaces.iter().enumerate() {
+            list = list.child(self.workspace_card(k, ctx, i, w));
+        }
+        let body = Node::new("ws").col().gap(22.0).child(k.page_head("ws/head", Page::Workspaces.heading(), Page::Workspaces.subtitle(), Some(actions))).child(now).child(list);
+        self.page("ws/scroll", content_w(size, 820.0), body)
+    }
+
+    fn workspace_card(&self, k: &Kit, ctx: &Ctx, i: usize, w: &crate::workspace::Saved) -> Node {
+        let key = format!("ws/w/{i}");
+        let (accent, dim) = (k.c("accent"), k.c("text-dim"));
+        let on = w.name == ctx.ws.active;
+        let confirm = self.confirm_del.as_deref() == Some(format!("ws/{}", w.name).as_str());
+        let (count, palette) = if on { (ctx.ws.instances.len(), ctx.ws.theme.palette.clone()) } else { (w.instances.len(), w.theme.as_ref().map_or_else(|| ctx.ws.theme.palette.clone(), |t| t.palette.clone())) };
+        let nk = format!("wsn:{i}");
+        let f = self.focus.as_ref().filter(|f| f.key == nk).map(|f| (f.caret, self.caret_on));
+        let mut name = Node::new(format!("{key}/nm")).row().gap(10.0).align(taffy::AlignItems::CENTER).child(k.input(&nk, &self.input_text(ctx, &nk), "Name", f, 240.0, false));
+        if on {
+            name = name.child(k.tag(format!("{key}/on"), "On screen", false));
+        }
+        let info = Node::new(format!("{key}/info"))
+            .col()
+            .grow(1.0)
+            .min_w(0.0)
+            .gap(6.0)
+            .child(name)
+            .child(k.txt(format!("{key}/sub"), &format!("{count} widget{} · {palette}", if count == 1 { "" } else { "s" }), 12.5, dim));
+        let mut buttons = Node::new(format!("{key}/b")).row().no_shrink().gap(8.0).align(taffy::AlignItems::CENTER);
+        if !on {
+            buttons = buttons.child(k.btn(&format!("{key}/go"), None, "Show", format!("wsgo:{i}"), Btn::Primary));
+        }
+        if ctx.ws.workspaces.len() > 1 {
+            buttons = buttons.child(if confirm { k.btn(&format!("{key}/del"), Some("delete"), "Remove it and its widgets", format!("wsdel:{i}"), Btn::DangerFill) } else { k.btn(&format!("{key}/del"), Some("delete"), "Remove", format!("wsdel:{i}"), Btn::Outline) });
+        }
+        let head = Node::new(format!("{key}/h")).row().gap(16.0).align(taffy::AlignItems::CENTER).pad(20.0).child(k.tile(format!("{key}/ic"), "display", 44.0, if on { accent } else { dim })).child(info).child(buttons);
+
+        // what brings it up by itself
+        let chip = |ck: String, text: &str, undo: Option<String>| {
+            let mut c = Node::new(ck.clone()).row().h(30.0).pad_xy(10.0, 0.0).gap(8.0).align(taffy::AlignItems::CENTER).radius(8.0).fill(k.ink(0.03)).border(1.0, k.line()).child(k.txt(format!("{ck}/t"), text, 12.5, k.c("text")));
+            if let Some(a) = undo {
+                c = c.child(Node::new(format!("{ck}/x")).wh(18.0, 18.0).radius(9.0).center().hover_fill(k.ink(0.08)).ease(120).on(a).child(k.glyph(format!("{ck}/x/g"), "close", 9.0, dim)));
+            }
+            c
+        };
+        let mut desks = Node::new(format!("{key}/d/c")).row().wrap().gap(8.0).justify(taffy::JustifyContent::FLEX_END);
+        for d in &w.rules.desktops {
+            desks = desks.child(chip(format!("{key}/d/{d}"), &desktop_label(ctx, d), Some(format!("wsundesk:{i}|{d}"))));
+        }
+        match ctx.desktop {
+            Some(cur) if !w.rules.desktops.iter().any(|d| d.eq_ignore_ascii_case(cur)) => desks = desks.child(k.btn(&format!("{key}/d/add"), Some("add"), &format!("Add {}", desktop_label(ctx, cur)), format!("wsdesk:{i}"), Btn::Outline)),
+            None if w.rules.desktops.is_empty() => desks = desks.child(k.txt(format!("{key}/d/none"), "Make a second desktop with Win+Ctrl+D to use this.", 12.5, dim)),
+            _ => {}
+        }
+        let mons = if w.rules.monitors.is_empty() {
+            Node::new(format!("{key}/m/c")).row().justify(taffy::JustifyContent::FLEX_END).child(k.btn(&format!("{key}/m/add"), Some("display"), "Use with the monitors connected now", format!("wsmon:{i}"), Btn::Outline))
+        } else {
+            let fit = match crate::workspace::setup_fit(&w.rules.monitors, ctx.setup) {
+                crate::workspace::SetupFit::No => "",
+                _ => "  ·  connected now",
+            };
+            Node::new(format!("{key}/m/c")).row().justify(taffy::JustifyContent::FLEX_END).child(chip(format!("{key}/m/s"), &format!("{}{fit}", setup_label(&w.rules.monitors)), Some(format!("wsunmon:{i}"))))
+        };
+        let rules = Node::new(format!("{key}/r"))
+            .col()
+            .pad_xy(20.0, 6.0)
+            .child(k.row(&format!("{key}/rd"), "On virtual desktops", "Going to one of these desktops brings this up.", desks))
+            .child(k.row(&format!("{key}/rm"), "With a monitor setup", "Connecting these monitors brings this up, like docking a laptop.", mons));
+        let hr = Node::new(format!("{key}/hr")).h(1.0).no_shrink().fill(k.line());
+        Node::new(key.clone()).col().radius(14.0).fill(k.panel()).border(1.0, if confirm { k.c("danger") } else if on { accent.with_alpha(0.5) } else { k.line() }).clip().ease(150).enter(220, 6.0, (i as u32).min(8) * 30).child(head).child(hr).child(rules)
+    }
+
     fn page_appearance(&self, k: &Kit, ctx: &Ctx, size: (f32, f32)) -> Node {
         let cw = content_w(size, 1040.0);
         let side = cw >= 860.0;
@@ -1697,7 +1809,7 @@ impl UiState {
             "Typography & icons",
             vec![
                 k.row("ap/fonts", "Font set", "Body, display and monospace faces", k.dropdown("th:fonts", &ctx.ws.theme.fonts, CONTROL_W, f("th:fonts"))),
-                k.row_with("ap/glyphs-row", k.bold("ap/glyphs-row/lt".into(), "Glyph set", 13.5, k.c("text")), "", Some(gl), k.dropdown("th:glyphs", &ctx.ws.theme.glyphs, CONTROL_W, f("th:glyphs"))),
+                k.row_with("ap/glyphs-row", k.bold("ap/glyphs-row/lt".into(), "Glyph set", 13.5, k.c("text")), if ctx.lib.glyph_stand_in(&ctx.ws.theme.glyphs).is_some() { "Segoe Fluent Icons is not installed, so these are MDL2's." } else { "" }, Some(gl), k.dropdown("th:glyphs", &ctx.ws.theme.glyphs, CONTROL_W, f("th:glyphs"))),
                 k.row_with("ap/pack", k.bold("ap/pack/lt".into(), "App icon pack", 13.5, k.c("text")), "Replaces icons in Drawer and Icon List.", Some(k.link("ap/pack/open", "Open icon packs folder", "openpacks".into())), k.dropdown("th:pack", &ctx.ws.theme.icon_pack, CONTROL_W, f("th:pack"))),
             ],
         );
@@ -2326,6 +2438,25 @@ fn dd_max_scroll(n: usize) -> f32 {
 const PREVIEW_W: f32 = 290.0;
 
 /// The width a page's column gets in a window `size` wide.
+/// A virtual desktop's name as Task View shows it, or that it is gone.
+fn desktop_label(ctx: &Ctx, id: &str) -> String {
+    match ctx.desktops.iter().find(|d| d.id.eq_ignore_ascii_case(id)) {
+        Some(d) => d.name.clone(),
+        None if ctx.desktop.is_some_and(|c| c.eq_ignore_ascii_case(id)) => "this desktop".into(),
+        None => "a removed desktop".into(),
+    }
+}
+
+/// "2 monitors: 2560×1440, 1920×1080".
+fn setup_label(setup: &[crate::workspace::MonitorRef]) -> String {
+    let sizes: Vec<String> = setup.iter().map(|m| format!("{}×{}", m.width, m.height)).collect();
+    match setup.len() {
+        0 => "No monitors".into(),
+        1 => format!("1 monitor: {}", sizes[0]),
+        n => format!("{n} monitors: {}", sizes.join(", ")),
+    }
+}
+
 fn content_w(size: (f32, f32), max_w: f32) -> f32 {
     (size.0 - 2.0 * PAGE_PAD).min(max_w)
 }
@@ -2511,7 +2642,7 @@ impl UiState {
     /// `native` asks the user for files, folders and clipboard text.
     pub fn act(&mut self, a: &str, ctx: &Ctx, native: &mut dyn Native) -> Vec<Cmd> {
         let (verb, rest) = a.split_once(':').unwrap_or((a, ""));
-        if verb != "del" && verb != "prm" {
+        if verb != "del" && verb != "prm" && verb != "wsdel" {
             self.confirm_del = None;
         }
         if !matches!(verb, "in" | "sl" | "cpsv" | "cph" | "cpset" | "pick" | "popup-close" | "drag") {
@@ -2689,6 +2820,28 @@ impl UiState {
                 cmds
             }
             "pon" => ctx.plugins.iter().find(|r| r.id == rest).map(|r| vec![Cmd::PluginEnabled(rest.into(), !r.enabled)]).unwrap_or_default(),
+            "wsadd" => vec![Cmd::Ws(WsCmd::Add { copy: rest == "copy" })],
+            "wsgo" | "wsdel" | "wsdesk" | "wsundesk" | "wsmon" | "wsunmon" => {
+                let (i, extra) = rest.split_once('|').unwrap_or((rest, ""));
+                let Some(name) = i.parse::<usize>().ok().and_then(|i| ctx.ws.workspaces.get(i)).map(|w| w.name.clone()) else { return vec![] };
+                match verb {
+                    "wsgo" => vec![Cmd::Ws(WsCmd::Switch(name))],
+                    "wsdel" => {
+                        let armed = format!("ws/{name}");
+                        if self.confirm_del.as_deref() == Some(armed.as_str()) {
+                            self.confirm_del = None;
+                            vec![Cmd::Ws(WsCmd::Delete(name))]
+                        } else {
+                            self.confirm_del = Some(armed);
+                            vec![]
+                        }
+                    }
+                    "wsdesk" => ctx.desktop.map(|d| vec![Cmd::Ws(WsCmd::Desktop(name, d.into(), true))]).unwrap_or_default(),
+                    "wsundesk" => vec![Cmd::Ws(WsCmd::Desktop(name, extra.into(), false))],
+                    "wsmon" => vec![Cmd::Ws(WsCmd::Monitors(name, true))],
+                    _ => vec![Cmd::Ws(WsCmd::Monitors(name, false))],
+                }
+            }
             "prm" => {
                 let armed = format!("plugin/{rest}");
                 if self.confirm_del.as_deref() == Some(armed.as_str()) {
@@ -3236,6 +3389,15 @@ impl SettingsWin {
         self.redraw = true;
     }
 
+    /// Another Workspace came up: its widgets are not the ones selected, armed or being typed in.
+    pub fn workspace_changed(&mut self) {
+        self.ui.selected = None;
+        self.ui.confirm_del = None;
+        self.ui.focus = None;
+        self.ui.sel_module = None;
+        self.redraw = true;
+    }
+
     /// Shows a page by its id (`plugins`...).
     pub fn show_page(&mut self, id: &str) {
         self.ui.page = Page::parse(id);
@@ -3507,7 +3669,7 @@ mod tests {
     }
 
     fn ctx(w: &World) -> Ctx<'_> {
-        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me, data: &w.data, calendar: &w.calendar }
+        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me, data: &w.data, calendar: &w.calendar, desktops: &[], desktop: None, setup: &[] }
     }
 
     #[test]
@@ -3527,16 +3689,46 @@ mod tests {
     }
 
     #[test]
+    fn the_workspaces_page_shows_switches_removes_renames_and_ties_rules() {
+        let mut w = world();
+        w.ws.add_workspace("Work", false);
+        let mut ui = UiState::default();
+        ui.page = Page::Workspaces;
+        let desks = [crate::platform::vdesk::Desktop { id: "{A}".into(), name: "Desktop 2".into() }];
+        let setup = [crate::workspace::MonitorRef { name: "\\\\.\\DISPLAY1".into(), width: 2560, height: 1440 }];
+        let c = Ctx { desktops: &desks, desktop: Some("{A}"), setup: &setup, ..ctx(&w) };
+        let root = ui.build(&c, WIN).0;
+        assert!(find_node(&root, "ws/w/1/go").is_some() && !find_node(&root, "ws/w/0/go").is_some(), "only one not on screen can be shown");
+        assert!(find_node(&root, "ws/w/0/d/add").is_some() && find_node(&root, "ws/w/0/m/add").is_some());
+        assert_eq!(ui.act("wsgo:1", &c, &mut Headless), [Cmd::Ws(WsCmd::Switch("Work".into()))]);
+        assert!(ui.act("wsdel:1", &c, &mut Headless).is_empty(), "the first click arms it");
+        assert_eq!(ui.act("wsdel:1", &c, &mut Headless), [Cmd::Ws(WsCmd::Delete("Work".into()))]);
+        assert_eq!(ui.act("wsdesk:1", &c, &mut Headless), [Cmd::Ws(WsCmd::Desktop("Work".into(), "{A}".into(), true))]);
+        assert!(ui.act("wsdesk:1", &ctx(&w), &mut Headless).is_empty(), "no virtual desktop known: nothing to tie");
+        assert_eq!(ui.act("wsundesk:1|{B}", &c, &mut Headless), [Cmd::Ws(WsCmd::Desktop("Work".into(), "{B}".into(), false))]);
+        assert_eq!(ui.act("wsmon:0", &c, &mut Headless), [Cmd::Ws(WsCmd::Monitors("Main".into(), true))]);
+        assert_eq!(ui.act("wsadd:copy", &c, &mut Headless), [Cmd::Ws(WsCmd::Add { copy: true })]);
+        assert_eq!(ui.input_text(&c, "wsn:0"), "Main");
+        assert_eq!(ui.commit_text(&c, "wsn:1", " Home "), [Cmd::Ws(WsCmd::Rename("Work".into(), " Home ".into()))]);
+        assert!(ui.act("wsgo:7", &c, &mut Headless).is_empty());
+        w.ws.rules_mut("Work").unwrap().desktops.push("{GONE}".into());
+        let c = Ctx { desktops: &desks, desktop: Some("{A}"), setup: &setup, ..ctx(&w) };
+        let root = ui.build(&c, WIN).0;
+        let t = find_node(&root, "ws/w/1/d/{GONE}/t").expect("a chip for it");
+        assert!(matches!(&t.kind, crate::ui::Kind::Text(x) if x.text == "a removed desktop"), "a desktop that went away says so");
+    }
+
+    #[test]
     fn a_widget_missing_a_data_source_says_so() {
         let dir = std::env::temp_dir().join(format!("wf-settings-needs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("agents.toml"), "name = 'Agents'\nneeds = ['agents', 'clock']\n[root]\ntype = 'box'").unwrap();
+        std::fs::write(dir.join("notes.toml"), "name = 'Notes'\nneeds = ['notes', 'clock']\n[root]\ntype = 'box'").unwrap();
         let mut w = world();
         w.reg.load_dir(&dir);
         let s = UiState::default();
-        assert_eq!(s.needs_note(&ctx(&w), "agents").as_deref(), Some("  ·  needs agents"));
-        w.sources.push("agents".into());
-        assert_eq!(s.needs_note(&ctx(&w), "agents"), None);
+        assert_eq!(s.needs_note(&ctx(&w), "notes").as_deref(), Some("  ·  needs notes"));
+        w.sources.push("notes".into());
+        assert_eq!(s.needs_note(&ctx(&w), "notes"), None);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3957,7 +4149,7 @@ mod tests {
     fn add_a_widget_shows_each_widget_live_or_its_icon_when_it_cannot_run() {
         let dir = std::env::temp_dir().join(format!("wf-settings-gallery-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("agents.toml"), "name = 'Agents'\nneeds = ['agents']\n[root]\ntype = 'box'").unwrap();
+        std::fs::write(dir.join("notes.toml"), "name = 'Notes'\nneeds = ['notes']\n[root]\ntype = 'box'").unwrap();
         let mut w = world();
         w.reg.load_dir(&dir);
         let mut ui = UiState::default();
@@ -3969,8 +4161,8 @@ mod tests {
             n.action.is_some() || n.children.iter().any(clickable)
         }
         assert!(!clickable(clock), "a preview takes no clicks");
-        let agents = find_node(&root, "w/g/grid/c/agents/top").unwrap();
-        assert!(find_node(agents, "w/g/grid/c/agents/pv").is_none() && find_node(agents, "w/g/grid/c/agents/ic").is_some(), "no `agents` source: its icon");
+        let notes = find_node(&root, "w/g/grid/c/notes/top").unwrap();
+        assert!(find_node(notes, "w/g/grid/c/notes/pv").is_none() && find_node(notes, "w/g/grid/c/notes/ic").is_some(), "no `notes` source: its icon");
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -4016,7 +4208,7 @@ mod tests {
         assert!(cards(&ui).is_empty(), "a selected widget's panel, not the gallery");
         ui.act("gallery:open", &c, &mut Headless);
         assert_eq!(cards(&ui).len(), w.reg.ids().len());
-        assert_eq!(&cards(&ui)[..2], ["clock", "digital_clock"], "Time comes first");
+        assert_eq!(&cards(&ui)[..3], ["clock", "calendar", "digital_clock"], "Time comes first, by name");
         ui.act("cat:Launchers", &c, &mut Headless);
         assert_eq!(cards(&ui), ["drawer", "icon_folder", "icon_list"]);
         ui.act("cat:", &c, &mut Headless);

@@ -1,0 +1,682 @@
+needs = ["audio"]
+name = "Audio Visualizer"
+description = "Whatever your PC is playing, live: a spectrum as bars, 3D bars, mirrored bars, a line or an area with falling peak markers, a 3D waterfall of the last second or so, an oscilloscope of the waveform, or a level meter. Small, it is only the picture; wider, a frequency or time scale under it; large, a header with the level and bass. It dims while nothing plays."
+category = "Media"
+icon = "audio"
+size = [340, 160]
+min_size = [100, 48]
+max_size = [1000, 500]
+
+[params.mode]
+group = "Look"
+type = "enum"
+choices = [{ value = "bars", label = "Bars" }, { value = "bars3d", label = "3D bars" }, { value = "waterfall", label = "3D waterfall" }, { value = "mirror", label = "Mirrored bars" }, { value = "line", label = "Line" }, { value = "area", label = "Filled area" }, { value = "scope", label = "Oscilloscope" }, { value = "level", label = "Level meter" }]
+default = "bars"
+label = "Style"
+
+[params.bands]
+group = "Audio"
+type = "number"
+default = 32
+min = 8
+max = 96
+step = 4
+label = "Bands"
+help = "How many bars / points across."
+
+[params.gap]
+group = "Look"
+type = "number"
+default = 3
+min = 0
+max = 12
+step = 1
+label = "Bar gap"
+
+[params.corner]
+group = "Look"
+type = "number"
+default = 3
+min = 0
+max = 20
+step = 1
+label = "Bar roundness"
+
+[params.min_bar]
+group = "Look"
+type = "number"
+default = 3
+min = 0
+max = 20
+step = 1
+label = "Resting bar height"
+help = "Bars never shrink below this, so silence still draws a baseline."
+
+[params.depth]
+group = "Look"
+type = "number"
+default = 6
+min = 2
+max = 16
+step = 1
+label = "3D depth"
+help = "How far back the 3D bars reach, in pixels."
+
+[params.color_high]
+group = "Look"
+type = "color"
+default = "$accent"
+label = "Top colour"
+
+[params.color_low]
+group = "Look"
+type = "color"
+default = "#b57bff"
+label = "Bottom colour"
+help = "Each bar fades from the top colour to this."
+
+[params.peaks]
+group = "Motion"
+type = "bool"
+default = true
+label = "Peak markers"
+help = "A thin mark that holds each band's highest point and falls back slowly."
+
+[params.peak_color]
+group = "Motion"
+type = "color"
+default = "$text"
+label = "Peak colour"
+
+[params.peak_fall]
+group = "Motion"
+type = "number"
+default = 0.5
+min = 0.1
+max = 3
+step = 0.1
+label = "Peak fall speed"
+
+[params.gain]
+group = "Audio"
+type = "number"
+default = 1.1
+min = 0.3
+max = 3
+step = 0.05
+label = "Sensitivity"
+
+[params.attack]
+group = "Motion"
+type = "number"
+default = 30
+min = 5
+max = 80
+step = 1
+label = "Rise speed"
+
+[params.release]
+group = "Motion"
+type = "number"
+default = 7
+min = 1
+max = 40
+step = 1
+label = "Fall speed"
+
+[params.fmin]
+group = "Audio"
+type = "number"
+default = 40
+min = 20
+max = 500
+step = 10
+label = "Lowest frequency (Hz)"
+
+[params.fmax]
+group = "Audio"
+type = "number"
+default = 16000
+min = 2000
+max = 20000
+step = 500
+label = "Highest frequency (Hz)"
+
+[params.timebase]
+group = "Audio"
+type = "number"
+default = 20
+min = 5
+max = 40
+step = 1
+label = "Oscilloscope sweep (ms)"
+help = "How much sound one trace shows: shorter shows single waves, longer more of the beat. It always starts where the wave rises through zero, so a steady tone stands still."
+
+[params.grid]
+group = "Look"
+type = "bool"
+default = true
+label = "Oscilloscope grid"
+
+[params.pulse]
+group = "Look"
+type = "bool"
+default = false
+label = "Pulse border with bass"
+
+[params.background]
+group = "Look"
+type = "bool"
+default = true
+label = "Card background"
+
+[params.stroke]
+group = "Look"
+type = "number"
+default = 2.5
+min = 1
+max = 8
+step = 0.5
+label = "Line thickness"
+
+[params.idle_opacity]
+group = "Look"
+type = "number"
+default = 0.5
+min = 0
+max = 1
+step = 0.05
+label = "Opacity while silent"
+help = "1 keeps it as it is; 0 hides it until something plays."
+
+# Sizes, as on macOS, with the same breakpoints in every media, photo and agent widget:
+#   row     under 100 high              the picture, nothing else
+#   small   under 260 wide and high     the picture
+#   medium  260+ wide, from 160 high    a frequency (or, for the oscilloscope, time) scale under it
+#   large   260+ wide and high          a header with the level and the bass
+# Narrow, it draws every second (or third) band, so each bar keeps about 7 px.
+# The bars' full height is the card's less its padding, the scale and the header:
+#   (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0))
+[root]
+direction = "column"
+fill = "{param.background ? '$surface' : '#00000000'}"
+radius = "$radius-lg"
+border = "{param.background ? (param.pulse ? 1 + audio.bass * 3 : 1) : 0}"
+border_color = "{param.pulse ? '$accent' : '$border'}"
+padding = "{self.h < 100 ? 10 : 16}"
+gap = 0
+clip = true
+opacity = "{audio.active ? 1 : param.idle_opacity}"
+transition = 600
+
+  # ---- large: what it is, and how loud ----
+  [[root.children]]
+  when = "{self.h >= 260 && self.w >= 260 && param.mode != 'level'}"
+  height = 34
+  shrink = 0
+  direction = "row"
+  align = "start"
+  gap = 14
+    [[root.children.children]]
+    grow = 1
+    type = "text"
+    text = "{param.mode == 'scope' ? 'Waveform' : 'Spectrum'}"
+    size = 11
+    weight = 600
+    color = "$accent"
+    [[root.children.children]]
+    direction = "row"
+    align = "center"
+    gap = 6
+      [[root.children.children.children]]
+      type = "text"
+      text = "Level"
+      size = 10
+      color = "$text-dim"
+      [[root.children.children.children]]
+      width = 44
+      height = 4
+      radius = 99
+      fill = "$track"
+        [[root.children.children.children.children]]
+        position = "absolute"
+        left = 0
+        top = 0
+        width = "{max(0, min(1, audio.level)) * 100}%"
+        height = "100%"
+        radius = 99
+        fill = "{param.color_high}"
+    [[root.children.children]]
+    direction = "row"
+    align = "center"
+    gap = 6
+      [[root.children.children.children]]
+      type = "text"
+      text = "Bass"
+      size = 10
+      color = "$text-dim"
+      [[root.children.children.children]]
+      width = 44
+      height = 4
+      radius = 99
+      fill = "$track"
+        [[root.children.children.children.children]]
+        position = "absolute"
+        left = 0
+        top = 0
+        width = "{max(0, min(1, audio.bass)) * 100}%"
+        height = "100%"
+        radius = 99
+        fill = "{param.color_low}"
+
+  # ---- the picture ----
+  [[root.children]]
+  grow = 1
+  min_height = 0
+  direction = "column"
+
+    # bars: bottom-aligned, each with its peak above it
+    [[root.children.children]]
+    when = "{param.mode == 'bars'}"
+    grow = 1
+    direction = "row"
+    align = "stretch"
+    gap = "{param.gap}"
+      [[root.children.children.children]]
+      type = "repeat"
+      for = "{audio.bands}"
+      as = "v"
+        [[root.children.children.children.children]]
+        grow = 1
+        when = "{index % max(1, ceil(len(audio.bands) * 7 / max(1, self.w - 2 * (self.h < 100 ? 10 : 16)))) == 0}"
+        direction = "column"
+        justify = "end"
+          [[root.children.children.children.children.children]]
+          height = "{max(param.min_bar, v * (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)))}"
+          radius = "{param.corner}"
+          fill = ["{param.color_high}", "{param.color_low}"]
+          [[root.children.children.children.children.children]]
+          when = "{param.peaks}"
+          position = "absolute"
+          left = 0
+          right = 0
+          bottom = "{min(max(param.min_bar, at(audio.peaks, index) * (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0))), (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) - 2)}"
+          height = 2
+          radius = 1
+          fill = "{param.peak_color}"
+
+    # 3D bars: blocks seen from the front, a little from above and the left, with a lit top
+    # and a shaded side reaching depth px back; so a front is depth px shorter than a flat
+    # bar. Each block reaches over the gap to its right, where the next one, drawn later,
+    # hides its side. Peaks are thin lids floating over them.
+    [[root.children.children]]
+    when = "{param.mode == 'bars3d'}"
+    grow = 1
+    direction = "row"
+    align = "stretch"
+    gap = "{param.gap}"
+    padding = [0, "{param.depth}", 0, 0]
+      [[root.children.children.children]]
+      type = "repeat"
+      for = "{audio.bands}"
+      as = "v"
+        [[root.children.children.children.children]]
+        grow = 1
+        when = "{index % max(1, ceil(len(audio.bands) * 7 / max(1, self.w - 2 * (self.h < 100 ? 10 : 16)))) == 0}"
+          [[root.children.children.children.children.children]]
+          type = "block"
+          left = 0
+          right = "{-param.depth}"
+          bottom = 0
+          height = "{max(param.min_bar, v * max(0, (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) - param.depth)) + param.depth}"
+          depth = "{param.depth}"
+          color = "{param.color_high}"
+          color_bottom = "{param.color_low}"
+          [[root.children.children.children.children.children]]
+          when = "{param.peaks}"
+          type = "block"
+          left = 0
+          right = "{-param.depth}"
+          bottom = "{min(max(param.min_bar, at(audio.peaks, index) * max(0, (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) - param.depth)), max(0, (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) - param.depth) - 2)}"
+          height = "{2 + param.depth}"
+          depth = "{param.depth}"
+          color = "{param.peak_color}"
+          opacity = 0.75
+
+    # mirror: bars grow both ways from the centre line, peaks above and below
+    [[root.children.children]]
+    when = "{param.mode == 'mirror'}"
+    grow = 1
+    direction = "row"
+    align = "stretch"
+    gap = "{param.gap}"
+      [[root.children.children.children]]
+      type = "repeat"
+      for = "{audio.bands}"
+      as = "v"
+        [[root.children.children.children.children]]
+        grow = 1
+        when = "{index % max(1, ceil(len(audio.bands) * 7 / max(1, self.w - 2 * (self.h < 100 ? 10 : 16)))) == 0}"
+        direction = "column"
+        justify = "center"
+          [[root.children.children.children.children.children]]
+          height = "{max(param.min_bar, v * (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)))}"
+          radius = "{param.corner}"
+          fill = ["{param.color_high}", "{param.color_low}"]
+          [[root.children.children.children.children.children]]
+          when = "{param.peaks}"
+          position = "absolute"
+          left = 0
+          right = 0
+          bottom = "{min((self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) / 2 + max(param.min_bar, at(audio.peaks, index) * (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0))) / 2, (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) - 2)}"
+          height = 2
+          radius = 1
+          fill = "{param.peak_color}"
+          [[root.children.children.children.children.children]]
+          when = "{param.peaks}"
+          position = "absolute"
+          left = 0
+          right = 0
+          top = "{min((self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) / 2 + max(param.min_bar, at(audio.peaks, index) * (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0))) / 2, (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) - 2)}"
+          height = 2
+          radius = 1
+          fill = "{param.peak_color}"
+
+    # line / area, with the peaks as a thin second line
+    [[root.children.children]]
+    when = "{param.mode == 'line' || param.mode == 'area'}"
+    grow = 1
+      [[root.children.children.children]]
+      grow = 1
+      type = "graph"
+      values = "{audio.bands}"
+      max = 1
+      stroke = "{param.stroke}"
+      color = "{param.color_high}"
+      area = "{param.mode == 'area' ? param.color_low : nil}"
+      [[root.children.children.children]]
+      when = "{param.peaks}"
+      type = "graph"
+      position = "absolute"
+      left = 0
+      top = 0
+      right = 0
+      bottom = 0
+      values = "{audio.peaks}"
+      max = 1
+      stroke = 1
+      color = "{param.peak_color}"
+
+    # 3D waterfall: the last second or so of spectra going back into the distance, oldest
+    # first so the nearer rows, drawn later, hide the ones behind (with the card's colour
+    # under each line). Rows z = 0 (now) to 1 (oldest) close up toward the back: they rise
+    # by half the height, narrow by a tenth on each side, and shrink and fade by half.
+    [[root.children.children]]
+    when = "{param.mode == 'waterfall'}"
+    grow = 1
+      [[root.children.children.children]]
+      type = "repeat"
+      for = "{audio.history}"
+      as = "row"
+        [[root.children.children.children.children]]
+        when = "{self.h >= 160 || index % 2 == 1}"
+        type = "graph"
+        left = "{(((len(audio.history) - index) / max(1, len(audio.history))) * (1.5 - 0.5 * ((len(audio.history) - index) / max(1, len(audio.history))))) * self.w * 0.1}"
+        right = "{(((len(audio.history) - index) / max(1, len(audio.history))) * (1.5 - 0.5 * ((len(audio.history) - index) / max(1, len(audio.history))))) * self.w * 0.1}"
+        bottom = "{(((len(audio.history) - index) / max(1, len(audio.history))) * (1.5 - 0.5 * ((len(audio.history) - index) / max(1, len(audio.history))))) * (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) * 0.5}"
+        height = "{(self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) * 0.55 * (1 - 0.5 * (((len(audio.history) - index) / max(1, len(audio.history))) * (1.5 - 0.5 * ((len(audio.history) - index) / max(1, len(audio.history)))))) + param.stroke}"
+        values = "{row}"
+        max = 1
+        stroke = "{max(1, param.stroke * (1 - 0.5 * (((len(audio.history) - index) / max(1, len(audio.history))) * (1.5 - 0.5 * ((len(audio.history) - index) / max(1, len(audio.history)))))))}"
+        color = "{param.color_low}"
+        area = "{param.background ? '$surface' : nil}"
+        area_opacity = 1
+        opacity = "{1 - 0.75 * (((len(audio.history) - index) / max(1, len(audio.history))) * (1.5 - 0.5 * ((len(audio.history) - index) / max(1, len(audio.history)))))}"
+      # now, in front
+      [[root.children.children.children]]
+      type = "graph"
+      left = 0
+      right = 0
+      bottom = 0
+      height = "{(self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) * 0.55 + param.stroke}"
+      values = "{audio.bands}"
+      max = 1
+      stroke = "{param.stroke}"
+      color = "{param.color_high}"
+      area = "{param.background ? '$surface' : nil}"
+      area_opacity = 1
+
+    # oscilloscope: the waveform on a faint grid, a soft glow under the trace
+    [[root.children.children]]
+    when = "{param.mode == 'scope'}"
+    grow = 1
+      [[root.children.children.children]]
+      when = "{param.grid}"
+      position = "absolute"
+      left = 0
+      right = 0
+      top = "50%"
+      height = 1
+      fill = "$text"
+      opacity = 0.16
+      [[root.children.children.children]]
+      when = "{param.grid && self.h >= 100}"
+      position = "absolute"
+      left = 0
+      right = 0
+      top = "25%"
+      height = 1
+      fill = "$text"
+      opacity = 0.07
+      [[root.children.children.children]]
+      when = "{param.grid && self.h >= 100}"
+      position = "absolute"
+      left = 0
+      right = 0
+      top = "75%"
+      height = 1
+      fill = "$text"
+      opacity = 0.07
+      # across: tenths, or quarters when narrow
+      [[root.children.children.children]]
+      when = "{param.grid && self.w >= 260}"
+      position = "absolute"
+      left = "10%"
+      top = 0
+      bottom = 0
+      width = 1
+      fill = "$text"
+      opacity = 0.06
+      [[root.children.children.children]]
+      when = "{param.grid && self.w >= 260}"
+      position = "absolute"
+      left = "20%"
+      top = 0
+      bottom = 0
+      width = 1
+      fill = "$text"
+      opacity = 0.06
+      [[root.children.children.children]]
+      when = "{param.grid && self.w < 260}"
+      position = "absolute"
+      left = "25%"
+      top = 0
+      bottom = 0
+      width = 1
+      fill = "$text"
+      opacity = 0.06
+      [[root.children.children.children]]
+      when = "{param.grid && self.w >= 260}"
+      position = "absolute"
+      left = "30%"
+      top = 0
+      bottom = 0
+      width = 1
+      fill = "$text"
+      opacity = 0.06
+      [[root.children.children.children]]
+      when = "{param.grid && self.w >= 260}"
+      position = "absolute"
+      left = "40%"
+      top = 0
+      bottom = 0
+      width = 1
+      fill = "$text"
+      opacity = 0.06
+      [[root.children.children.children]]
+      when = "{param.grid}"
+      position = "absolute"
+      left = "50%"
+      top = 0
+      bottom = 0
+      width = 1
+      fill = "$text"
+      opacity = 0.12
+      [[root.children.children.children]]
+      when = "{param.grid && self.w >= 260}"
+      position = "absolute"
+      left = "60%"
+      top = 0
+      bottom = 0
+      width = 1
+      fill = "$text"
+      opacity = 0.06
+      [[root.children.children.children]]
+      when = "{param.grid && self.w >= 260}"
+      position = "absolute"
+      left = "70%"
+      top = 0
+      bottom = 0
+      width = 1
+      fill = "$text"
+      opacity = 0.06
+      [[root.children.children.children]]
+      when = "{param.grid && self.w < 260}"
+      position = "absolute"
+      left = "75%"
+      top = 0
+      bottom = 0
+      width = 1
+      fill = "$text"
+      opacity = 0.06
+      [[root.children.children.children]]
+      when = "{param.grid && self.w >= 260}"
+      position = "absolute"
+      left = "80%"
+      top = 0
+      bottom = 0
+      width = 1
+      fill = "$text"
+      opacity = 0.06
+      [[root.children.children.children]]
+      when = "{param.grid && self.w >= 260}"
+      position = "absolute"
+      left = "90%"
+      top = 0
+      bottom = 0
+      width = 1
+      fill = "$text"
+      opacity = 0.06
+      # the glow, a wider stroke reaching out as far past the box as it is wider, so it lines up
+      [[root.children.children.children]]
+      type = "graph"
+      position = "absolute"
+      left = "{-param.stroke * 1.5}"
+      top = "{-param.stroke * 1.5}"
+      right = "{-param.stroke * 1.5}"
+      bottom = "{-param.stroke * 1.5}"
+      values = "{audio.wave}"
+      min = -1
+      max = 1
+      stroke = "{param.stroke * 4}"
+      color = "{param.color_high}"
+      opacity = 0.18
+      [[root.children.children.children]]
+      grow = 1
+      type = "graph"
+      values = "{audio.wave}"
+      min = -1
+      max = 1
+      stroke = "{param.stroke}"
+      color = "{param.color_high}"
+
+    # level meter: how loud, with the bass under it; labelled once there is room
+    [[root.children.children]]
+    when = "{param.mode == 'level'}"
+    grow = 1
+    direction = "column"
+    justify = "center"
+    gap = "{param.gap + 4}"
+      [[root.children.children.children]]
+      when = "{self.h >= 130}"
+      direction = "row"
+      justify = "between"
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "Level"
+        size = 11
+        weight = 600
+        color = "$text-dim"
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{round(max(0, min(1, audio.level)) * 100)}%"
+        size = 11
+        color = "$text-dim"
+      [[root.children.children.children]]
+      height = "{max(6, min(28, (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) * 0.3))}"
+      radius = "{param.corner}"
+      fill = "$track"
+        [[root.children.children.children.children]]
+        position = "absolute"
+        left = 0
+        top = 0
+        width = "{max(0, min(1, audio.level)) * 100}%"
+        height = "100%"
+        radius = "{param.corner}"
+        fill = ["{param.color_high}", "{param.color_low}"]
+      [[root.children.children.children]]
+      when = "{self.h >= 130}"
+      direction = "row"
+      justify = "between"
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "Bass"
+        size = 11
+        weight = 600
+        color = "$text-dim"
+        [[root.children.children.children.children]]
+        type = "text"
+        text = "{round(max(0, min(1, audio.bass)) * 100)}%"
+        size = 11
+        color = "$text-dim"
+      [[root.children.children.children]]
+      height = "{max(3, min(14, (self.h - 2 * (self.h < 100 ? 10 : 16) - (self.h >= 160 && self.w >= 260 ? 18 : 0) - (self.h >= 260 && self.w >= 260 && param.mode != 'level' ? 34 : 0)) * 0.16))}"
+      radius = "{param.corner}"
+      fill = "$track"
+        [[root.children.children.children.children]]
+        position = "absolute"
+        left = 0
+        top = 0
+        width = "{max(0, min(1, audio.bass)) * 100}%"
+        height = "100%"
+        radius = "{param.corner}"
+        fill = "{param.color_low}"
+
+  # ---- medium and up: the frequency range under the bars ----
+  [[root.children]]
+  when = "{self.h >= 160 && self.w >= 260 && param.mode != 'level'}"
+  height = 18
+  shrink = 0
+  direction = "row"
+  justify = "between"
+  align = "end"
+    [[root.children.children]]
+    type = "text"
+    text = "{param.mode == 'scope' ? '0 ms' : param.fmin + ' Hz'}"
+    size = 10
+    color = "$text-dim"
+    [[root.children.children]]
+    type = "text"
+    text = "{param.mode == 'scope' ? param.timebase + ' ms' : (param.fmax >= 1000 ? round(param.fmax / 100) / 10 + ' kHz' : param.fmax + ' Hz')}"
+    size = 10
+    color = "$text-dim"

@@ -1,5 +1,10 @@
 //! `workspace.json` (decision 24). Positions are relative to a monitor's work
 //! area (decision 14); a missing monitor parks its Instances instead of moving them.
+//!
+//! The file holds several Workspaces. The one on screen lives in `Workspace`'s own
+//! fields (`instances`, `theme`, `style`), so the rest of the app reads it as before; the
+//! others are kept whole in `workspaces` until switched to, each with the rules (a virtual
+//! desktop, a monitor setup) that bring it up by itself.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -103,6 +108,8 @@ impl InstanceCfg {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
+/// The Workspace on screen, the settings every Workspace shares (GPU, startup, grid, plugins),
+/// and the other saved Workspaces.
 pub struct Workspace {
     pub version: u32,
     /// "low" (default) | "high" | "software": ADR-005.
@@ -122,6 +129,10 @@ pub struct Workspace {
     /// reads as done, so only a fresh install sees the setup.
     #[serde(default = "yes")]
     pub onboarded: bool,
+    /// Every Workspace, in the user's order; `active` names the one on screen. Its entry
+    /// keeps only its name and rules: its Instances and look are the fields above.
+    pub workspaces: Vec<Saved>,
+    pub active: String,
     /// Version 1 fields, folded into `style` by `migrate`; read, never written.
     #[serde(skip_serializing)]
     overrides: BTreeMap<String, String>,
@@ -144,6 +155,8 @@ impl Default for Workspace {
             instances: Vec::new(),
             disabled_plugins: BTreeSet::new(),
             onboarded: false,
+            workspaces: vec![Saved { name: FIRST_WORKSPACE.into(), ..Default::default() }],
+            active: FIRST_WORKSPACE.into(),
             overrides: BTreeMap::new(),
             blur: None,
             outlines: None,
@@ -213,6 +226,7 @@ impl Workspace {
                 if w.version < 2 {
                     w.migrate();
                 }
+                w.tidy_workspaces();
                 (w, None)
             }
             Err(e) => {
@@ -279,8 +293,237 @@ impl Workspace {
         }
     }
 
+    /// Unused in every Workspace, so an Instance keeps its id when its Workspace is shown again.
     pub fn next_id(&self, widget: &str) -> String {
-        (1..).map(|n| format!("{widget}-{n}")).find(|id| !self.instances.iter().any(|i| &i.id == id)).unwrap()
+        let taken = |id: &str| self.instances.iter().chain(self.workspaces.iter().flat_map(|w| &w.instances)).any(|i| i.id == id);
+        (1..).map(|n| format!("{widget}-{n}")).find(|id| !taken(id)).unwrap()
+    }
+
+    /// Only a fresh install gets the starter widgets, never a Workspace the user emptied.
+    pub fn wants_starter_widgets(&self) -> bool {
+        self.instances.is_empty() && !self.onboarded && self.workspaces.len() <= 1
+    }
+
+    /// A file from before Workspaces, or edited by hand: one entry per name, the active one
+    /// among them, and nothing kept twice.
+    fn tidy_workspaces(&mut self) {
+        let mut seen = BTreeSet::new();
+        self.workspaces.retain(|w| !w.name.trim().is_empty() && seen.insert(w.name.clone()));
+        if self.workspaces.is_empty() {
+            self.workspaces.push(Saved { name: FIRST_WORKSPACE.into(), ..Default::default() });
+        }
+        if !self.workspaces.iter().any(|w| w.name == self.active) {
+            self.active = self.workspaces[0].name.clone();
+        }
+        let i = self.active_index();
+        let a = &mut self.workspaces[i];
+        (a.instances, a.style, a.theme) = (Vec::new(), BTreeMap::new(), None);
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.workspaces.iter().map(|w| w.name.clone()).collect()
+    }
+
+    pub fn active_index(&self) -> usize {
+        self.workspaces.iter().position(|w| w.name == self.active).unwrap_or(0)
+    }
+
+    pub fn saved(&self, name: &str) -> Option<&Saved> {
+        self.workspaces.iter().find(|w| w.name == name)
+    }
+
+    /// `base`, or `base 2`, `base 3`... whichever is free.
+    pub fn free_name(&self, base: &str) -> String {
+        let base = base.trim();
+        let base = if base.is_empty() { "Workspace" } else { base };
+        std::iter::once(base.to_string()).chain((2..).map(|n| format!("{base} {n}"))).find(|n| self.saved(n).is_none()).unwrap()
+    }
+
+    /// Adds a Workspace after the active one and returns its name. A copy takes the Instances
+    /// and look on screen; a new one starts empty, in the same look. Neither takes the rules.
+    pub fn add_workspace(&mut self, name: &str, copy: bool) -> String {
+        let name = self.free_name(name);
+        let instances = if copy { self.instances.clone() } else { Vec::new() };
+        let at = self.active_index() + 1;
+        self.workspaces.insert(at, Saved { name: name.clone(), rules: Rules::default(), theme: Some(self.theme.clone()), style: self.style.clone(), instances });
+        name
+    }
+
+    /// Puts the Workspace on screen away and brings `name` up. False when it is already up or
+    /// there is no such Workspace.
+    pub fn switch_to(&mut self, name: &str) -> bool {
+        if name == self.active {
+            return false;
+        }
+        let Some(to) = self.workspaces.iter().position(|w| w.name == name) else { return false };
+        let from = self.active_index();
+        let out = &mut self.workspaces[from];
+        out.instances = std::mem::take(&mut self.instances);
+        out.style = std::mem::take(&mut self.style);
+        out.theme = Some(self.theme.clone());
+        let inn = &mut self.workspaces[to];
+        self.instances = std::mem::take(&mut inn.instances);
+        self.style = std::mem::take(&mut inn.style);
+        if let Some(t) = inn.theme.take() {
+            self.theme = t;
+        }
+        self.active = name.to_string();
+        true
+    }
+
+    /// Returns the name it got, trimmed.
+    pub fn rename_workspace(&mut self, old: &str, new: &str) -> Result<String, String> {
+        let new = new.trim();
+        if new.is_empty() {
+            return Err("a Workspace needs a name".into());
+        }
+        if new == old {
+            return Ok(new.into());
+        }
+        if self.saved(new).is_some() {
+            return Err(format!("there already is a Workspace called {new}"));
+        }
+        let w = self.workspaces.iter_mut().find(|w| w.name == old).ok_or_else(|| format!("no Workspace called {old}"))?;
+        w.name = new.into();
+        if self.active == old {
+            self.active = new.into();
+        }
+        Ok(new.into())
+    }
+
+    /// The last Workspace stays. Removing the one on screen brings up its neighbour first,
+    /// whose name is returned so the app can show it.
+    pub fn delete_workspace(&mut self, name: &str) -> Result<Option<String>, String> {
+        self.saved(name).ok_or_else(|| format!("no Workspace called {name}"))?;
+        if self.workspaces.len() == 1 {
+            return Err("the last Workspace cannot go".into());
+        }
+        let mut shown = None;
+        if name == self.active {
+            let next = self.neighbour(name).expect("more than one");
+            self.switch_to(&next);
+            shown = Some(next);
+        }
+        self.workspaces.retain(|w| w.name != name);
+        Ok(shown)
+    }
+
+    /// The one after `name`, or before it when it is last: what shows when `name` goes.
+    pub fn neighbour(&self, name: &str) -> Option<String> {
+        let i = self.workspaces.iter().position(|w| w.name == name)?;
+        let j = if i + 1 < self.workspaces.len() { i + 1 } else { i.checked_sub(1)? };
+        Some(self.workspaces[j].name.clone())
+    }
+
+    pub fn rules_mut(&mut self, name: &str) -> Option<&mut Rules> {
+        self.workspaces.iter_mut().find(|w| w.name == name).map(|w| &mut w.rules)
+    }
+
+    /// The Workspace whose rules fit `desktop` and the monitors connected (`setup`) best, if
+    /// any does: see [`Rules::score`]. Ties go to the first in the user's order.
+    pub fn pick(&self, desktop: Option<&str>, setup: &[MonitorRef]) -> Option<String> {
+        let mut best: Option<(u8, &Saved)> = None;
+        for w in &self.workspaces {
+            if let Some(s) = w.rules.score(desktop, setup) {
+                if best.is_none_or(|(b, _)| s > b) {
+                    best = Some((s, w));
+                }
+            }
+        }
+        best.map(|(_, w)| w.name.clone())
+    }
+}
+
+pub const FIRST_WORKSPACE: &str = "Main";
+
+/// One saved Workspace. The one on screen keeps only its name and rules here.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct Saved {
+    pub name: String,
+    #[serde(skip_serializing_if = "Rules::is_empty")]
+    pub rules: Rules,
+    /// Its palette, fonts, glyphs and icon pack; `None` while it is on screen.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<Selection>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub style: BTreeMap<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub instances: Vec<InstanceCfg>,
+}
+
+/// What brings a Workspace up by itself. With none it only comes up when picked.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct Rules {
+    /// Windows virtual desktops, by id (`{GUID}`): going to one shows this Workspace.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub desktops: Vec<String>,
+    /// A monitor setup: these monitors connected, no more and no fewer.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub monitors: Vec<MonitorRef>,
+}
+
+/// How well a saved monitor setup fits the monitors connected now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SetupFit {
+    /// Different monitors.
+    No,
+    /// As many monitors at the same sizes, under other names: Windows renumbers
+    /// `\\.\DISPLAYn` when a dock reconnects.
+    Renamed,
+    Same,
+}
+
+/// The same monitors connected, by name and size, in any order.
+pub fn same_setup(a: &[MonitorRef], b: &[MonitorRef]) -> bool {
+    setup_fit(a, b) == SetupFit::Same
+}
+
+pub fn setup_fit(saved: &[MonitorRef], now: &[MonitorRef]) -> SetupFit {
+    let sorted = |v: &[MonitorRef]| {
+        let mut v = v.to_vec();
+        v.sort();
+        v
+    };
+    let sizes = |v: &[MonitorRef]| {
+        let mut v: Vec<(u32, u32)> = v.iter().map(|m| (m.width, m.height)).collect();
+        v.sort();
+        v
+    };
+    if sorted(saved) == sorted(now) {
+        SetupFit::Same
+    } else if sizes(saved) == sizes(now) {
+        SetupFit::Renamed
+    } else {
+        SetupFit::No
+    }
+}
+
+impl Rules {
+    pub fn is_empty(&self) -> bool {
+        self.desktops.is_empty() && self.monitors.is_empty()
+    }
+
+    /// `None` when a rule it has does not hold. A desktop that holds counts 4, the same
+    /// monitors 2 and renamed ones 1, so a Workspace tied to both beats one tied to either,
+    /// and a desktop (a choice made just now) beats a monitor setup. No rules: never.
+    pub fn score(&self, desktop: Option<&str>, setup: &[MonitorRef]) -> Option<u8> {
+        if self.is_empty() {
+            return None;
+        }
+        let d = match (self.desktops.is_empty(), desktop) {
+            (true, _) => 0,
+            (false, Some(d)) if self.desktops.iter().any(|x| x.eq_ignore_ascii_case(d)) => 4,
+            _ => return None,
+        };
+        let m = match (self.monitors.is_empty(), setup_fit(&self.monitors, setup)) {
+            (true, _) => 0,
+            (false, SetupFit::Same) => 2,
+            (false, SetupFit::Renamed) => 1,
+            (false, SetupFit::No) => return None,
+        };
+        Some(d + m)
     }
 }
 
@@ -430,6 +673,105 @@ mod tests {
         c.theme.palette = Some("Daylight".into());
         let t = w.theme_for(&lib, &c);
         assert_eq!((t.color("accent").to_hex(), t.color("text").to_hex()), ("#222222".to_string(), "#141a2a".to_string()));
+    }
+
+    fn inst(id: &str) -> InstanceCfg {
+        InstanceCfg { id: id.into(), widget: id.split('-').next().unwrap().into(), ..Default::default() }
+    }
+
+    fn mref(name: &str, w: u32, h: u32) -> MonitorRef {
+        MonitorRef { name: name.into(), width: w, height: h }
+    }
+
+    #[test]
+    fn a_file_from_before_workspaces_is_one_called_main_and_round_trips() {
+        let mut old: Workspace = serde_json::from_str(r#"{"version": 2, "instances": [{"id": "clock-1", "widget": "clock"}]}"#).unwrap();
+        old.tidy_workspaces();
+        assert_eq!((old.names(), old.active.as_str(), old.instances.len()), (vec!["Main".to_string()], "Main", 1));
+        let text = serde_json::to_string(&old).unwrap();
+        let back: Workspace = serde_json::from_str(&text).unwrap();
+        assert_eq!((back.names(), back.instances.len()), (vec!["Main".to_string()], 1));
+        assert_eq!(text.matches("clock-1").count(), 1, "the Workspace on screen is saved once: {text}");
+    }
+
+    #[test]
+    fn switching_puts_the_widgets_and_look_away_and_brings_the_others_back() {
+        let mut ws = Workspace { instances: vec![inst("clock-1")], ..Default::default() };
+        ws.theme.palette = "Midnight".into();
+        ws.style.insert("blur".into(), true.into());
+        let work = ws.add_workspace("Work", false);
+        assert_eq!((work.as_str(), ws.names()), ("Work", vec!["Main".to_string(), "Work".to_string()]));
+        assert!(ws.switch_to("Work") && !ws.switch_to("Work") && !ws.switch_to("Nope"));
+        assert!(ws.instances.is_empty(), "a new Workspace starts empty");
+        assert_eq!(ws.style.get("blur"), Some(&serde_json::Value::Bool(true)), "in the same look");
+        ws.instances.push(inst("drawer-1"));
+        ws.theme.palette = "Daylight".into();
+        assert!(ws.switch_to("Main"));
+        assert_eq!((ws.instances[0].id.as_str(), ws.theme.palette.as_str()), ("clock-1", "Midnight"));
+        assert!(ws.switch_to("Work"));
+        assert_eq!((ws.instances[0].id.as_str(), ws.theme.palette.as_str()), ("drawer-1", "Daylight"), "each keeps its own look");
+        assert_eq!(ws.names(), ["Main", "Work"], "switching never reorders them");
+        let back: Workspace = serde_json::from_str(&serde_json::to_string(&ws).unwrap()).unwrap();
+        assert_eq!((back.active.as_str(), back.saved("Main").unwrap().instances.len(), back.instances.len()), ("Work", 1, 1));
+    }
+
+    #[test]
+    fn ids_are_unique_across_workspaces_and_a_copy_keeps_its_widgets() {
+        let mut ws = Workspace { instances: vec![inst("clock-1")], ..Default::default() };
+        let copy = ws.add_workspace("Main", true);
+        assert_eq!(copy, "Main 2", "a name already used gets a number");
+        ws.switch_to(&copy);
+        assert_eq!(ws.instances[0].id, "clock-1");
+        ws.instances.clear();
+        assert_eq!(ws.next_id("clock"), "clock-2", "clock-1 is still in Main");
+    }
+
+    #[test]
+    fn rename_and_delete_keep_one_workspace_on_screen() {
+        let mut ws = Workspace { instances: vec![inst("clock-1")], ..Default::default() };
+        ws.add_workspace("Work", false);
+        assert!(ws.rename_workspace("Main", " Work ").is_err() && ws.rename_workspace("Main", "  ").is_err());
+        assert_eq!(ws.rename_workspace("Main", " Home ").unwrap(), "Home");
+        assert_eq!(ws.active, "Home");
+        assert_eq!(ws.delete_workspace("Home").unwrap(), Some("Work".to_string()), "the next one comes up");
+        assert_eq!((ws.names(), ws.active.as_str()), (vec!["Work".to_string()], "Work"));
+        assert!(ws.delete_workspace("Work").is_err(), "the last one stays");
+    }
+
+    #[test]
+    fn only_a_fresh_install_gets_starter_widgets() {
+        let mut ws = Workspace::default();
+        assert!(ws.wants_starter_widgets());
+        ws.onboarded = true;
+        assert!(!ws.wants_starter_widgets(), "a Workspace the user emptied stays empty");
+        let mut two = Workspace::default();
+        two.add_workspace("Work", false);
+        assert!(!two.wants_starter_widgets());
+    }
+
+    #[test]
+    fn rules_pick_the_most_specific_workspace_and_none_without_rules() {
+        let (dock, laptop) = (vec![mref("\\\\.\\DISPLAY1", 2560, 1440), mref("\\\\.\\DISPLAY2", 1920, 1080)], vec![mref("\\\\.\\DISPLAY1", 1920, 1200)]);
+        let mut ws = Workspace::default();
+        for n in ["Desk", "Laptop", "Focus", "Desk focus"] {
+            ws.add_workspace(n, false);
+        }
+        ws.rules_mut("Desk").unwrap().monitors = dock.clone();
+        ws.rules_mut("Laptop").unwrap().monitors = laptop.clone();
+        ws.rules_mut("Focus").unwrap().desktops = vec!["{AAAA}".into()];
+        let both = ws.rules_mut("Desk focus").unwrap();
+        (both.desktops, both.monitors) = (vec!["{aaaa}".into()], dock.clone());
+        assert_eq!(ws.pick(None, &dock).as_deref(), Some("Desk"));
+        assert_eq!(ws.pick(Some("{BBBB}"), &laptop).as_deref(), Some("Laptop"), "an unbound desktop leaves the monitors to decide");
+        assert_eq!(ws.pick(Some("{AAAA}"), &laptop).as_deref(), Some("Focus"), "a desktop beats a monitor setup");
+        assert_eq!(ws.pick(Some("{AAAA}"), &dock).as_deref(), Some("Desk focus"), "both beat either");
+        let renamed = vec![mref("\\\\.\\DISPLAY3", 1920, 1080), mref("\\\\.\\DISPLAY4", 2560, 1440)];
+        assert_eq!(setup_fit(&dock, &renamed), SetupFit::Renamed);
+        let swapped: Vec<MonitorRef> = dock.iter().rev().cloned().collect();
+        assert!(same_setup(&dock, &swapped) && !same_setup(&dock, &renamed) && !same_setup(&dock, &laptop), "order does not matter, names and sizes do");
+        assert_eq!(ws.pick(None, &renamed).as_deref(), Some("Desk"), "a dock that renumbered its monitors still counts");
+        assert_eq!(ws.pick(Some("{CCCC}"), &[mref("x", 800, 600)]), None, "nothing fits: stay where you are");
+        assert!(Rules::default().score(Some("{AAAA}"), &dock).is_none(), "no rules: only picked by hand");
     }
 
     #[test]

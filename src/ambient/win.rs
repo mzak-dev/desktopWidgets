@@ -49,7 +49,7 @@ fn systime_of(tm: &Tm) -> SYSTEMTIME {
     }
 }
 
-fn localized_date(tm: &Tm, pattern: &str) -> String {
+pub(crate) fn localized_date(tm: &Tm, pattern: &str) -> String {
     use windows::Win32::Globalization::{ENUM_DATE_FORMATS_FLAGS, GetDateFormatEx};
     use windows::core::{HSTRING, PCWSTR};
     let st = SYSTEMTIME { wYear: tm.year as u16, wMonth: tm.month as u16, wDayOfWeek: tm.dow as u16, wDay: tm.day as u16, ..Default::default() };

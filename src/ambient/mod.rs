@@ -19,6 +19,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 pub use capture::{Capture, to_mono};
+pub(crate) use win::localized_date;
 pub use fixed::{CannedFetch, FixedCalendar, FixedMedia, OfflineFetch, PREROLL, ScriptedProbe, Silence, TileIcons, Tone};
 pub use icon::IconSource;
 pub use media::{Control, MediaBackend, Notify, Track};
