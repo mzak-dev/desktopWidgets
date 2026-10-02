@@ -8,9 +8,9 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::{Cadence, DataSource, Notifier, SourceCx};
 use crate::value::Value;
@@ -19,6 +19,9 @@ use crate::value::Value;
 const ART_KEPT: usize = 32;
 /// A position this far from where it should be is a seek, worth a redraw while paused.
 const SEEK_SECS: f64 = 2.0;
+/// When to read the cover again after the track changes: Spotify sends the new title before
+/// its new thumbnail, and not always another event once the thumbnail catches up.
+const RECHECK_MS: [u64; 3] = [500, 1500, 3000];
 
 /// What is playing, as last read. The position runs on from `at` while playing.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -30,6 +33,8 @@ pub struct Track {
     /// The app playing it, by name ("Spotify").
     pub source: String,
     pub playing: bool,
+    /// The app lets `media.seek` move the position.
+    pub can_seek: bool,
     /// `file:` path of the album art, or "".
     pub art: String,
     pub position: f64,
@@ -58,6 +63,7 @@ impl Track {
         m.insert("album".into(), Value::Str(self.album.clone()));
         m.insert("source".into(), Value::Str(self.source.clone()));
         m.insert("playing".into(), Value::Bool(self.playing));
+        m.insert("can_seek".into(), Value::Bool(self.can_seek));
         m.insert("art".into(), Value::Str(self.art.clone()));
         m.insert("position".into(), Value::Num(position.floor()));
         m.insert("duration".into(), Value::Num(self.duration.round()));
@@ -70,9 +76,39 @@ impl Track {
     /// Whether the widgets must redraw for `new`: another track, play or pause, new art or a
     /// seek. The position running on as expected is not a change.
     pub fn differs(&self, new: &Track, now: Instant) -> bool {
-        let same = (&self.active, &self.title, &self.artist, &self.album, &self.source, self.playing, &self.art) == (&new.active, &new.title, &new.artist, &new.album, &new.source, new.playing, &new.art);
+        let same = (&self.active, self.playing, self.can_seek, &self.art) == (&new.active, new.playing, new.can_seek, &new.art) && same_track(self, new);
         !same || (self.duration - new.duration).abs() > 0.5 || (self.position_at(now) - new.position_at(now)).abs() > SEEK_SECS
     }
+}
+
+/// The same song from the same app, whatever its position or cover.
+fn same_track(a: &Track, b: &Track) -> bool {
+    (&a.source, &a.title, &a.artist, &a.album) == (&b.source, &b.title, &b.artist, &b.album)
+}
+
+/// `media.seek 0.4213`: how far into the track, 0-1; anything but a number is refused.
+fn seek_arg(arg: &str) -> Option<f64> {
+    let f: f64 = arg.trim().parse().ok()?;
+    f.is_finite().then(|| f.clamp(0.0, 1.0))
+}
+
+/// Where a seek `f` of the way through lands, in the timeline's 100 ns ticks.
+fn seek_ticks(start: i64, end: i64, f: f64) -> i64 {
+    start + ((end - start).max(0) as f64 * f.clamp(0.0, 1.0)).round() as i64
+}
+
+/// The cover rechecks after a track change at `at`.
+fn recheck_plan(at: Instant) -> Vec<Instant> {
+    RECHECK_MS.iter().map(|ms| at + Duration::from_millis(*ms)).collect()
+}
+
+/// How long to wait for an event before the next recheck is due; `None` waits for events
+/// alone, so an idle player costs nothing. Rechecks that fell due together count once.
+fn next_wait(plan: &mut Vec<Instant>, now: Instant) -> Option<Duration> {
+    while plan.len() > 1 && plan[1] <= now {
+        plan.remove(0);
+    }
+    plan.first().map(|d| d.saturating_duration_since(now))
 }
 
 /// `3:07`, or `1:02:03` past an hour.
@@ -93,10 +129,10 @@ pub fn app_name(aumid: &str) -> String {
     c.next().map_or(String::new(), |f| f.to_uppercase().chain(c).collect())
 }
 
-/// The art file for a track: one name per track, so a new track is a new image id.
-fn art_path(dir: &Path, t: &Track) -> PathBuf {
-    let key = format!("{}\u{1}{}\u{1}{}\u{1}{}", t.source, t.title, t.artist, t.album);
-    let h = key.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3));
+/// The art file for a thumbnail, named by its bytes: a new picture is a new image id, and
+/// a cover that arrives after its track's title can never be filed under the wrong song.
+fn art_path(dir: &Path, bytes: &[u8]) -> PathBuf {
+    let h = bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x100_0000_01b3));
     dir.join(format!("art-{h:016x}.png"))
 }
 
@@ -112,11 +148,17 @@ fn prune(dir: &Path, keep: usize) {
 }
 
 enum Msg {
-    /// Something about the session changed.
+    /// The track's title, artist, album or cover changed.
+    Props,
+    /// Play, pause or the position changed: the cover stays.
     Refresh,
     /// Another app's session became current: listen to it instead.
     Session,
     Act(String),
+    /// Move to this fraction of the track.
+    Seek(f64),
+    /// A cover recheck fell due (the thread's own).
+    Recheck,
 }
 
 pub struct Media {
@@ -173,11 +215,16 @@ impl DataSource for Media {
         (ticking && self.track.lock().unwrap().playing).then_some(Cadence::Second)
     }
 
-    fn act(&self, verb: &str, _arg: &str, _cx: &SourceCx) -> bool {
-        if !matches!(verb, "play_pause" | "next" | "prev") {
-            return false;
-        }
-        self.send(Msg::Act(verb.into()));
+    fn act(&self, verb: &str, arg: &str, _cx: &SourceCx) -> bool {
+        let msg = match verb {
+            "play_pause" | "next" | "prev" => Msg::Act(verb.into()),
+            "seek" => match seek_arg(arg) {
+                Some(f) => Msg::Seek(f),
+                None => return false,
+            },
+            _ => return false,
+        };
+        self.send(msg);
         true
     }
 
@@ -202,19 +249,37 @@ fn watch(rx: Receiver<Msg>, events: Sender<Msg>, track: &Mutex<Track>, notify: &
         Ok(())
     }))?;
     let mut listening: Option<(Session, [i64; 3])> = None;
-    while let Ok(msg) = rx.recv() {
+    let mut rechecks: Vec<Instant> = Vec::new();
+    loop {
+        let msg = match next_wait(&mut rechecks, Instant::now()) {
+            None => match rx.recv() {
+                Ok(m) => m,
+                Err(_) => break,
+            },
+            Some(wait) => match rx.recv_timeout(wait) {
+                Ok(m) => m,
+                Err(RecvTimeoutError::Timeout) => {
+                    rechecks.remove(0);
+                    Msg::Recheck
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+            },
+        };
         let session = manager.GetCurrentSession().ok();
+        // the cover is read again unless only play, pause or the position changed
+        let mut fresh_art = true;
         match msg {
             Msg::Session => {
                 if let Some((s, [a, b, c])) = listening.take() {
                     let _ = (s.RemoveMediaPropertiesChanged(a), s.RemovePlaybackInfoChanged(b), s.RemoveTimelinePropertiesChanged(c));
                 }
                 if let Some(s) = &session {
-                    let tokens = [s.MediaPropertiesChanged(&refresh_on(&events))?, s.PlaybackInfoChanged(&refresh_on(&events))?, s.TimelinePropertiesChanged(&refresh_on(&events))?];
+                    let tokens = [s.MediaPropertiesChanged(&send_on(&events, || Msg::Props))?, s.PlaybackInfoChanged(&send_on(&events, || Msg::Refresh))?, s.TimelinePropertiesChanged(&send_on(&events, || Msg::Refresh))?];
                     listening = Some((s.clone(), tokens));
                 }
             }
             Msg::Act(verb) => {
+                fresh_art = false;
                 if let Some(s) = &session {
                     let op = match verb.as_str() {
                         "play_pause" => s.TryTogglePlayPauseAsync(),
@@ -224,14 +289,33 @@ fn watch(rx: Receiver<Msg>, events: Sender<Msg>, track: &Mutex<Track>, notify: &
                     let _ = op.and_then(|o| o.join());
                 }
             }
-            Msg::Refresh => {}
+            Msg::Seek(f) => {
+                let ticks = session.as_ref().and_then(|s| s.GetTimelineProperties().ok()).and_then(|tl| Some(seek_ticks(tl.StartTime().ok()?.Duration, tl.EndTime().ok()?.Duration, f)));
+                let moved = session.as_ref().zip(ticks).is_some_and(|(s, t)| s.TryChangePlaybackPositionAsync(t).and_then(|o| o.join()).unwrap_or(false));
+                // Spotify reports the new position late: show it now, or the bar jumps back after the drag
+                if let (true, Some(t)) = (moved, ticks) {
+                    let mut tr = track.lock().unwrap();
+                    tr.position = t as f64 / 1e7;
+                    tr.at = Some(Instant::now());
+                    drop(tr);
+                    if let Some(n) = notify.lock().unwrap().as_ref() {
+                        n.changed();
+                    }
+                }
+                continue;
+            }
+            Msg::Refresh => fresh_art = false,
+            Msg::Props | Msg::Recheck => {}
         }
         let now = Instant::now();
         let old = track.lock().unwrap().clone();
         let new = match &session {
-            Some(s) => read(s, &old, cache).unwrap_or_default(),
+            Some(s) => read(s, &old, cache, fresh_art).unwrap_or_default(),
             None => Track::default(),
         };
+        if new.active && !same_track(&old, &new) {
+            rechecks = recheck_plan(now);
+        }
         let changed = old.differs(&new, now);
         *track.lock().unwrap() = new;
         if changed {
@@ -243,11 +327,11 @@ fn watch(rx: Receiver<Msg>, events: Sender<Msg>, track: &Mutex<Track>, notify: &
     Ok(())
 }
 
-/// A session event handler that asks the thread to read the session again.
-fn refresh_on<A: windows::core::RuntimeType + 'static>(events: &Sender<Msg>) -> TypedEventHandler<Session, A> {
+/// A session event handler that sends the thread `msg`.
+fn send_on<A: windows::core::RuntimeType + 'static>(events: &Sender<Msg>, msg: fn() -> Msg) -> TypedEventHandler<Session, A> {
     let tx = events.clone();
     TypedEventHandler::new(move |_, _| {
-        let _ = tx.send(Msg::Refresh);
+        let _ = tx.send(msg());
         Ok(())
     })
 }
@@ -257,9 +341,13 @@ fn winrt_now() -> f64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64()) + 11_644_473_600.0
 }
 
-fn read(s: &Session, old: &Track, cache: &Path) -> windows::core::Result<Track> {
+/// The session as it is now. The cover is read again when `fresh_art`, and otherwise kept
+/// from `old` for the same track; a failed read of the same track's cover keeps it too.
+fn read(s: &Session, old: &Track, cache: &Path, fresh_art: bool) -> windows::core::Result<Track> {
     let props = s.TryGetMediaPropertiesAsync()?.join()?;
-    let playing = s.GetPlaybackInfo()?.PlaybackStatus()? == Status::Playing;
+    let info = s.GetPlaybackInfo()?;
+    let playing = info.PlaybackStatus()? == Status::Playing;
+    let can_seek = info.Controls().and_then(|c| c.IsPlaybackPositionEnabled()).unwrap_or(false);
     let tl = s.GetTimelineProperties()?;
     let secs = |ticks: i64| ticks as f64 / 1e7;
     let duration = (secs(tl.EndTime()?.Duration) - secs(tl.StartTime()?.Duration)).max(0.0);
@@ -278,26 +366,30 @@ fn read(s: &Session, old: &Track, cache: &Path) -> windows::core::Result<Track> 
         album: props.AlbumTitle()?.to_string(),
         source: app_name(&s.SourceAppUserModelId()?.to_string()),
         playing,
+        can_seek,
         art: String::new(),
         position,
         duration,
         at: Some(Instant::now()),
     };
-    let same_track = (&old.source, &old.title, &old.artist, &old.album) == (&t.source, &t.title, &t.artist, &t.album);
-    t.art = if same_track && !old.art.is_empty() { old.art.clone() } else { art(&props, &t, cache).unwrap_or_default() };
+    let same = same_track(old, &t);
+    t.art = match (fresh_art, same && !old.art.is_empty()) {
+        (false, true) => old.art.clone(),
+        (_, keep) => art(&props, cache).unwrap_or_else(|| if keep { old.art.clone() } else { String::new() }),
+    };
     Ok(t)
 }
 
-/// Saves the track's thumbnail as a PNG in the cache and returns its image id.
-fn art(props: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties, t: &Track, cache: &Path) -> Option<String> {
-    let path = art_path(cache, t);
+/// Saves the session's thumbnail as a PNG in the cache, once per picture, and returns its image id.
+fn art(props: &windows::Media::Control::GlobalSystemMediaTransportControlsSessionMediaProperties, cache: &Path) -> Option<String> {
+    let stream = props.Thumbnail().ok()?.OpenReadAsync().ok()?.join().ok()?;
+    let size = stream.Size().ok()?.min(16 << 20) as u32;
+    let reader = DataReader::CreateDataReader(&stream).ok()?;
+    let n = reader.LoadAsync(size).ok()?.join().ok()?;
+    let mut bytes = vec![0u8; n as usize];
+    reader.ReadBytes(&mut bytes).ok()?;
+    let path = art_path(cache, &bytes);
     if !path.is_file() {
-        let stream = props.Thumbnail().ok()?.OpenReadAsync().ok()?.join().ok()?;
-        let size = stream.Size().ok()?.min(16 << 20) as u32;
-        let reader = DataReader::CreateDataReader(&stream).ok()?;
-        let n = reader.LoadAsync(size).ok()?.join().ok()?;
-        let mut bytes = vec![0u8; n as usize];
-        reader.ReadBytes(&mut bytes).ok()?;
         let img = image::load_from_memory(&bytes).ok()?;
         std::fs::create_dir_all(cache).ok()?;
         let part = path.with_extension("part");
@@ -352,13 +444,12 @@ mod tests {
     }
 
     #[test]
-    fn art_has_one_file_per_track_and_old_ones_go() {
+    fn art_has_one_file_per_picture_and_old_ones_go() {
         let dir = std::env::temp_dir().join(format!("wf-media-art-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let t = playing(0.0, Instant::now());
-        assert_eq!(art_path(&dir, &t), art_path(&dir, &t.clone()));
-        assert_ne!(art_path(&dir, &t), art_path(&dir, &Track { title: "Other".into(), ..t.clone() }));
+        assert_eq!(art_path(&dir, b"cover one"), art_path(&dir, b"cover one"), "one file per picture");
+        assert_ne!(art_path(&dir, b"cover one"), art_path(&dir, b"cover two"), "a new picture is a new image id, whatever the title says");
         for i in 0..5 {
             std::fs::write(dir.join(format!("art-{i}.png")), "x").unwrap();
             std::thread::sleep(Duration::from_millis(20));
@@ -368,6 +459,46 @@ mod tests {
         left.sort();
         assert_eq!(left, ["art-3.png", "art-4.png"], "the newest stay");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_new_track_rechecks_its_cover_a_few_times_then_waits_for_events() {
+        let t0 = Instant::now();
+        let ms = Duration::from_millis;
+        let mut plan = recheck_plan(t0);
+        assert_eq!(next_wait(&mut plan, t0), Some(ms(500)));
+        assert_eq!(next_wait(&mut plan, t0 + ms(700)), Some(Duration::ZERO), "due");
+        plan.remove(0); // the thread's recheck
+        assert_eq!(next_wait(&mut plan, t0 + ms(700)), Some(ms(800)));
+        let mut late = recheck_plan(t0);
+        assert_eq!((next_wait(&mut late, t0 + ms(2000)), late.len()), (Some(Duration::ZERO), 2), "two that fell due while busy are one");
+        assert_eq!(next_wait(&mut Vec::new(), t0), None, "idle: no polling");
+    }
+
+    #[test]
+    fn seek_takes_a_fraction_and_refuses_anything_else() {
+        let m = Media::new(std::env::temp_dir());
+        // a channel of its own, so the test never seeks what is really playing
+        let (tx, rx) = mpsc::channel();
+        *m.worker.lock().unwrap() = Some(tx);
+        let (cfg, params) = (crate::workspace::InstanceCfg::default(), BTreeMap::new());
+        let cx = SourceCx { cfg: &cfg, params: &params, tm: super::super::now_local(), icon_pack: "Default" };
+        assert!(m.act("seek", "0.5", &cx));
+        assert!(matches!(rx.try_recv(), Ok(Msg::Seek(f)) if f == 0.5));
+        assert!(m.act("seek", "7", &cx) && matches!(rx.try_recv(), Ok(Msg::Seek(f)) if f == 1.0), "clamped to the end");
+        assert!(!m.act("seek", "x", &cx) && !m.act("seek", "NaN", &cx) && !m.act("seek", "inf", &cx) && !m.act("seek", "", &cx));
+        assert!(rx.try_recv().is_err(), "nothing sent for a bad one");
+        assert_eq!(seek_ticks(0, 2_000_000_000, 0.25), 500_000_000, "a quarter of 200 s is 50 s");
+        assert_eq!((seek_ticks(10, 110, 0.5), seek_ticks(10, 110, 1.5)), (60, 110), "from the start, never past the end");
+    }
+
+    #[test]
+    fn a_seekable_player_says_so() {
+        let t0 = Instant::now();
+        let a = playing(60.0, t0);
+        let b = Track { can_seek: true, ..a.clone() };
+        assert!(a.differs(&b, t0), "the bar appears as soon as the app allows seeking");
+        assert_eq!(b.value(t0).get("can_seek"), Some(&Value::Bool(true)));
     }
 
     #[test]

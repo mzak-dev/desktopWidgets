@@ -644,7 +644,7 @@ pub(crate) mod tests {
         let st = BTreeMap::new();
         let source = |n: &str| (n == "weather").then(|| v.clone());
         let theme = crate::theme::Theme::compose(&crate::theme::Library::load(std::path::Path::new("nope")), &crate::theme::Selection::default(), &[]);
-        let b = w.build(&Inputs { params: &full, state: &st, card_size: (220.0, 120.0), key_prefix: "weather-1", read_source: &source }, &theme, &|_| None).unwrap();
+        let b = w.build(&Inputs { params: &full, state: &st, card_size: (220.0, 120.0), key_prefix: "weather-1", read_source: &source, arrange: None }, &theme, &|_| None).unwrap();
         assert!(b.warnings.is_empty(), "{:?}", b.warnings);
         assert!(b.deps.contains("weather.temp"));
         fn texts(n: &crate::ui::Node, out: &mut Vec<String>) {

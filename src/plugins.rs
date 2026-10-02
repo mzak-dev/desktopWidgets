@@ -77,7 +77,7 @@ impl Code {
 
 const CODE_KEYS: &[&str] = &["module", "source", "net", "fs_read", "fs_read_params", "launch", "initial"];
 /// Data Source names and repeat variables a Code Source must not shadow.
-const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "media", "audio", "param", "state", "self", "item", "index"];
+const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "media", "audio", "gallery", "agents", "calendar", "param", "state", "self", "item", "index"];
 
 fn parse_code(t: &toml::Table) -> Result<Code, String> {
     for k in t.keys() {
@@ -445,7 +445,7 @@ fn check_in(src: &Path, data: &Path) -> Report {
     let row = rows(&list, &BTreeSet::new(), &cat, &builtin.union(&needed).cloned().collect()).into_iter().find(|x| x.id == m.id).unwrap_or_default();
     r.problems.extend(row.problems);
     r.notes.extend(row.notes);
-    r.notes.extend(row.code.lines().map(String::from));
+    r.notes.extend(row.code.iter().map(CodeRow::line));
     for code in &m.code {
         use crate::code::runtime::{Compiled, Env, Limits as CodeLimits, Runtime};
         let limits = CodeLimits::default();
@@ -659,13 +659,36 @@ pub struct PluginRow {
     pub problems: Vec<String>,
     /// Widget ids nothing else provides: removing the Plugin removes their Instances.
     pub sole_widgets: Vec<String>,
-    /// "Runs code as `weather` · can reach api.open-meteo.com", a line per Code Source;
-    /// empty without code.
-    pub code: String,
-    /// Its Code Sources' names while they run, to match the live status to the row.
-    pub code_sources: Vec<String>,
-    /// How the code is doing, kept current by the app.
+    /// What it adds, by kind.
+    pub contents: Contents,
+    /// Its Code Sources; empty without code.
+    pub code: Vec<CodeRow>,
+}
+
+/// One Code Source of a Plugin, as its card on the Plugins page shows it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CodeRow {
+    pub source: String,
+    /// Hosts it may reach; none = no network.
+    pub net: Vec<String>,
+    /// What it may read, in words.
+    pub reads: Vec<String>,
+    /// What its widgets may open besides web links.
+    pub opens: Vec<String>,
+    /// The Plugin is on and no other Plugin's source of the same name wins.
+    pub runs: bool,
+    /// How it is doing while it runs, kept current by the app.
     pub status: String,
+}
+
+impl CodeRow {
+    /// "Runs code as `weather` · can reach api.open-meteo.com"
+    pub fn line(&self) -> String {
+        let reach = if self.net.is_empty() { "no network".to_string() } else { format!("can reach {}", self.net.join(", ")) };
+        let reads = if self.reads.is_empty() { String::new() } else { format!(" · reads {}", self.reads.join(", ")) };
+        let opens = if self.opens.is_empty() { String::new() } else { format!(" · opens {}", self.opens.join(", ")) };
+        format!("Runs code as `{}` · {reach}{reads}{opens}", self.source)
+    }
 }
 
 impl PluginRow {
@@ -740,18 +763,18 @@ pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog, native:
                     problems.push(format!("Its data source `{}` is hidden: {} has one too, and wins", c.source, named(&Origin::Plugin(winner.clone()))));
                 }
             }
-            let code_line = code
+            let runs = |c: &Code| !disabled.contains(&p.id) && !code_lost.contains_key(&(p.id.clone(), c.source.clone()));
+            let code_rows = code
                 .iter()
-                .map(|c| {
-                    let reach = if c.net.is_empty() { "no network".to_string() } else { format!("can reach {}", c.net.iter().map(|h| h.to_string()).collect::<Vec<_>>().join(", ")) };
-                    let reads = c.reads();
-                    let reads = if reads.is_empty() { String::new() } else { format!(" · reads {}", reads.join(", ")) };
-                    let opens = if c.launch.is_empty() { String::new() } else { format!(" · opens {}", c.launch.iter().map(|l| l.to_string()).collect::<Vec<_>>().join(", ")) };
-                    format!("Runs code as `{}` · {reach}{reads}{opens}", c.source)
+                .map(|c| CodeRow {
+                    source: c.source.clone(),
+                    net: c.net.iter().map(|h| h.to_string()).collect(),
+                    reads: c.reads(),
+                    opens: c.launch.iter().map(|l| l.to_string()).collect(),
+                    runs: runs(c),
+                    status: String::new(),
                 })
-                .collect::<Vec<_>>()
-                .join("\n");
-            let runs = |c: &&Code| !disabled.contains(&p.id) && !code_lost.contains_key(&(p.id.clone(), c.source.clone()));
+                .collect();
             PluginRow {
                 id: p.id.clone(),
                 name: p.name().to_string(),
@@ -763,9 +786,8 @@ pub fn rows(list: &[Plugin], disabled: &BTreeSet<String>, cat: &Catalog, native:
                 notes,
                 problems,
                 sole_widgets,
-                code: code_line,
-                code_sources: code.iter().filter(runs).map(|c| c.source.clone()).collect(),
-                status: String::new(),
+                contents: p.contents.clone(),
+                code: code_rows,
             }
         })
         .collect()
@@ -924,7 +946,7 @@ mod tests {
 
     #[test]
     fn code_may_read_declared_folders_and_picked_ones() {
-        let src = format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'agents'\nfs_read = ['~/.claude', '~\\.copilot']\nfs_read_params = ['folder']");
+        let src = format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'notes'\nfs_read = ['~/.claude', '~\\.copilot']\nfs_read_params = ['folder']");
         let c = Manifest::parse(&src).unwrap().code.remove(0);
         assert_eq!(c.reads(), ["~/.claude", "~/.copilot", "folders you pick for its widgets"]);
         let with = |code: &str| Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'a'\n{code}")).unwrap_err();
@@ -934,10 +956,10 @@ mod tests {
         assert!(with("fs_read = '~/.claude'").contains("list"));
         assert!(with("fs_read_params = ['a b']").contains("param name"));
         let data = tmp("coderead");
-        put(&data, "plugins/agents/plugin.toml", &src.replace("sunset", "agents"));
+        put(&data, "plugins/notes/plugin.toml", &src.replace("sunset", "notes"));
         let list = PluginStore::new(&data).list();
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
-        assert_eq!(rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new())[0].code, "Runs code as `agents` · no network · reads ~/.claude, ~/.copilot, folders you pick for its widgets");
+        assert_eq!(rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new())[0].code[0].line(), "Runs code as `notes` · no network · reads ~/.claude, ~/.copilot, folders you pick for its widgets");
         let spec = &code_specs(&list, &BTreeSet::new()).0[0].1;
         assert_eq!((spec.fs_read.len(), spec.fs_read_params.as_slice()), (2, &["folder".to_string()][..]));
         std::fs::remove_dir_all(&data).ok();
@@ -946,14 +968,14 @@ mod tests {
     #[test]
     fn a_widget_needing_a_missing_source_is_a_problem() {
         let data = tmp("needs");
-        put(&data, "plugins/agents/plugin.toml", &OK.replace("sunset", "agents"));
-        put(&data, "plugins/agents/widgets/agents.toml", "name = 'Agents'\nneeds = ['agents', 'clock']\n[root]\ntype = 'box'");
+        put(&data, "plugins/notes/plugin.toml", &OK.replace("sunset", "notes"));
+        put(&data, "plugins/notes/widgets/notes.toml", "name = 'Notes'\nneeds = ['notes', 'clock']\n[root]\ntype = 'box'");
         let list = PluginStore::new(&data).list();
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
         let native = BTreeSet::from(["clock".to_string()]);
         let r = &rows(&list, &BTreeSet::new(), &cat, &native)[0];
-        assert_eq!(r.problems, ["Agents needs the `agents` data source, which is missing. Is the plugin that provides it installed and switched on?"]);
-        code_plugin(&data, "zeta", "agents");
+        assert_eq!(r.problems, ["Notes needs the `notes` data source, which is missing. Is the plugin that provides it installed and switched on?"]);
+        code_plugin(&data, "zeta", "notes");
         let list = PluginStore::new(&data).list();
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
         assert!(rows(&list, &BTreeSet::new(), &cat, &native)[0].problems.is_empty(), "another plugin provides it");
@@ -972,11 +994,11 @@ mod tests {
 
     #[test]
     fn code_may_let_its_widgets_open_more_than_web_links() {
-        let v1 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'agents'\nlaunch = ['vscode', '~/.claude']")).unwrap();
+        let v1 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'notes'\nlaunch = ['vscode', '~/.claude']")).unwrap();
         assert_eq!(v1.code[0].launch.iter().map(|l| l.to_string()).collect::<Vec<_>>(), ["vscode: links", "folders and documents in ~/.claude"]);
         let q = install_question(&v1, &Contents::default(), None);
         assert!(q.contains("Its widgets can open vscode: links, folders and documents in ~/.claude."), "{q}");
-        let v2 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'agents'\nlaunch = ['vscode', '~/.claude', 'slack']")).unwrap();
+        let v2 = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'notes'\nlaunch = ['vscode', '~/.claude', 'slack']")).unwrap();
         assert!(install_question(&v2, &Contents::default(), Some(&v1)).contains("New in this version: slack: links."));
         let bad = Manifest::parse(&format!("{OK}\n[code]\nmodule = 'a.wasm'\nsource = 'a'\nlaunch = ['ms-msdt']")).unwrap_err();
         assert!(bad.contains("never"), "{bad}");
@@ -984,9 +1006,9 @@ mod tests {
 
     #[test]
     fn a_plugin_may_carry_several_code_sources() {
-        let two = format!("{OK}\n[[code]]\nmodule = 'a.wasm'\nsource = 'agents'\nfs_read = ['~/.claude']\n[[code]]\nmodule = 'g.wasm'\nsource = 'gallery'\nfs_read_params = ['folder']\nnet = ['api.example.com']");
+        let two = format!("{OK}\n[[code]]\nmodule = 'a.wasm'\nsource = 'notes'\nfs_read = ['~/.claude']\n[[code]]\nmodule = 'g.wasm'\nsource = 'photos'\nfs_read_params = ['folder']\nnet = ['api.example.com']");
         let m = Manifest::parse(&two).unwrap();
-        assert_eq!(m.code.iter().map(|c| c.source.as_str()).collect::<Vec<_>>(), ["agents", "gallery"]);
+        assert_eq!(m.code.iter().map(|c| c.source.as_str()).collect::<Vec<_>>(), ["notes", "photos"]);
         let q = install_question(&m, &Contents::default(), None);
         assert!(q.contains("read files in: ~/.claude, folders you pick for its widgets.") && q.contains("connect to: api.example.com."), "{q}");
         let dup = format!("{OK}\n[[code]]\nmodule = 'a.wasm'\nsource = 'x'\n[[code]]\nmodule = 'b.wasm'\nsource = 'x'");
@@ -999,7 +1021,8 @@ mod tests {
         assert!(specs.iter().all(|(_, s)| s.plugin == "sunset"), "one plugin, one saved store");
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
         let row = &rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new())[0];
-        assert_eq!((row.code.lines().count(), row.code_sources.clone()), (2, vec!["agents".to_string(), "gallery".to_string()]));
+        assert_eq!(row.code.iter().filter(|c| c.runs).map(|c| c.source.as_str()).collect::<Vec<_>>(), ["notes", "photos"]);
+        assert_eq!((row.code[1].net.as_slice(), row.code[1].reads.as_slice()), (&["api.example.com".to_string()][..], &["folders you pick for its widgets".to_string()][..]));
         std::fs::remove_dir_all(&data).ok();
     }
 
@@ -1016,6 +1039,8 @@ mod tests {
             ("module = 'w.wasm'\nsource = 'my-weather'", "lower-case"),
             ("module = 'w.wasm'\nsource = 'clock'", "taken"),
             ("module = 'w.wasm'\nsource = 'item'", "taken"),
+            ("module = 'w.wasm'\nsource = 'gallery'", "taken"),
+            ("module = 'w.wasm'\nsource = 'agents'", "taken"),
             ("module = 'w.wasm'\nsource = 'w'\nnet = ['127.0.0.1']", "IP"),
             ("module = 'w.wasm'\nsource = 'w'\nnet = ['*']", "wildcard"),
             ("module = 'w.wasm'\nsource = 'w'\nnet = 'x.com'", "list"),
@@ -1060,8 +1085,8 @@ mod tests {
         let list = PluginStore::new(&data).list();
         let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
         let r = rows(&list, &BTreeSet::new(), &cat, &BTreeSet::new());
-        assert_eq!(r[1].code, "Runs code as `weather` · can reach api.open-meteo.com");
-        assert_eq!((r[0].code_sources.as_slice(), r[1].code_sources.as_slice()), (&[][..], &["weather".to_string()][..]));
+        assert_eq!(r[1].code[0].line(), "Runs code as `weather` · can reach api.open-meteo.com");
+        assert_eq!((r[0].code[0].runs, r[1].code[0].runs), (false, true), "beta's weather wins");
         assert!(r[0].problems.iter().any(|p| p.contains("data source `weather` is hidden") && p.contains("wins")), "{:?}", r[0].problems);
         std::fs::remove_dir_all(&data).ok();
     }

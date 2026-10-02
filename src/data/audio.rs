@@ -1,11 +1,11 @@
-//! What the speakers play (WASAPI loopback), as frequency bands for visualizers: `bands`,
-//! `peaks`, `level`, `bass` and `active`. Built in because WebAssembly cannot reach WASAPI
-//! (ADR-0009).
+//! What the speakers play (WASAPI loopback), for visualizers: frequency `bands` with their
+//! `peaks`, `level`, `bass`, the waveform as an oscilloscope draws it (`wave`, -1..1), the
+//! last second or so of bands for a waterfall (`history`, oldest first) and `active`. Built in because WebAssembly cannot reach WASAPI (ADR-0009).
 //!
 //! Capture runs only while a widget reads `audio`, and stops a few seconds after the last
 //! one does. A widget waiting through silence still counts: it sleeps (no cadence) and the
 //! capture thread wakes it when sound starts. Each widget has its own bands and smoothing,
-//! from its params: `bands fmin fmax gain attack release peak_fall`.
+//! from its params: `bands fmin fmax gain attack release peak_fall timebase`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +20,17 @@ use crate::value::Value;
 
 /// Samples per analysis: about 43 ms at 48 kHz, 23 Hz per bin.
 pub const WINDOW: usize = 2048;
+/// Samples kept: the window, and room before it to find where a wave starts.
+pub const RING: usize = WINDOW * 2;
+/// Points across `wave`.
+pub const WAVE_POINTS: usize = 192;
+/// How fast the waveform's scale follows a quieter passage: half way in this many seconds.
+const WAVE_HALF_LIFE: f32 = 1.5;
+/// The most the waveform is magnified, so hiss stays a flat line.
+const WAVE_MAX_ZOOM: f32 = 20.0;
+/// Rows of `history`, one every `HISTORY_ROW` seconds.
+pub const HISTORY_ROWS: usize = 24;
+const HISTORY_ROW: f32 = 0.06;
 /// How often a sounding visualizer redraws.
 pub const FRAME_MS: u32 = 33;
 /// Sound this recent makes the source `active`.
@@ -46,6 +57,8 @@ pub struct Settings {
     pub release: f32,
     /// How fast a peak marker falls, in full heights per second.
     pub peak_fall: f32,
+    /// Milliseconds of sound across `wave`.
+    pub timebase: f32,
 }
 
 impl Settings {
@@ -60,6 +73,7 @@ impl Settings {
             attack: n("attack", 0.6).clamp(0.01, 1.0),
             release: n("release", 0.2).clamp(0.01, 1.0),
             peak_fall: n("peak_fall", 0.6).clamp(0.0, 20.0),
+            timebase: n("timebase", 20.0).clamp(1.0, 60.0),
         }
     }
 }
@@ -101,23 +115,67 @@ pub fn bands(mags: &[f32], rate: f32, s: &Settings) -> Vec<f32> {
         .collect()
 }
 
-/// One widget's moving picture: smoothed bands, falling peaks, level and bass.
+/// `points` values across the newest `span` of `samples`, each the mean of its stretch. Like
+/// an oscilloscope's trigger, the span starts where the wave last rose through zero, so a
+/// steady tone stands still from one frame to the next; without such a place, it is the
+/// newest span. The crossing is found on a centred average, so treble adds no false starts,
+/// and only after the wave has been below a tenth of its peak, so noise at zero adds none.
+pub fn wave(samples: &[f32], span: usize, points: usize) -> Vec<f32> {
+    let n = samples.len();
+    if n < 2 || points == 0 {
+        return vec![0.0; points];
+    }
+    let span = span.clamp(1, n * 3 / 4);
+    let latest = n - span;
+    let smooth = |i: usize| {
+        let (a, b) = (i.saturating_sub(2), (i + 3).min(n));
+        samples[a..b].iter().sum::<f32>() / (b - a) as f32
+    };
+    let below = -0.1 * samples.iter().fold(0f32, |m, x| m.max(x.abs()));
+    let (mut armed, mut prev, mut start) = (false, 0.0, None);
+    for i in 0..=latest {
+        let y = smooth(i);
+        armed |= y < below;
+        if armed && prev < 0.0 && y >= 0.0 {
+            start = Some(i);
+            armed = false;
+        }
+        prev = y;
+    }
+    let start = start.unwrap_or(latest);
+    (0..points)
+        .map(|k| {
+            let a = start + k * span / points;
+            let b = (start + (k + 1) * span / points).clamp(a + 1, n);
+            samples[a..b].iter().sum::<f32>() / (b - a) as f32
+        })
+        .collect()
+}
+
+/// One widget's moving picture: smoothed bands, falling peaks, level, bass and the waveform.
 #[derive(Clone, Debug)]
 pub struct Look {
     pub bands: Vec<f32>,
     pub peaks: Vec<f32>,
     pub level: f32,
     pub bass: f32,
+    pub wave: Vec<f32>,
+    /// The loudest of the waveform lately, which its scale follows.
+    wave_peak: f32,
+    /// Past bands, oldest first, always `HISTORY_ROWS` of them.
+    pub history: VecDeque<Vec<f32>>,
+    /// Seconds since the newest row.
+    since_row: f32,
     at: Option<Instant>,
 }
 
 impl Look {
     fn new() -> Look {
-        Look { bands: vec![], peaks: vec![], level: 0.0, bass: 0.0, at: None }
+        Look { bands: vec![], peaks: vec![], level: 0.0, bass: 0.0, wave: vec![], wave_peak: 0.0, history: VecDeque::new(), since_row: 0.0, at: None }
     }
 
-    /// Moves toward `target` (heights, level, bass) as `dt` has passed.
-    pub fn step(&mut self, target: &[f32], level: f32, bass: f32, now: Instant, s: &Settings) {
+    /// Moves toward `target` (heights, level, bass) as time has passed; returns the seconds.
+    pub fn step(&mut self, target: &[f32], level: f32, bass: f32, now: Instant, s: &Settings) -> f32 {
         let dt = self.at.map_or(1.0 / 30.0, |t| now.saturating_duration_since(t).as_secs_f32().min(0.25));
         self.at = Some(now);
         // the rates are per 1/30 s; a longer frame moves further
@@ -133,16 +191,40 @@ impl Look {
         }
         self.level = ease(self.level, level);
         self.bass = ease(self.bass, bass);
+        // full of silence from the start, and again when the number of bands changes, so a
+        // waterfall never changes its spacing
+        if self.history.front().is_none_or(|r| r.len() != self.bands.len()) {
+            self.history = std::iter::repeat_n(vec![0.0; self.bands.len()], HISTORY_ROWS).collect();
+            self.since_row = 0.0;
+        }
+        // by the clock, not per frame: frames come faster while the widget is busy
+        self.since_row += dt;
+        if self.since_row >= HISTORY_ROW {
+            self.since_row = (self.since_row - HISTORY_ROW).min(HISTORY_ROW);
+            self.history.pop_front();
+            self.history.push_back(self.bands.clone());
+        }
+        dt
+    }
+
+    /// Shows `raw` (from `wave`) scaled so the loudest of the last few seconds nearly fills
+    /// the height, times `gain`: loopback can be quiet or loud, and a waveform is linear.
+    /// The scale follows a louder sound at once and a quieter one slowly.
+    pub fn fit_wave(&mut self, raw: &[f32], dt: f32, gain: f32) {
+        let peak = raw.iter().fold(0f32, |m, x| m.max(x.abs()));
+        self.wave_peak = peak.max(self.wave_peak * 0.5f32.powf(dt / WAVE_HALF_LIFE));
+        let scale = gain * 0.9 / self.wave_peak.max(0.9 / WAVE_MAX_ZOOM);
+        self.wave = raw.iter().map(|x| (x * scale).clamp(-1.0, 1.0)).collect();
     }
 
     /// Everything has fallen to rest: nothing moves until sound comes back.
     pub fn settled(&self) -> bool {
-        self.bands.iter().chain(&self.peaks).chain([&self.level, &self.bass]).all(|v| *v < 0.005)
+        self.bands.iter().chain(&self.peaks).chain([&self.level, &self.bass]).chain(self.history.iter().flatten()).all(|v| *v < 0.005) && self.wave.iter().all(|v| v.abs() < 0.005)
     }
 
     fn value(&self, active: bool) -> Value {
         let list = |v: &[f32]| Value::List(v.iter().map(|x| Value::Num(*x as f64)).collect());
-        Value::obj([("bands", list(&self.bands)), ("peaks", list(&self.peaks)), ("level", Value::Num(self.level as f64)), ("bass", Value::Num(self.bass as f64)), ("active", Value::Bool(active))])
+        Value::obj([("bands", list(&self.bands)), ("peaks", list(&self.peaks)), ("level", Value::Num(self.level as f64)), ("bass", Value::Num(self.bass as f64)), ("wave", list(&self.wave)), ("history", Value::List(self.history.iter().map(|r| list(r)).collect())), ("active", Value::Bool(active))])
     }
 }
 
@@ -175,7 +257,7 @@ struct Ring {
 impl Ring {
     fn push(&mut self, mono: &[f32], now: Instant) -> bool {
         self.samples.extend(mono.iter().copied());
-        let extra = self.samples.len().saturating_sub(WINDOW);
+        let extra = self.samples.len().saturating_sub(RING);
         self.samples.drain(..extra);
         let woke = mono.iter().any(|s| s.abs() > SILENCE) && {
             let was_silent = self.last_sound.is_none_or(|t| now.saturating_duration_since(t) >= ACTIVE_FOR);
@@ -236,17 +318,20 @@ impl DataSource for Audio {
             let r = self.ring.lock().unwrap();
             (r.active(now), r.samples.iter().copied().collect::<Vec<f32>>(), r.rate)
         };
-        let (target, level, bass) = if active && samples.len() == WINDOW && rate > 0 {
-            let mags = spectrum(&samples, self.fft.as_ref());
-            let rms = (samples.iter().map(|x| x * x).sum::<f32>() / samples.len() as f32).sqrt();
+        let (target, level, bass, raw) = if active && samples.len() >= WINDOW && rate > 0 {
+            let last = &samples[samples.len() - WINDOW..];
+            let mags = spectrum(last, self.fft.as_ref());
+            let rms = (last.iter().map(|x| x * x).sum::<f32>() / WINDOW as f32).sqrt();
             let bass = bands(&mags, rate as f32, &Settings { bands: 1, fmin: 20.0, fmax: 250.0, ..s.clone() })[0];
-            (bands(&mags, rate as f32, &s), height(rms * std::f32::consts::SQRT_2, s.gain), bass)
+            let span = (s.timebase / 1000.0 * rate as f32).round() as usize;
+            (bands(&mags, rate as f32, &s), height(rms * std::f32::consts::SQRT_2, s.gain), bass, wave(&samples, span, WAVE_POINTS))
         } else {
-            (vec![0.0; s.bands], 0.0, 0.0)
+            (vec![0.0; s.bands], 0.0, 0.0, vec![0.0; WAVE_POINTS])
         };
         let mut looks = self.looks.lock().unwrap();
         let look = looks.entry(cx.cfg.id.clone()).or_insert_with(Look::new);
-        look.step(&target, level, bass, now, &s);
+        let dt = look.step(&target, level, bass, now, &s);
+        look.fit_wave(&raw, dt, s.gain);
         look.value(active)
     }
 
@@ -424,9 +509,9 @@ mod tests {
     #[test]
     fn params_have_defaults_and_bounds() {
         let d = params(&[]);
-        assert_eq!((d.bands, d.fmin, d.fmax, d.gain), (32, 40.0, 16_000.0, 1.0));
-        let wild = params(&[("bands", 5000.0), ("fmin", 900.0), ("fmax", 100.0), ("attack", 7.0)]);
-        assert_eq!((wild.bands, wild.fmax > wild.fmin, wild.attack), (128, true, 1.0));
+        assert_eq!((d.bands, d.fmin, d.fmax, d.gain, d.timebase), (32, 40.0, 16_000.0, 1.0, 20.0));
+        let wild = params(&[("bands", 5000.0), ("fmin", 900.0), ("fmax", 100.0), ("attack", 7.0), ("timebase", 900.0)]);
+        assert_eq!((wild.bands, wild.fmax > wild.fmin, wild.attack, wild.timebase), (128, true, 1.0, 60.0));
     }
 
     #[test]
@@ -445,6 +530,33 @@ mod tests {
             l.step(&[0.0], 0.0, 0.0, t0 + f * i, &s);
         }
         assert!(l.settled(), "at rest after the sound stops: {:?}", l.bands);
+    }
+
+    #[test]
+    fn a_row_of_history_every_60_ms_until_the_last_loud_one_has_gone() {
+        let s = params(&[("bands", 2.0), ("attack", 1.0), ("release", 1.0), ("peak_fall", 20.0)]);
+        let t0 = Instant::now();
+        let ms = |m: u64| t0 + Duration::from_millis(m);
+        let mut l = Look::new();
+        l.step(&[1.0, 0.2], 1.0, 0.0, t0, &s);
+        assert_eq!(l.history.len(), HISTORY_ROWS, "full from the start");
+        assert!(l.history.iter().all(|r| r == &[0.0, 0.0]), "of silence");
+        for i in 1..=6 {
+            l.step(&[1.0, 0.2], 1.0, 0.0, ms(20 * i), &s);
+        }
+        assert_eq!(l.history.back(), Some(&vec![1.0, 0.2]), "the newest row last");
+        assert_eq!((l.history.len(), l.history.iter().filter(|r| r[0] == 1.0).count()), (HISTORY_ROWS, 2), "a row every 60 ms in 153 ms of frames");
+        for i in 7..=12 {
+            l.step(&[0.0, 0.0], 0.0, 0.0, ms(20 * i), &s);
+        }
+        assert!(l.bands.iter().chain(&l.peaks).all(|v| *v == 0.0), "the bands are at rest: {:?} {:?}", l.bands, l.peaks);
+        assert!(!l.settled(), "but loud rows still recede");
+        for i in 13..=120 {
+            l.step(&[0.0, 0.0], 0.0, 0.0, ms(20 * i), &s);
+        }
+        assert!(l.settled(), "until they have gone");
+        l.step(&[0.5; 3], 0.0, 0.0, ms(2420), &s);
+        assert!(l.history.len() == HISTORY_ROWS && l.history.iter().all(|r| r == &[0.0; 3]), "more bands start it again");
     }
 
     #[test]
@@ -469,8 +581,59 @@ mod tests {
         assert!(r.active(t0 + Duration::from_secs(1)) && r.silent_since.is_none());
         assert!(!r.push(&[0.3; 480], t0 + Duration::from_millis(1010)), "still sounding: no new wake");
         assert_eq!(r.samples.len(), 1440);
-        r.push(&vec![0.0; WINDOW * 2], t0 + Duration::from_secs(3));
-        assert_eq!((r.samples.len(), r.active(t0 + Duration::from_secs(3))), (WINDOW, false));
+        r.push(&vec![0.0; RING + 100], t0 + Duration::from_secs(3));
+        assert_eq!((r.samples.len(), r.active(t0 + Duration::from_secs(3))), (RING, false));
+    }
+
+    #[test]
+    fn a_steady_tone_stands_still_on_the_scope() {
+        // the same 220 Hz tone, caught at a different moment each frame
+        let frames: Vec<Vec<f32>> = [0.0f32, 0.9, 2.3, 4.0]
+            .iter()
+            .map(|phase| (0..RING).map(|i| 0.5 * (std::f32::consts::TAU * 220.0 * i as f32 / 48_000.0 + phase).sin()).collect())
+            .collect();
+        let span = 960; // 20 ms
+        let waves: Vec<Vec<f32>> = frames.iter().map(|f| wave(f, span, 96)).collect();
+        assert_eq!(waves[0].len(), 96);
+        for w in &waves {
+            assert!(w[0].abs() < 0.1 && w[1] > w[0], "it starts rising through zero: {:?}", &w[..4]);
+            let diff = w.iter().zip(&waves[0]).map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+            assert!(diff < 0.06, "every frame draws the same picture: off by {diff}");
+        }
+        let top = waves[0].iter().copied().fold(0.0, f32::max);
+        assert!((top - 0.5).abs() < 0.03, "its height is the tone's: {top}");
+    }
+
+    #[test]
+    fn a_wave_without_a_crossing_shows_the_newest_sound() {
+        let mut ramp: Vec<f32> = (0..1000).map(|i| i as f32 / 1000.0).collect();
+        let w = wave(&ramp, 100, 4);
+        assert!(w.iter().zip([0.912, 0.937, 0.962, 0.987]).all(|(a, b)| (a - b).abs() < 1e-4), "the last 100 samples, 25 to a point: {w:?}");
+        ramp.iter_mut().for_each(|x| *x = 0.0);
+        assert_eq!(wave(&ramp, 100, 3), [0.0; 3], "silence is a flat line");
+        assert_eq!(wave(&[], 100, 3), [0.0; 3]);
+        assert_eq!(wave(&[0.5; 8], 100, 4).len(), 4, "a span longer than the samples is cut to fit");
+    }
+
+    #[test]
+    fn the_scope_fills_its_height_whatever_the_volume() {
+        let s = params(&[]);
+        let quiet = [0.0, 0.05, -0.05, 0.02];
+        let mut l = Look::new();
+        l.fit_wave(&quiet, 1.0 / 30.0, s.gain);
+        assert!((l.wave[1] - 0.9).abs() < 1e-4, "a quiet wave is magnified to 90%: {:?}", l.wave);
+        l.fit_wave(&[0.0, 0.5, -0.5, 0.0], 1.0 / 30.0, s.gain);
+        assert!((l.wave[1] - 0.9).abs() < 1e-4, "a louder one is shrunk at once: {:?}", l.wave);
+        l.fit_wave(&quiet, 1.5, s.gain);
+        assert!((l.wave[1] - 0.18).abs() < 1e-3, "after it, a quiet one grows back slowly: {:?}", l.wave);
+        let mut hiss = Look::new();
+        hiss.fit_wave(&[0.0, 0.001, -0.001], 1.0 / 30.0, 2.0);
+        assert!(hiss.wave[1] < 0.05, "hiss is magnified at most 20 times: {:?}", hiss.wave);
+        hiss.fit_wave(&[0.0, 0.9, -0.9], 1.0 / 30.0, 2.0);
+        assert_eq!(hiss.wave[1..], [1.0, -1.0], "gain past the top is clipped");
+        assert!(!hiss.settled());
+        hiss.fit_wave(&[0.0; 3], 1.0 / 30.0, 2.0);
+        assert!(hiss.settled(), "a flat line is at rest");
     }
 
     #[test]

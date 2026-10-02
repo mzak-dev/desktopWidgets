@@ -286,6 +286,7 @@ impl Gpu {
             attr(1, 8, Float32x2),
             attr(2, 16, Float32),
             attr(3, 20, Float32),
+            attr(7, 24, Float32),
             attr(4, 32, Float32x4),
             attr(5, 48, Float32x4),
             attr(6, 64, Float32x4),

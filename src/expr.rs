@@ -460,6 +460,8 @@ fn call(name: &str, a: &[Value]) -> Result<Value, String> {
             Some(Value::List(l)) => l.len(),
             _ => 0,
         } as f64),
+        // `clock(state.slide * media.duration)`: seconds as a player shows them, 3:07 or 1:02:03
+        "clock" => Value::Str(crate::data::media::clock(n(0)?)),
         "upper" => Value::Str(a.first().map(|v| v.to_string()).unwrap_or_default().to_uppercase()),
         "lower" => Value::Str(a.first().map(|v| v.to_string()).unwrap_or_default().to_lowercase()),
         _ => return Err(format!("unknown function `{name}`")),
@@ -621,6 +623,7 @@ mod tests {
         assert_eq!(ev("'h' + clock.hour").unwrap(), Value::Str("h7".into()));
         assert_eq!(ev("max(1, 9, 3) + clamp(15, 0, 10)").unwrap(), Value::Num(19.0));
         assert_eq!(ev("pad(clock.minute, 2) + ':' + pad(clock.hour, 3)").unwrap(), Value::Str("05:007".into()));
+        assert_eq!((ev("clock(187)").unwrap(), ev("clock(0.5 * 7446)").unwrap()), (Value::Str("3:07".into()), Value::Str("1:02:03".into())), "the function, beside the `clock` source");
     }
 
     #[test]

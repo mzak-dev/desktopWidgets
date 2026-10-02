@@ -1,9 +1,12 @@
 //! Each Data Source declares how often its fields change, so a window wakes
 //! only when a bound value can differ (decision 16, ADR-0004).
 
+mod agents;
 mod audio;
+mod calendar;
 mod clock;
-mod media;
+mod gallery;
+pub(crate) mod media;
 mod shortcuts;
 mod sys;
 
@@ -16,8 +19,11 @@ use crate::code::{CodeSpec, Status, WasmSource};
 use crate::value::Value;
 use crate::workspace::InstanceCfg;
 
+pub use agents::Agents;
 pub use audio::Audio;
+pub use calendar::{Calendar, calendar_value};
 pub use clock::{Clock, Tm, clock_value, now_local};
+pub use gallery::Gallery;
 pub use media::Media;
 pub use shortcuts::{ID_SEP, Shortcut, Shortcuts, file_stem, folder_items, icon_id, shortcuts_value, starter_apps};
 pub use sys::Sys;
@@ -171,7 +177,7 @@ impl DataSources {
     /// The built-in sources, caching under `<data>/.cache` (a dot-folder never reloads content).
     pub fn builtin_in(data: &Path) -> Self {
         let cache = data.join(".cache");
-        Self::new(vec![Box::new(Clock), Box::new(Sys::default()), Box::new(Shortcuts::default()), Box::new(Media::new(cache.join("media"))), Box::new(Audio::default())])
+        Self::new(vec![Box::new(Clock), Box::new(Sys::default()), Box::new(Shortcuts::default()), Box::new(Media::new(cache.join("media"))), Box::new(Audio::default()), Box::new(Gallery::default()), Box::new(Agents::default()), Box::new(Calendar)])
     }
 
     pub fn new(list: Vec<Box<dyn DataSource>>) -> Self {

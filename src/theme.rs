@@ -93,6 +93,9 @@ const BUILTIN_PALETTES: &[&str] = &[
     include_str!("../assets/palettes/daylight.toml"),
     include_str!("../assets/palettes/aurora.toml"),
     include_str!("../assets/palettes/graphite.toml"),
+    include_str!("../assets/palettes/neon-noir.toml"),
+    include_str!("../assets/palettes/paper.toml"),
+    include_str!("../assets/palettes/sunset.toml"),
 ];
 const BUILTIN_FONTS: &[&str] = &[
     include_str!("../assets/fonts/system.toml"),
@@ -116,7 +119,13 @@ pub struct Library {
     /// The built-in default axes' tokens, untouched by any override, so a partial
     /// override of Midnight still inherits the rest of Midnight.
     base: BTreeMap<String, Value>,
+    /// Font families installed, lower case; empty when not known yet (tests, start-up), and
+    /// then no glyph set is swapped for a stand-in.
+    installed: Vec<String>,
 }
+
+/// Windows 11's icon font. Windows 10 has the same icons at the same code points in MDL2.
+const FLUENT_FONT: &str = "Segoe Fluent Icons";
 
 /// The three token axes, each read from its own folder of a content root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -228,7 +237,28 @@ impl Library {
         Self::pick_or_default(&self.fonts, n, &Selection::default().fonts)
     }
     pub fn glyphs(&self, n: &str) -> &Axis {
-        Self::pick_or_default(&self.glyphs, n, &Selection::default().glyphs)
+        self.glyph_stand_in(n).unwrap_or_else(|| Self::pick_or_default(&self.glyphs, n, &Selection::default().glyphs))
+    }
+
+    /// A glyph set drawn in Segoe Fluent Icons on a PC without it (Windows 10) shows the MDL2
+    /// set instead, rather than empty boxes. The saved choice stays as it is.
+    pub fn glyph_stand_in(&self, n: &str) -> Option<&Axis> {
+        let chosen = Self::pick_or_default(&self.glyphs, n, &Selection::default().glyphs);
+        let font = chosen.tokens.get("font-glyph")?.to_string();
+        if self.installed.is_empty() || !font.eq_ignore_ascii_case(FLUENT_FONT) || self.has_font(&font) {
+            return None;
+        }
+        self.glyphs.iter().find(|a| a.name == "MDL2").filter(|m| m.tokens.get("font-glyph").is_some_and(|f| self.has_font(&f.to_string())))
+    }
+
+    /// The font families installed, so glyph sets whose font is missing can be stood in for.
+    pub fn set_installed_fonts(&mut self, families: &[String]) {
+        self.installed = families.iter().map(|f| f.to_lowercase()).collect();
+    }
+
+    fn has_font(&self, family: &str) -> bool {
+        let f = family.to_lowercase();
+        self.installed.iter().any(|x| *x == f)
     }
 }
 
@@ -367,7 +397,7 @@ mod tests {
     #[test]
     fn the_style_schema_keeps_its_file_order() {
         let names: Vec<&str> = style_schema().iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["accent", "radius-lg", "outlines", "blur", "transparent", "bg-opacity", "tint", "shadow", "text-scale", "anim-speed"]);
+        assert_eq!(names, ["accent", "radius-lg", "outlines", "blur", "transparent", "bg-opacity", "tint", "shadow", "font-body", "text-scale", "anim-speed"]);
     }
 
     #[test]
@@ -415,5 +445,24 @@ mod tests {
         let a = Theme::compose(&lib, &Selection { glyphs: "Symbols".into(), ..Default::default() }, &[]);
         assert_eq!(a.str("font-glyph"), "Segoe UI Symbol");
         assert_eq!(a.color("accent").to_hex(), "#6ea8ff"); // palette untouched
+    }
+
+    #[test]
+    fn without_segoe_fluent_icons_the_fluent_set_shows_mdl2_and_the_choice_stays() {
+        let fluent = Selection::default();
+        assert_eq!(fluent.glyphs, "Fluent");
+        let mut lib = Library::load(Path::new("definitely-not-a-dir"));
+        let font = |lib: &Library| Theme::compose(lib, &fluent, &[]).str("font-glyph");
+        assert_eq!(font(&lib), "Segoe Fluent Icons", "fonts not known yet: no stand-in");
+        lib.set_installed_fonts(&["Segoe UI".into(), "Segoe MDL2 Assets".into()]);
+        assert_eq!(font(&lib), "Segoe MDL2 Assets", "Windows 10");
+        assert_eq!(Theme::compose(&lib, &fluent, &[]).str("glyph-gear"), "\u{E713}", "the same icon at the same code point");
+        lib.set_installed_fonts(&["segoe fluent icons".into(), "Segoe MDL2 Assets".into()]);
+        assert_eq!(font(&lib), "Segoe Fluent Icons", "Windows 11");
+        lib.set_installed_fonts(&["Segoe UI".into()]);
+        assert_eq!(font(&lib), "Segoe Fluent Icons", "no MDL2 either: nothing better to show");
+        lib.set_installed_fonts(&["Segoe UI".into(), "Segoe MDL2 Assets".into()]);
+        let symbols = Selection { glyphs: "Symbols".into(), ..Default::default() };
+        assert_eq!(Theme::compose(&lib, &symbols, &[]).str("font-glyph"), "Segoe UI Symbol", "only a set drawn in Segoe Fluent Icons is stood in for");
     }
 }

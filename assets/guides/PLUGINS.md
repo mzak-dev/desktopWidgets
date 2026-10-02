@@ -43,7 +43,12 @@ Unknown keys are refused, so a typo shows up at once.
 - **Fonts:** put `.ttf` / `.otf` files in `fonts/` and name the family (as it is inside the font) in a font set.
 - **Allowed files:** `toml png jpg jpeg gif webp bmp ttf otf ttc otc md txt wasm`, plus `LICENSE`, `README` and `NOTICE`. Anything else stops the install.
 - A widget's `launch` can never open a file inside `plugins/`.
+- **Category and icon:** `category = "Media"` groups a widget in Settings > Add a widget, and `icon = "play"` names the glyph (a `glyph-*` token of the glyph set) shown beside it.
 - **Needs:** a widget that reads a data source another plugin or a Wayfinder build provides can say so with `needs = ["media"]` at its top. When it is missing, the widget, Settings and the Plugins page name it.
+
+## Modules
+
+A widget can let its user arrange its parts (gauges, graphs, a footer) in Settings. Declare `[tiers.<name>]` (a size range, with `when`, a preview `size` and the default `layout`), `[slots.<name>]` and `[modules.<name>]`, put a `type = "slot"` box where each slot goes, and give a module `slots = [...]` for where it may be dropped. A module with `for = "{source.list}"` and `key = "..."` becomes one module per item. Inside a module, `tier` and `slot` are strings you can test, so the same module can be a bar in one slot and a ring in another. Put `module = "id"` on a `[params.x]` so its control shows when that module is selected. Read the Modules part of the widget guide (`docs/writing-widgets.md`, https://github.com/mzak-dev/desktopWidgets/blob/main/docs/writing-widgets.md#modules) for a full example, and `assets/widgets/system_monitor.toml` in the Wayfinder source. Widgets without these tables work exactly as before.
 
 ## Code
 
@@ -58,6 +63,8 @@ net = ["api.open-meteo.com"]          # the only hosts it may reach, over HTTPS
 [code.initial]                        # shown until the first answer, with {weather.loading}
 temp = 0
 ```
+
+A widget sends the source an action with `on_click = "weather.refresh"`, or with `on_slide = "weather.volume"` on a bar the user drags across: while dragging, `state.slide` (0-1) and `state.sliding` follow the pointer, and letting go sends the fraction, `weather.volume 0.42`. `on_drop` sends a dropped file's path the same way.
 
 To read files, list the folders under your home folder it may read, and any params that hold a folder the user picks:
 

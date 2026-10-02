@@ -44,19 +44,42 @@ pub(super) fn set_autostart(on: bool) -> Result<(), String> {
 }
 
 impl App {
-    pub(super) fn init_tray(&mut self) {
+    /// The tray's menu, with a Workspace submenu that ticks the one on screen.
+    fn tray_menu(&self) -> Menu {
         let menu = Menu::new();
         let items = [
-            MenuItem::with_id("edit", "Edit layout   Ctrl+Alt+E", true, None),
+            MenuItem::with_id("edit", format!("Edit layout   {}", settings::EDIT_KEYS.join("+")), true, None),
             MenuItem::with_id("settings", "Settings...", true, None),
-            MenuItem::with_id("reload", "Reload widgets and themes", true, None),
-            MenuItem::with_id("folder", "Open widgets folder", true, None),
         ];
         for it in &items {
             let _ = menu.append(it);
         }
+        let spaces = Submenu::new(format!("Workspace: {}", self.ws.active.replace('&', "&&")), true);
+        for (i, w) in self.ws.workspaces.iter().enumerate() {
+            // `&` would underline the next letter
+            let _ = spaces.append(&CheckMenuItem::with_id(format!("ws:{i}"), w.name.replace('&', "&&"), true, w.name == self.ws.active, None));
+        }
+        let _ = spaces.append(&PredefinedMenuItem::separator());
+        let _ = spaces.append(&MenuItem::with_id("wsmanage", "Manage workspaces...", true, None));
+        let _ = menu.append(&spaces);
+        let _ = menu.append(&PredefinedMenuItem::separator());
+        for it in [MenuItem::with_id("reload", "Reload widgets and themes", true, None), MenuItem::with_id("folder", "Open widgets folder", true, None)] {
+            let _ = menu.append(&it);
+        }
         let _ = menu.append(&PredefinedMenuItem::separator());
         let _ = menu.append(&MenuItem::with_id("quit", "Quit Wayfinder", true, None));
+        menu
+    }
+
+    /// After a Workspace is added, renamed, removed or shown.
+    pub(super) fn refresh_tray(&mut self) {
+        if let Some(t) = &self.tray {
+            t.set_menu(Some(Box::new(self.tray_menu())));
+        }
+    }
+
+    pub(super) fn init_tray(&mut self) {
+        let menu = self.tray_menu();
         let p = self.proxy.clone();
         MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
             let _ = p.send_event(UserEvent::Menu(e.id.0.clone()));
@@ -76,9 +99,10 @@ impl App {
     pub(super) fn init_hotkey(&mut self) {
         match GlobalHotKeyManager::new() {
             Ok(m) => {
-                let hk = HotKey::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::KeyE);
+                // settings::EDIT_KEYS names it; not Ctrl+Alt, which AltGr sends too, so it would eat "ę"
+                let hk = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyE);
                 if let Err(e) = m.register(hk) {
-                    self.log(format!("hotkey Ctrl+Alt+E unavailable ({e}); use the tray menu for Edit Mode"));
+                    self.log(format!("hotkey {} unavailable ({e}); use the tray menu for Edit Mode", settings::EDIT_KEYS.join("+")));
                 }
                 let p = self.proxy.clone();
                 GlobalHotKeyEvent::set_event_handler(Some(move |e: GlobalHotKeyEvent| {
