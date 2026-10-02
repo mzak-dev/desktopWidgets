@@ -41,7 +41,8 @@ pub struct Card {
 
 impl Card {
     pub fn new(theme: &Theme) -> Card {
-        let blur = theme.flag("blur");
+        // DWM blurs only top-level windows; a widget behind the icons is a child (ADR-0013)
+        let blur = theme.flag("blur") && !theme.flag("behind-icons");
         Card {
             gutter: if blur { 0.0 } else { theme.num("gutter").max(0.0) },
             blur,
@@ -166,6 +167,13 @@ mod tests {
     fn blur_removes_the_gutter() {
         assert_eq!(Card::new(&theme_with(&[("blur", Value::Bool(true))])).gutter, 0.0);
         assert_eq!(Card::new(&theme()).gutter, 20.0);
+    }
+
+    #[test]
+    fn behind_the_icons_there_is_no_blur_so_the_gutter_stays() {
+        let c = Card::new(&theme_with(&[("blur", Value::Bool(true)), ("behind-icons", Value::Bool(true))]));
+        assert!(!c.blur);
+        assert_eq!(c.gutter, 20.0);
     }
 
     #[test]

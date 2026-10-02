@@ -104,6 +104,7 @@ These live in **Settings → Appearance → Style** and apply to every widget. E
 | `shadow` | 0–100 | 100 | shadow strength in percent; 0 removes it |
 | `text-scale` | 80–140 | 100 | text size in percent |
 | `anim-speed` | `off`, `fast`, `normal`, `relaxed` | `normal` | hover, appear and resize animations |
+| `behind-icons` | true / false | false | puts widgets on the Desktop or Bottom layer under the desktop icons; they can be seen but not clicked, Edit Mode lifts them out to move them, and blur is off |
 
 A palette, font set or glyph set may set any of these in its `[tokens]`, as its own defaults. Settings still win over them. A glass palette might ship:
 

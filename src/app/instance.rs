@@ -84,6 +84,8 @@ pub(super) struct Instance {
     /// The Widget's last `[expand]`, window units: which axes the window's size belongs to.
     pub(super) expand: Option<ExpandInfo>,
     pub(super) raised: bool,
+    /// A child of the desktop's icon layer, drawn under the icons, instead of a top-level window (ADR-0013).
+    pub(super) behind: bool,
     pub(super) error: Option<String>,
     pub(super) widget_error: Option<String>,
 }
@@ -113,6 +115,7 @@ impl Instance {
             want: None,
             expand: None,
             raised: false,
+            behind: false,
             error: None,
             widget_error: None,
         }

@@ -253,9 +253,39 @@ impl App {
                 self.apply(el, Cmd::Z("icon_list-1".into(), "desktop".into()));
                 self.fake_icon_host = None;
                 st.fake = None; // drops the fake host window
-                next = 200;
+                // ---- behind the desktop icons (ADR-0013) ----
+                st.rect = self.idx("digital_clock-1").and_then(|i| self.rect_now(i));
+                self.apply(el, Cmd::Style(Scope::Instance("digital_clock-1".into()), "behind-icons".into(), Some(Value::Bool(true))));
+                next = 500;
             }
             16 => {
+                let Some(i) = self.idx("digital_clock-1") else { return self.selftest_abort(el, st, "no digital_clock-1 instance") };
+                let (h, want) = (self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w)), st.rect);
+                check(&mut st, "the Style setting puts a widget behind the desktop icons", self.wins[i].behind && h.is_some_and(win32::is_behind_icons), format!("(parent {:?})", h.and_then(win32::parent_of)));
+                check(&mut st, "it stays in the same place on screen", self.rect_now(i) == want, format!("({:?} vs {want:?})", self.rect_now(i)));
+                check(&mut st, "clicks pass through it to the desktop", h.is_some_and(|h| win32::ex_style(h) & 0x20 != 0), String::new());
+                check(&mut st, "it still has something to draw on", self.wins[i].target.is_some(), String::new());
+                self.set_edit(true);
+            }
+            17 => {
+                let i = self.idx("digital_clock-1").unwrap();
+                let (h, want) = (self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w)), st.rect);
+                check(&mut st, "Edit Mode lifts it out from behind the icons to be moved", !self.wins[i].behind && h.is_some_and(|h| win32::parent_of(h).is_none()) && self.rect_now(i) == want, String::new());
+                self.set_edit(false);
+            }
+            18 => {
+                let i = self.idx("digital_clock-1").unwrap();
+                let h = self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w));
+                check(&mut st, "leaving Edit Mode puts it back behind the icons", self.wins[i].behind && h.is_some_and(win32::is_behind_icons), String::new());
+                self.apply(el, Cmd::Style(Scope::Instance("digital_clock-1".into()), "behind-icons".into(), None));
+            }
+            19 => {
+                let i = self.idx("digital_clock-1").unwrap();
+                let (h, want) = (self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w)), st.rect);
+                check(&mut st, "resetting the Style brings it back in front, clickable", !self.wins[i].behind && h.is_some_and(|h| win32::parent_of(h).is_none() && win32::ex_style(h) & 0x20 == 0) && self.rect_now(i) == want, String::new());
+                next = 200;
+            }
+            20 => {
                 let pass = st.checks.iter().filter(|c| c.1).count();
                 let total = st.checks.len();
                 let report: Vec<String> = st.checks.iter().map(|(n, ok)| format!("{} {n}", if *ok { "PASS" } else { "FAIL" })).collect();

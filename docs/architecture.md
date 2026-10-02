@@ -58,7 +58,7 @@ sequenceDiagram
 | `src/gfx.rs` `draw.rs` `shader.wgsl` | wgpu renderer, SDF shapes, premultiplied alpha |
 | `src/app/` `edit.rs` `workspace.rs` | windows, scheduling, input, Edit Mode, Workspaces, Show Desktop, persistence and monitor anchoring |
 | `src/settings.rs` | the animated settings window |
-| `src/platform/` | window styles, z-order, Show Desktop, monitors, virtual desktops |
+| `src/platform/` | window styles, z-order, Show Desktop, the icon layer, monitors, virtual desktops |
 
 ## Decisions worth knowing
 
@@ -67,7 +67,7 @@ Each one is written up with its measurements in [`docs/adr/`](adr).
 | | |
 |---|---|
 | [DirectX 12 + DirectComposition](adr/0001-dx12-dcomp-presentation.md) | The only path on Windows that gives real per-pixel window alpha. A plain swapchain reports `Opaque` only, and Vulkan's support varies by driver. |
-| [Z-order like Rainmeter](adr/0002-z-order-by-reassertion.md) | Widgets sit just above the desktop layer. A hidden sentinel window tells Show Desktop from normal. Nothing is reparented into the shell. |
+| [Z-order like Rainmeter](adr/0002-z-order-by-reassertion.md) | Widgets sit just above the desktop layer. A hidden sentinel window tells Show Desktop from normal. Nothing is reparented into the shell, except behind the icons (below). |
 | [No Wallpaper Engine integration](adr/0003-no-wallpaper-engine-integration.md) | It exposes no API, so there is nothing to integrate with. |
 | [Declarative animation](adr/0004-declarative-animation.md) | The engine owns the clock, so it always knows whether anything is animating, which is what makes "free when idle" possible. |
 | [Adapter and present mode](adr/0005-adapter-and-present-mode.md) | `Mailbox` presentation, and the integrated GPU by default (see below). |
@@ -77,6 +77,7 @@ Each one is written up with its measurements in [`docs/adr/`](adr).
 | [Native sources in your own build](adr/0009-native-sources-in-your-own-build.md) | Native code joins through an exe built on the engine as a library, never through DLLs. |
 | [Workspaces follow desktops and monitors](adr/0011-workspaces-follow-desktops-and-monitors.md) | The current virtual desktop comes from Explorer's registry keys, watched without polling; if they move, desktop rules quietly stop applying. |
 | [Velopack installer and auto-update](adr/0012-velopack-installer-and-autoupdate.md) | A `Setup.exe` installs to `%LocalAppData%\Wayfinder`; a background thread downloads updates and Velopack applies them silently on the next launch. `%APPDATA%\Wayfinder` is untouched. |
+| [Behind the desktop icons](adr/0013-behind-icons-by-reparenting.md) | The one exception to ADR-0002: a widget becomes a child of Explorer's icon layer, the way wallpaper apps do it. It can only be looked at, since the icons take the mouse; Edit Mode lifts it out to be moved. |
 
 <!-- pager:start -->
 <br>

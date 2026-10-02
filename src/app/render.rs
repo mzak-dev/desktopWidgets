@@ -5,6 +5,8 @@ impl App {
         let now = Instant::now();
         let theme = self.theme_of(i);
         let card = Card::new(&theme);
+        // a child window hears of no DPI change: one behind the icons draws at its monitor's
+        let behind_scale = self.wins.get(i).is_some_and(|w| w.behind).then(|| self.scale_of(i) as f32);
         let App { gpu, text, icons, theme: chrome, reg, sources, ws, wins, edit, remove_armed, .. } = self;
         let (Some(gpu), Some(iw)) = (gpu.as_mut(), wins.get_mut(i)) else { return };
         let (Some(window), Some(target)) = (iw.window.clone(), iw.target.as_mut()) else { return };
@@ -24,7 +26,7 @@ impl App {
         if target.view() != (phys.width.max(1), phys.height.max(1)) {
             gpu.fit(target, phys.width, phys.height);
         }
-        let scale = window.scale_factor() as f32;
+        let scale = behind_scale.unwrap_or(window.scale_factor() as f32);
         // a roundness change under blur re-applies too: DWM clips the blur to the corners
         let blur = card.blur.then(|| card.blur_corner_pref());
         if let Some(h) = win32::hwnd_of(&window).filter(|_| blur != iw.blur_applied) {
@@ -120,8 +122,8 @@ impl App {
             g.fit(t, target.w.max(1) as u32, target.h.max(1) as u32);
         }
         self.wins[i].redraw = true;
-        let siblings = self.hwnds();
-        if let Some(h) = hwnd {
+        let siblings = self.front_hwnds();
+        if let Some(h) = hwnd.filter(|_| !self.wins[i].behind) {
             let mode = ZMode::parse(&cfg.z).unwrap_or(ZMode::Desktop);
             let grows = target.w > collapsed.w || target.h > collapsed.h;
             if active && grows && matches!(mode, ZMode::Desktop | ZMode::Bottom) && !self.wins[i].raised {
