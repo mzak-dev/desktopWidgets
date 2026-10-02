@@ -84,6 +84,9 @@ pub enum UserEvent {
     UpdateReleases(Vec<velopack::VelopackAsset>),
     /// A manually chosen update failed to download or apply.
     UpdateInstallFailed(String),
+    /// An on-demand "Check for Updates" found nothing newer (a success path that restarts
+    /// the app never reaches this event at all).
+    UpdateChecked(String),
 }
 
 /// How to run Wayfinder. `Options::from_args()` reads the command line; an app built on
@@ -950,6 +953,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
             UserEvent::UpdateInstallFailed(msg) => {
                 self.log(format!("update: {msg}"));
+                self.update_note = msg;
+                if let Some(s) = &mut self.settings {
+                    s.invalidate();
+                }
+            }
+            UserEvent::UpdateChecked(msg) => {
                 self.update_note = msg;
                 if let Some(s) = &mut self.settings {
                     s.invalidate();
