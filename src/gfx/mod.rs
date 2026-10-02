@@ -2,6 +2,8 @@
 //! them is decided here and nowhere above (ADR-0013). `Gpu` and `Target` are
 //! enums over the backends; a `Target` only works with the `Gpu` that made it.
 
+#[cfg(feature = "skia")]
+mod skia;
 mod wgpu;
 
 use std::sync::Arc;
@@ -36,13 +38,36 @@ impl Power {
 pub enum Backend {
     #[default]
     Wgpu,
+    /// Only in a build with the `skia` feature.
+    #[cfg(feature = "skia")]
+    Skia,
 }
 
 impl Backend {
+    /// The renderer a saved or typed name means; `wgpu` for anything this build lacks.
+    pub fn parse(s: &str) -> Backend {
+        match s.trim().to_ascii_lowercase().as_str() {
+            #[cfg(feature = "skia")]
+            "skia" => Backend::Skia,
+            _ => Backend::Wgpu,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Backend::Wgpu => "wgpu",
+            #[cfg(feature = "skia")]
+            Backend::Skia => "skia",
         }
+    }
+
+    /// The renderers this build has, for Settings to offer.
+    pub fn available() -> &'static [Backend] {
+        &[
+            Backend::Wgpu,
+            #[cfg(feature = "skia")]
+            Backend::Skia,
+        ]
     }
 }
 
@@ -55,10 +80,14 @@ pub enum RenderError {
 
 pub enum Gpu {
     Wgpu(wgpu::Gpu),
+    #[cfg(feature = "skia")]
+    Skia(skia::Gpu),
 }
 
 pub enum Target {
     Wgpu(wgpu::Target),
+    #[cfg(feature = "skia")]
+    Skia(skia::Target),
 }
 
 /// Runs `$e` on whichever backend `$self` holds.
@@ -66,6 +95,8 @@ macro_rules! on_gpu {
     ($self:expr, $g:ident => $e:expr) => {
         match $self {
             Gpu::Wgpu($g) => $e,
+            #[cfg(feature = "skia")]
+            Gpu::Skia($g) => $e,
         }
     };
 }
@@ -75,18 +106,24 @@ impl Gpu {
     pub fn new(window: &Arc<Window>, power: Power, backend: Backend) -> Result<(Gpu, Target), String> {
         match backend {
             Backend::Wgpu => wgpu::Gpu::new(window, power).map(|(g, t)| (Gpu::Wgpu(g), Target::Wgpu(t))),
+            #[cfg(feature = "skia")]
+            Backend::Skia => skia::Gpu::new(window, power).map(|(g, t)| (Gpu::Skia(g), Target::Skia(t))),
         }
     }
 
     pub fn new_headless(power: Power, backend: Backend) -> Result<Gpu, String> {
         match backend {
             Backend::Wgpu => wgpu::Gpu::new_headless(power).map(Gpu::Wgpu),
+            #[cfg(feature = "skia")]
+            Backend::Skia => skia::Gpu::new_headless(power).map(Gpu::Skia),
         }
     }
 
     pub fn backend(&self) -> Backend {
         match self {
             Gpu::Wgpu(_) => Backend::Wgpu,
+            #[cfg(feature = "skia")]
+            Gpu::Skia(_) => Backend::Skia,
         }
     }
 
@@ -107,6 +144,8 @@ impl Gpu {
     pub fn target_for(&mut self, window: &Arc<Window>) -> Result<Target, String> {
         match self {
             Gpu::Wgpu(g) => g.target_for(window).map(Target::Wgpu),
+            #[cfg(feature = "skia")]
+            Gpu::Skia(g) => g.target_for(window).map(Target::Skia),
         }
     }
 
@@ -114,12 +153,20 @@ impl Gpu {
     pub fn fit(&self, t: &mut Target, w: u32, h: u32) {
         match (self, t) {
             (Gpu::Wgpu(g), Target::Wgpu(t)) => g.fit(t, w, h),
+            #[cfg(feature = "skia")]
+            (Gpu::Skia(g), Target::Skia(t)) => g.fit(t, w, h),
+            #[cfg(feature = "skia")]
+            _ => {}
         }
     }
 
     pub fn render(&mut self, t: &mut Target, list: &DrawList, text: &mut TextEngine) -> Result<(), RenderError> {
         match (self, t) {
             (Gpu::Wgpu(g), Target::Wgpu(t)) => g.render(t, list, text),
+            #[cfg(feature = "skia")]
+            (Gpu::Skia(g), Target::Skia(t)) => g.render(t, list, text),
+            #[cfg(feature = "skia")]
+            _ => Err(RenderError::Skip("the window's target belongs to another renderer".into())),
         }
     }
 
@@ -165,6 +212,8 @@ impl Target {
     pub fn size(&self) -> (u32, u32) {
         match self {
             Target::Wgpu(t) => t.size(),
+            #[cfg(feature = "skia")]
+            Target::Skia(t) => t.size(),
         }
     }
 
@@ -172,6 +221,8 @@ impl Target {
     pub fn view(&self) -> (u32, u32) {
         match self {
             Target::Wgpu(t) => t.view(),
+            #[cfg(feature = "skia")]
+            Target::Skia(t) => t.view(),
         }
     }
 }

@@ -62,6 +62,19 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2
 # plugin code (ADR-0008): an interpreter, no JIT, no WASI
 wasmi = { version = "2.0.0", default-features = false, features = ["stable", "std", "validate", "auto-dispatch"] }
 velopack = "1.2.158"
+# the Skia renderer (ADR-0013); a plain build stays wgpu only
+skia-safe = { version = "0.153.3", optional = true }
+
+[features]
+# CPU raster through Skia, shown in a DirectComposition window. Skia's prebuilt binaries
+# cover this feature set; Graphite would not be (see ADR-0013).
+skia = [
+    "dep:skia-safe",
+    "windows/Win32_Graphics_Direct3D",
+    "windows/Win32_Graphics_Direct3D11",
+    "windows/Win32_Graphics_Dxgi_Common",
+    "windows/Win32_Graphics_DirectComposition",
+]
 
 [profile.release]
 debug = 1
