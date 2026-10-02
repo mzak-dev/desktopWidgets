@@ -3,7 +3,7 @@
 //!
 //!   wayfinder --render-widget <id | file.toml> --png <out.png> [--size WxH] [--param k=v]...
 //!             [--state k=v]... [--palette name] [--scale 1.25] [--time HH:MM] [--transparent]
-//!             [--wait secs] [--data dir] [--gpu software|high|low]
+//!             [--wait secs] [--data dir] [--gpu software|high|low] [--renderer wgpu|skia]
 //!   wayfinder plugin pack <folder> [out.wfplugin]
 //!   wayfinder plugin check <file.wfplugin | folder>
 //!
@@ -31,7 +31,7 @@ use crate::workspace::{self, InstanceCfg};
 
 pub const USAGE: &str = "usage:
   wayfinder --render-widget <id | file.toml> --png <out.png> [--size WxH] [--param k=v]... [--state k=v]...
-            [--palette name] [--scale 1.25] [--time HH:MM] [--transparent] [--wait secs] [--data dir] [--gpu mode]
+            [--palette name] [--scale 1.25] [--time HH:MM] [--transparent] [--wait secs] [--data dir] [--gpu mode] [--renderer wgpu|skia]
   wayfinder plugin pack <folder> [out.wfplugin]
   wayfinder plugin check <file.wfplugin | folder>";
 
@@ -60,6 +60,8 @@ pub struct Render {
     pub wait: f32,
     pub data: PathBuf,
     pub gpu: String,
+    /// `wgpu` (default) or `skia`, in a build that has it.
+    pub renderer: String,
 }
 
 /// `v` as JSON when it is (numbers, booleans, lists), else as text.
@@ -85,7 +87,7 @@ pub fn command(args: &[String]) -> Option<Command> {
     let i = args.iter().position(|a| a == "--render-widget")?;
     let parse = || -> Result<Render, String> {
         let widget = args.get(i + 1).filter(|w| !w.starts_with("--")).ok_or("--render-widget needs a widget id or file")?.clone();
-        let mut r = Render { widget, png: PathBuf::new(), size: None, params: vec![], state: vec![], palette: None, scale: 1.25, time: None, transparent: false, wait: 5.0, data: workspace::data_dir(), gpu: "software".into() };
+        let mut r = Render { widget, png: PathBuf::new(), size: None, params: vec![], state: vec![], palette: None, scale: 1.25, time: None, transparent: false, wait: 5.0, data: workspace::data_dir(), gpu: "software".into(), renderer: "wgpu".into() };
         let mut it = args.iter().enumerate().filter(|(j, _)| *j != i && *j != i + 1).map(|(_, a)| a);
         while let Some(a) = it.next() {
             let mut val = || it.next().cloned().ok_or_else(|| format!("{a} needs a value"));
@@ -109,6 +111,7 @@ pub fn command(args: &[String]) -> Option<Command> {
                 "--wait" => r.wait = val()?.parse().map_err(|_| "--wait is seconds")?,
                 "--data" => r.data = val()?.into(),
                 "--gpu" => r.gpu = val()?,
+                "--renderer" => r.renderer = val()?,
                 other => return Err(format!("unknown option `{other}`")),
             }
         }
@@ -213,7 +216,7 @@ fn render(r: &Render) -> Result<bool, String> {
         println!("warning: {e}");
     }
 
-    let mut gpu = Gpu::new_headless(Power::parse(&r.gpu), Backend::default())?;
+    let mut gpu = Gpu::new_headless(Power::parse(&r.gpu), Backend::parse(&r.renderer))?;
     let mut text = TextEngine::new();
     for e in text.sync_fonts(&cat.font_files) {
         println!("warning: {e}");
@@ -348,6 +351,9 @@ mod tests {
         assert_eq!((r.widget.as_str(), r.png, r.size, r.time, r.transparent), ("clock", PathBuf::from("o.png"), Some((300.0, 200.0)), Some((15, 42)), true));
         assert_eq!(r.params, [("title".to_string(), serde_json::json!("Quick launch")), ("smooth".to_string(), serde_json::json!(true))]);
         assert_eq!(r.state, [("selected".to_string(), serde_json::json!(2))]);
+        assert_eq!(r.renderer, "wgpu", "wgpu unless asked");
+        let Some(Command::Render(s)) = command(&args(&["--render-widget", "clock", "--png", "o.png", "--renderer", "skia"])) else { panic!() };
+        assert_eq!(s.renderer, "skia");
         for bad in [&["--render-widget", "clock"][..], &["--render-widget", "clock", "--png", "o.png", "--size", "big"], &["--render-widget", "clock", "--png", "o.png", "--nope"], &["--render-widget", "--png", "o.png"]] {
             assert!(matches!(command(&args(bad)), Some(Command::Usage(_))), "{bad:?}");
         }

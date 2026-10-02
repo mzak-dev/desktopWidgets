@@ -200,6 +200,11 @@ impl App {
                 self.mark_save();
                 self.log("GPU preference saved: restart Wayfinder to apply it");
             }
+            Cmd::Renderer(r) => {
+                self.ws.renderer = r;
+                self.mark_save();
+                self.switch_renderer(el);
+            }
             Cmd::Autostart(on) => {
                 self.ws.autostart = on;
                 if let Err(e) = set_autostart(on) {

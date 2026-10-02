@@ -118,6 +118,9 @@ pub struct Workspace {
     pub version: u32,
     /// "low" (default) | "high" | "software": ADR-005.
     pub gpu: String,
+    /// "wgpu" (default) | "skia": which renderer draws the windows (ADR-0013). A build
+    /// without Skia reads anything as wgpu.
+    pub renderer: String,
     pub theme: Selection,
     /// Style tokens (`assets/style.toml`) for every Instance; each may override them.
     pub style: BTreeMap<String, serde_json::Value>,
@@ -152,6 +155,7 @@ impl Default for Workspace {
         Self {
             version: 2,
             gpu: "low".into(),
+            renderer: "wgpu".into(),
             theme: Selection::default(),
             style: BTreeMap::new(),
             grid: 8.0,
@@ -639,7 +643,7 @@ mod tests {
     #[test]
     fn unknown_and_missing_fields_do_not_break_loading() {
         let w: Workspace = serde_json::from_str(r#"{"instances":[{"id":"a","widget":"clock","future_field":1}],"other":true}"#).unwrap();
-        assert_eq!((w.instances[0].w, w.gpu.as_str()), (200.0, "low"));
+        assert_eq!((w.instances[0].w, w.gpu.as_str(), w.renderer.as_str()), (200.0, "low", "wgpu"), "a file from before the renderer setting keeps wgpu");
         assert_eq!(Workspace::default().next_id("clock"), "clock-1");
     }
 

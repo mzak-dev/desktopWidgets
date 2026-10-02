@@ -95,6 +95,8 @@ pub struct Options {
     pub dir: PathBuf,
     pub selftest: bool,
     pub gpu_override: Option<String>,
+    /// `wgpu` or `skia`, instead of the saved setting.
+    pub renderer_override: Option<String>,
     pub exit_after_secs: Option<f32>,
     /// Point `.wfplugin` files at this exe (not for throwaway `--data` runs).
     pub register_file_type: bool,
@@ -108,7 +110,7 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { dir: workspace::data_dir(), selftest: false, gpu_override: None, exit_after_secs: None, register_file_type: true, edit: false, install: None, extra_sources: Vec::new() }
+        Options { dir: workspace::data_dir(), selftest: false, gpu_override: None, renderer_override: None, exit_after_secs: None, register_file_type: true, edit: false, install: None, extra_sources: Vec::new() }
     }
 }
 
@@ -117,7 +119,7 @@ impl Options {
         Options::parse(&std::env::args().skip(1).collect::<Vec<_>>())
     }
 
-    /// `--data <dir> --exit-after <sec> --gpu <mode> --edit --selftest --install <file>`.
+    /// `--data <dir> --exit-after <sec> --gpu <mode> --renderer <wgpu|skia> --edit --selftest --install <file>`.
     pub fn parse(args: &[String]) -> Options {
         let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned());
         let flag = |name: &str| args.iter().any(|a| a == name);
@@ -126,6 +128,7 @@ impl Options {
             dir: value("--data").map(PathBuf::from).unwrap_or_else(workspace::data_dir),
             selftest,
             gpu_override: value("--gpu"),
+            renderer_override: value("--renderer"),
             exit_after_secs: value("--exit-after").and_then(|s| s.parse().ok()),
             register_file_type: value("--data").is_none() && !selftest,
             edit: flag("--edit"),
@@ -275,6 +278,10 @@ pub struct App {
     gpu_lost_reason: Option<String>,
     gpu_recoveries: Vec<Instant>,
     forced_software: bool,
+    /// Set when the renderer asked for could not run, for the rest of the session.
+    forced_backend: Option<Backend>,
+    /// Why, for Settings.
+    renderer_note: String,
     families: Vec<String>,
     plugins: Vec<Plugin>,
     plugin_rows: Vec<PluginRow>,
@@ -366,6 +373,8 @@ impl App {
             gpu_lost_reason: None,
             gpu_recoveries: Vec::new(),
             forced_software: false,
+            forced_backend: None,
+            renderer_note: String::new(),
             families: Vec::new(),
             plugins: Vec::new(),
             plugin_rows: Vec::new(),
@@ -399,9 +408,34 @@ impl App {
         Power::parse(self.opts.gpu_override.as_deref().unwrap_or(&self.ws.gpu))
     }
 
-    /// Which renderer draws the windows.
+    /// The renderer asked for: `--renderer`, else the saved setting.
+    fn configured_backend(&self) -> Backend {
+        Backend::parse(self.opts.renderer_override.as_deref().unwrap_or(&self.ws.renderer))
+    }
+
+    /// The renderer in use: the one asked for, unless it could not run.
     fn backend(&self) -> Backend {
-        Backend::default()
+        self.forced_backend.unwrap_or_else(|| self.configured_backend())
+    }
+
+    /// A renderer and its first target for `window`, on wgpu when the one asked for
+    /// cannot start.
+    fn new_gpu(&mut self, window: &Arc<Window>) -> Result<(Gpu, Target), String> {
+        let (power, backend) = (self.power(), self.backend());
+        match Gpu::new(window, power, backend) {
+            Err(e) if backend != Backend::Wgpu => {
+                self.fall_back(format!("{} could not start: {e}", backend.name()));
+                Gpu::new(window, power, Backend::Wgpu)
+            }
+            made => made,
+        }
+    }
+
+    /// Draws with wgpu for the rest of the session, and says why.
+    fn fall_back(&mut self, why: String) {
+        self.forced_backend = Some(Backend::Wgpu);
+        self.log(format!("renderer: {why}; drawing with wgpu instead"));
+        self.renderer_note = why;
     }
 
     pub fn request_edit_on_start(&mut self) {
@@ -533,7 +567,7 @@ impl App {
         let target = match self.gpu.as_mut() {
             Some(g) => g.target_for(&window)?,
             None => {
-                let (g, t) = Gpu::new(&window, self.power(), self.backend())?;
+                let (g, t) = self.new_gpu(&window)?;
                 let info = g.info().to_string();
                 self.gpu = Some(g);
                 self.log_gpu(info);
@@ -575,16 +609,28 @@ impl App {
         self.monitor_of(cfg).map(|m| m.scale).or_else(|| self.wins[i].window.as_ref().map(|w| w.scale_factor())).unwrap_or(1.0)
     }
 
-    /// Three losses in 90 s switch to the software renderer instead of looping (ADR-006).
+    /// Three losses in 90 s stop trusting the renderer instead of looping (ADR-006): a
+    /// session drawing with Skia moves to wgpu, any other to the software renderer.
     fn recover_gpu(&mut self, el: &ActiveEventLoop, why: &str) {
         let now = Instant::now();
         self.gpu_recoveries.retain(|t| now.duration_since(*t) < Duration::from_secs(90));
         self.gpu_recoveries.push(now);
-        if self.gpu_recoveries.len() >= 3 && !self.forced_software {
-            self.forced_software = true;
-            self.log("the GPU was lost 3 times in 90 s: switching to the software renderer for this session");
+        if self.gpu_recoveries.len() >= 3 {
+            if self.backend() != Backend::Wgpu {
+                self.gpu_recoveries.clear();
+                self.fall_back("the GPU was lost 3 times in 90 s".into());
+            } else if !self.forced_software {
+                self.forced_software = true;
+                self.log("the GPU was lost 3 times in 90 s: switching to the software renderer for this session");
+            }
         }
         self.log(format!("GPU lost ({why}): rebuilding"));
+        self.rebuild_gpu(el);
+    }
+
+    /// Drops the renderer and every window's target, then builds them again on whichever
+    /// renderer is wanted now. A window that will not take its new target is recreated.
+    fn rebuild_gpu(&mut self, el: &ActiveEventLoop) {
         self.settings = None;
         self.gpu = None;
         self.icons.forget();
@@ -592,25 +638,53 @@ impl App {
         for w in &mut self.wins {
             w.target = None;
         }
-        let (power, backend) = (self.power(), self.backend());
+        let mut stuck = Vec::new();
         for (i, win) in windows {
             let target = match self.gpu.as_mut() {
                 Some(g) => g.target_for(&win),
-                None => Gpu::new(&win, power, backend).map(|(g, t)| {
+                None => self.new_gpu(&win).map(|(g, t)| {
                     self.gpu = Some(g);
                     t
                 }),
             };
             match target {
                 Ok(t) => self.wins[i].target = Some(t),
-                Err(e) => self.log(format!("could not rebuild window {i}: {e}")),
+                Err(e) => {
+                    self.log(format!("could not rebuild window {i} in place ({e}): recreating it"));
+                    stuck.push(i);
+                }
             }
             self.wins[i].redraw = true;
         }
-        let _ = el;
+        for i in stuck {
+            let iw = &mut self.wins[i];
+            iw.window = None;
+            iw.frame = None;
+        }
+        self.sync_windows(el);
         if let Some(g) = &self.gpu {
             let info = g.info().to_string();
             self.log_gpu(info);
+        }
+    }
+
+    /// Applies a changed renderer setting live: every window moves to the new renderer,
+    /// and Settings, which has to be rebuilt too, comes back on the General page.
+    fn switch_renderer(&mut self, el: &ActiveEventLoop) {
+        self.forced_backend = None;
+        self.renderer_note.clear();
+        let want = self.backend();
+        if self.gpu.as_ref().is_some_and(|g| g.backend() == want) {
+            return;
+        }
+        self.log(format!("renderer: switching to {}", want.name()));
+        let reopen = self.settings.is_some();
+        self.rebuild_gpu(el);
+        if reopen {
+            self.open_settings(el);
+            if let Some(s) = &mut self.settings {
+                s.show_page("general");
+            }
         }
     }
 
@@ -838,7 +912,15 @@ impl App {
             return;
         }
         let (power, backend) = (self.power(), self.backend());
-        match SettingsWin::open(el, &mut self.gpu, power, backend) {
+        let opened = match SettingsWin::open(el, &mut self.gpu, power, backend) {
+            // Settings is the first window, so it has to find the fallback too
+            Err(e) if backend != Backend::Wgpu && self.gpu.is_none() => {
+                self.fall_back(format!("{} could not start: {e}", backend.name()));
+                SettingsWin::open(el, &mut self.gpu, power, Backend::Wgpu)
+            }
+            opened => opened,
+        };
+        match opened {
             Ok(s) => self.settings = Some(s),
             Err(e) => self.log(format!("settings: {e}")),
         }
@@ -976,11 +1058,11 @@ impl ApplicationHandler<UserEvent> for App {
         if self.settings.as_ref().is_some_and(|s| s.window.id() == id) {
             let gpu_info = self.gpu.as_ref().map(|g| g.info().to_string()).unwrap_or_else(|| "no GPU yet".into());
             let setup: Vec<workspace::MonitorRef> = self.monitor_setup();
-            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, desktops, desktop, update_releases, update_note, .. } = self;
+            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, desktops, desktop, update_releases, update_note, renderer_note, .. } = self;
             let off = plugins::hidden_instances(ws, reg, installed);
             let hidden: Vec<(String, settings::Hidden)> = ws.instances.iter().zip(wins.iter()).filter(|(_, w)| w.window.is_none()).map(|(c, _)| (c.id.clone(), off.get(&c.id).map_or(settings::Hidden::Parked, |p| settings::Hidden::PluginOff(p.clone())))).collect();
             let source_names = sources.names();
-            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files, data: sources, desktops, desktop: desktop.as_deref(), setup: &setup, update_releases, update_note };
+            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files, data: sources, desktops, desktop: desktop.as_deref(), setup: &setup, update_releases, update_note, renderer_note };
             let s = settings.as_mut().unwrap();
             let cmds = s.event(&ev, &ctx, text);
             if matches!(ev, WindowEvent::RedrawRequested) {
@@ -1137,5 +1219,7 @@ mod options_tests {
         assert!(!o.register_file_type, "a throwaway --data run leaves the file association alone");
         let plain = Options::parse(&[]);
         assert!(plain.register_file_type && plain.extra_sources.is_empty() && !plain.selftest);
+        assert_eq!(plain.renderer_override, None);
+        assert_eq!(Options::parse(&args(&["--renderer", "skia"])).renderer_override.as_deref(), Some("skia"));
     }
 }

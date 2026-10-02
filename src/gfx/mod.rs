@@ -226,3 +226,34 @@ impl Target {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_renderer_name_means_wgpu_unless_this_build_has_what_it_names() {
+        assert_eq!(Backend::default(), Backend::Wgpu);
+        for s in ["", "wgpu", "WGPU", " wgpu ", "vulkan", "nonsense"] {
+            assert_eq!(Backend::parse(s), Backend::Wgpu, "{s:?}");
+        }
+        let skia = Backend::parse("Skia");
+        assert_eq!(skia == Backend::Wgpu, !cfg!(feature = "skia"), "skia only where it is built");
+    }
+
+    #[test]
+    fn every_available_renderer_round_trips_through_its_name() {
+        assert_eq!(Backend::available()[0], Backend::Wgpu, "wgpu is listed first");
+        for b in Backend::available() {
+            assert_eq!(Backend::parse(b.name()), *b);
+        }
+        assert_eq!(Backend::available().len(), if cfg!(feature = "skia") { 2 } else { 1 });
+    }
+
+    #[test]
+    fn power_words_keep_their_meaning() {
+        assert_eq!(Power::parse("high"), Power::High);
+        assert_eq!(Power::parse("WARP"), Power::Software);
+        assert_eq!(Power::parse("anything else"), Power::Low);
+    }
+}

@@ -23,7 +23,7 @@ use wayfinder::workspace::{InstanceCfg, MonitorRef, Workspace};
 fn main() {
     let out = std::env::args().nth(1).unwrap_or_else(|| ".".into());
     let power = Power::parse(&std::env::var("WAYFINDER_GPU").unwrap_or_else(|_| "software".into()));
-    let mut gpu = Gpu::new_headless(power, Backend::default()).expect("gpu");
+    let mut gpu = Gpu::new_headless(power, Backend::parse(&std::env::var("WAYFINDER_RENDERER").unwrap_or_default())).expect("gpu");
     println!("gpu: {}", gpu.info());
     let mut text = TextEngine::new();
     let mut icons = IconService::default();
@@ -131,7 +131,7 @@ fn main() {
         let (desks, desk, setup): (&[wayfinder::platform::vdesk::Desktop], Option<&str>, &[MonitorRef]) = if name.starts_with("workspaces") { (&desktops, Some(desktops[1].id.as_str()), &dock) } else { (&[], None, std::slice::from_ref(&mon)) };
         let plugins: &[PluginRow] = if name == "plugins_empty" { &[] } else { &plugins };
         let theme = ws.global_theme(&lib);
-        let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources, desktops: desks, desktop: desk, setup, update_releases: &[], update_note: "" };
+        let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources, desktops: desks, desktop: desk, setup, update_releases: &[], update_note: "", renderer_note: "" };
         let mut ui = UiState::default();
         for a in acts {
             let _ = ui.act(a, &ctx, None);

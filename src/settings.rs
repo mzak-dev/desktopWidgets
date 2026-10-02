@@ -62,6 +62,8 @@ pub struct Ctx<'a> {
     pub update_releases: &'a [velopack::VelopackAsset],
     /// The outcome of the last manually chosen install.
     pub update_note: &'a str,
+    /// Why the renderer asked for is not the one drawing, when it is not.
+    pub renderer_note: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -157,6 +159,8 @@ pub enum Cmd {
     /// An Instance's own palette/fonts/glyphs/pack (`palette|fonts|glyphs|pack`); `None` = global.
     ThemePick(String, String, Option<String>),
     Gpu(String),
+    /// `wgpu` or `skia`; applied at once (ADR-0013).
+    Renderer(String),
     Autostart(bool),
     Grid(f32),
     Flag(Flag, bool),
@@ -1066,6 +1070,16 @@ impl UiState {
         if key == "gpu" {
             return two(&[("low", "Integrated GPU (recommended)"), ("high", "Dedicated GPU"), ("software", "Software (CPU, slow)")]);
         }
+        if key == "renderer" {
+            return Backend::available()
+                .iter()
+                .map(|b| match b {
+                    Backend::Wgpu => ("wgpu".to_string(), "wgpu \u{b7} DirectX 12 (recommended)".to_string()),
+                    #[cfg(feature = "skia")]
+                    Backend::Skia => ("skia".to_string(), "Skia \u{b7} CPU raster (experimental)".to_string()),
+                })
+                .collect();
+        }
         if key == "update_version" {
             return ctx.update_releases.iter().map(|a| (a.Version.clone(), a.Version.clone())).collect();
         }
@@ -1113,6 +1127,7 @@ impl UiState {
         }
         match key {
             "gpu" => return ctx.ws.gpu.clone(),
+            "renderer" => return ctx.ws.renderer.clone(),
             "update_version" => return self.update_pick.clone().unwrap_or_default(),
             "th:palette" => return ctx.ws.theme.palette.clone(),
             "th:fonts" => return ctx.ws.theme.fonts.clone(),
@@ -2474,6 +2489,14 @@ impl UiState {
             adapter = adapter.child(k.btn("gn/restart", Some("refresh"), "Restart", "restart".into(), Btn::Primary));
         }
         gfx = gfx.child(k.row("gn/gpu", "Adapter", help, adapter));
+        if Backend::available().len() > 1 {
+            let help = "Switches at once; widgets blink while they are rebuilt. Skia draws on the CPU.";
+            let renderer = k.dropdown("renderer", &self.dropdown_label(ctx, "renderer"), if two { 264.0 } else { 240.0 }, self.is_open_dd("renderer"));
+            gfx = gfx.child(k.row("gn/rnd", "Renderer", help, renderer));
+            if !ctx.renderer_note.is_empty() {
+                gfx = gfx.child(Node::new("gn/rnd/note").pad_xy(0.0, 12.0).child(k.txt("gn/rnd/note/t".into(), &format!("Drawing with wgpu instead: {}", ctx.renderer_note), 14.0, WARN).wrap_text()));
+            }
+        }
         let graphics = k.panel("gn/gfx", "Graphics", Some(k.txt("gn/gfx/now".into(), "In use now", 12.0, MUTED)), gfx);
 
         let version_ctl = Node::new("gn/ver/c").row().gap(8.0).child(k.btn("gn/ver/check", Some("refresh"), "Check for Updates", "checkupdate".into(), Btn::Secondary)).child(k.btn(CHANGELOG_BTN, Some("info"), "Changelog", "changelog".into(), Btn::Secondary));
@@ -3071,6 +3094,9 @@ impl UiState {
         if key == "gpu" {
             self.gpu_picked = true;
             return vec![Cmd::Gpu(value.into())];
+        }
+        if key == "renderer" {
+            return vec![Cmd::Renderer(value.into())];
         }
         if key == "update_version" {
             // picking only stages it for the Install button below — never applied by itself,
@@ -4207,7 +4233,7 @@ mod tests {
     }
 
     fn ctx(w: &World) -> Ctx<'_> {
-        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me, data: &w.data, desktops: &[], desktop: None, setup: &[], update_releases: &[], update_note: "" }
+        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me, data: &w.data, desktops: &[], desktop: None, setup: &[], update_releases: &[], update_note: "", renderer_note: "" }
     }
 
     #[test]
@@ -4542,6 +4568,7 @@ mod tests {
         assert_eq!(ui.act("z:x", &c, None), vec![]);
         assert_eq!(ui.act("pick:z:clock-1|topmost", &c, None), vec![Cmd::Z("clock-1".into(), "topmost".into())]);
         assert_eq!(ui.act("pick:gpu|high", &c, None), vec![Cmd::Gpu("high".into())]);
+        assert_eq!(ui.act("pick:renderer|skia", &c, None), vec![Cmd::Renderer("skia".into())]);
         let t = ui.act("pick:th:palette|Daylight", &c, None);
         assert!(matches!(&t[0], Cmd::Theme(s) if s.palette == "Daylight" && s.fonts == "System"));
         assert_eq!(ui.act("edit:toggle", &c, None), vec![Cmd::Edit(true)]);
