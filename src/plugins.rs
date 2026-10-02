@@ -82,7 +82,7 @@ const RESERVED_SOURCES: &[&str] = &["clock", "sys", "shortcuts", "media", "audio
 fn parse_code(t: &toml::Table) -> Result<Code, String> {
     for k in t.keys() {
         if !CODE_KEYS.contains(&k.as_str()) {
-            return Err(format!("unknown key `code.{k}`{}", crate::format::suggest(k, &[CODE_KEYS])));
+            return Err(format!("unknown key `code.{k}`{}", crate::suggest::suggest(k, &[CODE_KEYS])));
         }
     }
     let text = |k: &str| t.get(k).and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).ok_or_else(|| format!("missing `code.{k}`"));
@@ -145,7 +145,7 @@ impl Manifest {
         let t: toml::Table = src.parse().map_err(|e| format!("{e}"))?;
         for k in t.keys() {
             if !KEYS.contains(&k.as_str()) {
-                return Err(format!("unknown key `{k}`{}", crate::format::suggest(k, &[KEYS])));
+                return Err(format!("unknown key `{k}`{}", crate::suggest::suggest(k, &[KEYS])));
             }
         }
         let code = match t.get("code") {
@@ -436,7 +436,7 @@ fn check_in(src: &Path, data: &Path) -> Report {
     };
     r.contents = p.contents.clone();
     let cat = Catalog::load(&roots(&list, &BTreeSet::new()));
-    let builtin = crate::data::DataSources::builtin().native_names();
+    let builtin = crate::data::DataSources::fixed().native_names();
     let needed: BTreeSet<String> = p.contents.widgets.iter().filter_map(|w| cat.registry.get(w)?.as_ref().ok()).flat_map(|d| d.meta().needs.clone()).collect();
     let own: Vec<&str> = m.code.iter().map(|c| c.source.as_str()).collect();
     for n in needed.iter().filter(|n| !builtin.contains(*n) && !own.contains(&n.as_str())) {
@@ -449,7 +449,7 @@ fn check_in(src: &Path, data: &Path) -> Report {
     for code in &m.code {
         use crate::code::runtime::{Compiled, Env, Limits as CodeLimits, Runtime};
         let limits = CodeLimits::default();
-        let loaded = std::fs::read(p.dir.join(&code.module)).map_err(|_| format!("code.module `{}` is missing", code.module)).and_then(|w| Compiled::load(&w)).and_then(|c| Runtime::new(&c, Env::new(None, None, &limits), &limits).map(drop).map_err(|f| f.to_string()));
+        let loaded = std::fs::read(p.dir.join(&code.module)).map_err(|_| format!("code.module `{}` is missing", code.module)).and_then(|w| Compiled::load(&w)).and_then(|c| Runtime::new(&c, Env::new(None, None, &limits, std::sync::Arc::new(crate::ambient::WinCalendar)), &limits).map(drop).map_err(|f| f.to_string()));
         if let Err(e) = loaded {
             r.problems.push(format!("its code for `{}` cannot run: {e}", code.source));
         }
@@ -626,6 +626,15 @@ fn read_manifest(folder: &str, dir: &Path) -> Result<Manifest, String> {
         return Err(format!("{MANIFEST} says id `{}`, but its folder is `{folder}`", m.id));
     }
     Ok(m)
+}
+
+/// A Plugin folder read where it stands, without installing it (a scene's `plugin`,
+/// `--content-root`): its id is the manifest's, whatever the folder is called.
+pub fn load_folder(dir: &Path) -> Result<Plugin, String> {
+    let dir = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
+    let text = std::fs::read_to_string(dir.join(MANIFEST)).map_err(|_| format!("{}: no {MANIFEST} (a plugin folder holds one)", dir.display()))?;
+    let m = Manifest::parse(&text).map_err(|e| format!("{}: {MANIFEST}: {e}", dir.display()))?;
+    Ok(Plugin { id: m.id.clone(), contents: content::scan(&dir), dir, manifest: Ok(m) })
 }
 
 /// The content roots of the Plugins that load: a valid manifest and not switched off.
@@ -1451,6 +1460,21 @@ mod tests {
         assert!(data.join("plugins/sunset/widgets/old.toml").is_file());
         assert_eq!(store.list()[0].manifest.as_ref().unwrap().version, "1.2.0");
         std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn a_plugin_folder_is_read_where_it_stands_under_the_id_of_its_manifest() {
+        let dir = tmp("folder").join("whatever");
+        put(&dir, "plugin.toml", OK);
+        put(&dir, "widgets/weather.toml", "[root]\ntype = 'box'");
+        let p = load_folder(&dir).unwrap();
+        assert_eq!((p.id.as_str(), p.manifest.as_ref().map(|m| m.version.as_str()).ok()), ("sunset", Some("1.2.0")));
+        assert!(p.dir.is_absolute() && p.contents.widgets == ["weather"], "{:?}", p.contents);
+        assert_eq!(roots(&[p], &BTreeSet::new()).len(), 1, "it loads like an installed one");
+        put(&dir, "plugin.toml", "id = 'x'");
+        assert!(load_folder(&dir).unwrap_err().contains("missing `name`"));
+        assert!(load_folder(&dir.join("nope")).unwrap_err().contains("no plugin.toml"));
+        std::fs::remove_dir_all(dir.parent().unwrap()).ok();
     }
 
     #[test]

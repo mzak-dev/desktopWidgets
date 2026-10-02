@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::UNIX_EPOCH;
 
-use super::clock::{days_from_civil, localized_date};
+use crate::ambient::{days_from_civil, localized_date};
 use super::{Cadence, DataSource, Notifier, SourceCx, Tm};
 use crate::value::Value;
 
@@ -233,7 +233,7 @@ impl DataSource for Gallery {
                 0 => 0,
                 i => local_secs(&cx.tm).div_euclid(i),
             };
-            let offset = self.offsets.lock().unwrap_or_else(|e| e.into_inner()).get(&cx.cfg.id).copied().unwrap_or(0);
+            let offset = self.offsets.lock().unwrap_or_else(|e| e.into_inner()).get(cx.instance().id()).copied().unwrap_or(0);
             slide(step + offset, items.len(), cx.params.get("shuffle").is_some_and(Value::truthy), seed_of(&folder))
         });
         Value::obj([
@@ -266,10 +266,10 @@ impl DataSource for Gallery {
     }
 
     fn act(&self, verb: &str, arg: &str, cx: &SourceCx) -> bool {
-        let id = &cx.cfg.id;
+        let id = cx.instance().id();
         match verb {
             "next" | "prev" => {
-                *self.offsets.lock().unwrap_or_else(|e| e.into_inner()).entry(id.clone()).or_default() += if verb == "next" { 1 } else { -1 };
+                *self.offsets.lock().unwrap_or_else(|e| e.into_inner()).entry(id.to_string()).or_default() += if verb == "next" { 1 } else { -1 };
                 if let Some(n) = self.notifier() {
                     n.changed_for(id);
                 }
@@ -329,7 +329,7 @@ mod tests {
 
     fn read(g: &Gallery, c: &InstanceCfg, t: Tm) -> Value {
         let params = c.params_map();
-        g.value(&SourceCx { cfg: c, params: &params, tm: t, icon_pack: "Default" })
+        g.value(&SourceCx::new(c.instance(), &params, t, "Default"))
     }
 
     fn names(v: &Value) -> Vec<String> {
@@ -405,7 +405,7 @@ mod tests {
         assert_ne!(now, later, "a minute later is the next picture");
         assert_eq!(at(tm(10, 0, 59)), now, "not before the minute is up");
         let params = c.params_map();
-        let cx = SourceCx { cfg: &c, params: &params, tm: tm(10, 0, 0), icon_pack: "Default" };
+        let cx = SourceCx::new(c.instance(), &params, tm(10, 0, 0), "Default");
         assert!(g.act("next", "", &cx));
         assert_eq!(at(tm(10, 0, 0)), later, "next shows what the clock would show next");
         assert!(g.act("prev", "", &cx) && g.act("prev", "", &cx));
@@ -427,7 +427,7 @@ mod tests {
         let c = cfg(serde_json::json!({ "folder": d.to_string_lossy() }));
         assert_eq!(names(&read(&g, &c, tm(9, 0, 0))), ["a"]);
         let params = c.params_map();
-        assert_eq!(g.watched_paths(&SourceCx { cfg: &c, params: &params, tm: tm(9, 0, 0), icon_pack: "Default" }), vec![d.clone()]);
+        assert_eq!(g.watched_paths(&SourceCx::new(c.instance(), &params, tm(9, 0, 0), "Default")), vec![d.clone()]);
         std::fs::write(d.join("b.png"), b"x").unwrap();
         assert_eq!(names(&read(&g, &c, tm(9, 0, 0))), ["a"], "cached until the watcher says otherwise");
         g.path_changed(&d);

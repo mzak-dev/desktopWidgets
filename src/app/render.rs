@@ -5,7 +5,7 @@ impl App {
         let now = Instant::now();
         let theme = self.theme_of(i);
         let card = Card::new(&theme);
-        let App { gpu, text, icons, theme: chrome, reg, sources, ws, wins, edit, remove_armed, .. } = self;
+        let App { gpu, text, images, theme: chrome, reg, sources, ws, wins, edit, remove_armed, ambient, .. } = self;
         let (Some(gpu), Some(iw)) = (gpu.as_mut(), wins.get_mut(i)) else { return };
         let (Some(window), Some(target)) = (iw.window.clone(), iw.target.as_mut()) else { return };
         let cfg = &ws.instances[i];
@@ -34,11 +34,10 @@ impl App {
         let size = (phys.width as f32 / scale, phys.height as f32 / scale);
         let missing: Def = Err(format!("unknown widget `{}`", cfg.widget));
         let def = reg.get(&cfg.widget).unwrap_or(&missing);
-        let tm = data::now_local();
+        let tm = ambient.calendar.now();
         let pack = cfg.theme.resolve(&ws.theme).icon_pack;
-        iw.anim.duration_factor = anim::duration_factor(&theme.str("anim-speed"));
         let v = View { cfg, state: &iw.state, window_size: size, theme: &theme, icon_pack: &pack, tm, hover: iw.hover.as_deref(), scale, now, card };
-        let mut sv = Services { gpu, icons, text, anim: &mut iw.anim, sources };
+        let mut sv = Services { images, text, anim: &mut iw.anim, sources };
         let mut p = widgets::prepare(def, &v, &mut sv);
 
         if *edit {
@@ -46,11 +45,12 @@ impl App {
             let label = format!("{}, {}   {}x{}", cfg.x as i32, cfg.y as i32, cw as i32, ch as i32);
             let armed = remove_armed.as_deref() == Some(cfg.id.as_str());
             let ov = edit::overlay(&cfg.id, size, card.gutter, &label, chrome, iw.drag.as_ref().map(|d| d.handle), armed);
-            let mut env = Env { text, anim: &mut iw.ov_anim, hover: None, now, scale };
+            let mut env = Env { text, anim: &mut iw.ov_anim, hover: None, now, scale, trace: false };
             let of = ui::layout(&ov, size, &mut env);
             p.frame.list.put_on_top(of.list);
             p.frame.animating |= of.animating;
         }
+        gpu.apply(images.drain());
         let mut lost = None;
         match gpu.render(target, &p.frame.list, text) {
             Ok(()) => iw.error = None,
@@ -70,7 +70,7 @@ impl App {
             Ok(w) => w.meta().effective_params(&cfg.params_map()),
             Err(_) => cfg.params_map(),
         };
-        let cx = data::SourceCx { cfg, params: &params, tm, icon_pack: &pack };
+        let cx = data::SourceCx::new(cfg.instance(), &params, tm, &pack);
         let continuous = sources.needs_every_frame(&p.deps, &cx);
         // a playing GIF wakes at its own frame rate, never every display frame
         let frame_due = gpu.animation_delay(&p.frame.list).map(|d| now + d);

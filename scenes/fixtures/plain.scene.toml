@@ -1,0 +1,10 @@
+format = 1
+name = "Plain fixture"
+
+[widget]
+file = "widget/plain.toml"
+size = "180x100"
+hover_at = [30, 50]
+
+[look]
+scale = 1.25

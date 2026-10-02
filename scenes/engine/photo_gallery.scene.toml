@@ -1,0 +1,21 @@
+format = 1
+name = "photo_gallery at its smallest, default and largest size"
+tags = ["engine"]
+
+[widget]
+id = "photo_gallery"
+
+# the engine's own scene set: what every built-in Widget draws with its defaults and with
+# every switch on, at the smallest, the default and the largest size it allows
+# No folder is given (it would be the machine's): the empty state.
+
+[expect]
+flags = "error"
+
+[sweep]
+sizes = ["170x150", "360x340", "900x800"]
+
+[sweep.variants]
+defaults = {}
+all_on = { params = "bools:true" }
+

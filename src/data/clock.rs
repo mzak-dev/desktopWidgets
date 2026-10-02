@@ -1,54 +1,12 @@
+use std::sync::Arc;
+
 use super::{Cadence, DataSource, SourceCx};
+use crate::ambient::{Calendar, DateStyle, days_from_civil};
 use crate::value::Value;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Tm {
-    pub year: i32,
-    pub month: u32,
-    pub day: u32,
-    /// 0 = Sunday.
-    pub dow: u32,
-    pub hour: u32,
-    pub minute: u32,
-    pub second: u32,
-    pub ms: u32,
-}
+pub use crate::ambient::Tm;
 
-pub fn now_local() -> Tm {
-    use windows::Win32::System::SystemInformation::GetLocalTime;
-    let t = unsafe { GetLocalTime() };
-    Tm {
-        year: t.wYear as i32,
-        month: t.wMonth as u32,
-        day: t.wDay as u32,
-        dow: t.wDayOfWeek as u32,
-        hour: t.wHour as u32,
-        minute: t.wMinute as u32,
-        second: t.wSecond as u32,
-        ms: t.wMilliseconds as u32,
-    }
-}
-
-pub(crate) fn localized_date(tm: &Tm, pattern: &str) -> String {
-    use windows::Win32::Foundation::SYSTEMTIME;
-    use windows::Win32::Globalization::{ENUM_DATE_FORMATS_FLAGS, GetDateFormatEx};
-    use windows::core::{HSTRING, PCWSTR};
-    let st = SYSTEMTIME {
-        wYear: tm.year as u16,
-        wMonth: tm.month as u16,
-        wDayOfWeek: tm.dow as u16,
-        wDay: tm.day as u16,
-        ..Default::default()
-    };
-    let mut buf = [0u16; 96];
-    let n = unsafe { GetDateFormatEx(PCWSTR::null(), ENUM_DATE_FORMATS_FLAGS(0), Some(&st as *const _), &HSTRING::from(pattern), Some(&mut buf), PCWSTR::null()) };
-    if n <= 1 {
-        return String::new();
-    }
-    String::from_utf16_lossy(&buf[..(n - 1) as usize])
-}
-
-pub fn clock_value(tm: &Tm) -> Value {
+pub fn clock_value(tm: &Tm, cal: &dyn Calendar) -> Value {
     let h12 = if tm.hour % 12 == 0 { 12 } else { tm.hour % 12 };
     let (h, m, s) = (tm.hour as f64, tm.minute as f64, tm.second as f64);
     Value::obj([
@@ -62,11 +20,11 @@ pub fn clock_value(tm: &Tm) -> Value {
         ("day", (tm.day as i32).into()),
         ("month", (tm.month as i32).into()),
         ("year", tm.year.into()),
-        ("weekday", localized_date(tm, "dddd").into()),
-        ("weekday_short", localized_date(tm, "ddd").into()),
-        ("month_name", localized_date(tm, "MMMM").into()),
-        ("date", localized_date(tm, "dddd, d MMMM").into()),
-        ("date_short", localized_date(tm, "d MMM").into()),
+        ("weekday", cal.date_text(tm, DateStyle::Weekday).into()),
+        ("weekday_short", cal.date_text(tm, DateStyle::WeekdayShort).into()),
+        ("month_name", cal.date_text(tm, DateStyle::Month).into()),
+        ("date", cal.date_text(tm, DateStyle::Date).into()),
+        ("date_short", cal.date_text(tm, DateStyle::DateShort).into()),
         // angles, degrees clockwise from 12
         ("hour_angle", ((h % 12.0) * 30.0 + m * 0.5).into()),
         // steps every 10 s (0.1 deg/s * 10): smooth to the eye, 6x cheaper than per-second
@@ -114,47 +72,12 @@ const CITY_ZONES: &[(&str, &str)] = &[
     ("auckland", "New Zealand Standard Time"), ("wellington", "New Zealand Standard Time"), ("utc", "UTC"), ("gmt", "UTC"),
 ];
 
-type Zone = windows::Win32::System::Time::DYNAMIC_TIME_ZONE_INFORMATION;
-
-/// A C string in a fixed buffer: Windows may leave garbage after the terminator.
-fn wide_until_nul(buf: &[u16]) -> String {
-    String::from_utf16_lossy(&buf[..buf.iter().position(|&c| c == 0).unwrap_or(buf.len())])
-}
-
-/// Every zone Windows knows, by key name; enumerated once.
-fn zones() -> &'static [(String, Zone)] {
-    static ZONES: std::sync::OnceLock<Vec<(String, Zone)>> = std::sync::OnceLock::new();
-    ZONES.get_or_init(|| {
-        use windows::Win32::System::Time::EnumDynamicTimeZoneInformation;
-        let mut out = Vec::new();
-        for i in 0.. {
-            let mut z = Zone::default();
-            if unsafe { EnumDynamicTimeZoneInformation(i, &mut z) } != 0 {
-                break; // ERROR_NO_MORE_ITEMS
-            }
-            let key = wide_until_nul(&z.TimeZoneKeyName);
-            out.push((key, z));
-        }
-        out
-    })
-}
-
-fn zone_of(city: &str) -> Option<&'static Zone> {
+/// The key of the zone `city` names, among the calendar's `keys`.
+fn zone_of<'a>(city: &str, keys: &'a [String]) -> Option<&'a str> {
     let c = city.trim().to_lowercase();
     let key = CITY_ZONES.iter().find(|(n, _)| *n == c).map(|(_, k)| k.to_lowercase());
-    let all = zones();
-    let by_key = |k: &str| all.iter().find(|(n, _)| n.to_lowercase() == k).map(|(_, z)| z);
-    key.as_deref().and_then(by_key).or_else(|| by_key(&c)).or_else(|| (c.len() >= 3).then(|| all.iter().find(|(n, _)| n.to_lowercase().contains(&c)).map(|(_, z)| z)).flatten())
-}
-
-/// Days since 1970-01-01 (Howard Hinnant's `days_from_civil`).
-pub(crate) fn days_from_civil(y: i32, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y } as i64;
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (m as i64 + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
-    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
+    let by_key = |k: &str| keys.iter().find(|n| n.to_lowercase() == k).map(String::as_str);
+    key.as_deref().and_then(by_key).or_else(|| by_key(&c)).or_else(|| (c.len() >= 3).then(|| keys.iter().find(|n| n.to_lowercase().contains(&c)).map(String::as_str)).flatten())
 }
 
 /// "+9h", "-5h 30m", "same time".
@@ -166,23 +89,21 @@ pub fn offset_text(minutes: i64) -> String {
     if m % 60 == 0 { format!("{sign}{}h", m / 60) } else { format!("{sign}{}h {}m", m / 60, m % 60) }
 }
 
-/// The time in each of a comma-separated list of cities, relative to `here`.
-pub fn zone_times(cities: &str, utc: &windows::Win32::Foundation::SYSTEMTIME, here: &Tm) -> Vec<Value> {
-    use windows::Win32::System::Time::SystemTimeToTzSpecificLocalTimeEx;
-    let here_min = days_from_civil(here.year, here.month, here.day) * 1440 + here.hour as i64 * 60 + here.minute as i64;
+/// The time in each of a comma-separated list of cities, relative to `here`; `utc` is the
+/// moment `here` shows.
+pub fn zone_times(cities: &str, utc: &Tm, here: &Tm, cal: &dyn Calendar) -> Vec<Value> {
     let here_day = days_from_civil(here.year, here.month, here.day);
+    let here_min = here_day * 1440 + here.hour as i64 * 60 + here.minute as i64;
+    let cities: Vec<&str> = cities.split(',').map(str::trim).filter(|c| !c.is_empty()).collect();
+    let keys = if cities.is_empty() { Vec::new() } else { cal.zone_keys() };
     cities
-        .split(',')
-        .map(str::trim)
-        .filter(|c| !c.is_empty())
+        .into_iter()
         .map(|city| {
-            let mut t = windows::Win32::Foundation::SYSTEMTIME::default();
-            let known = zone_of(city).is_some_and(|z| unsafe { SystemTimeToTzSpecificLocalTimeEx(Some(z), utc, &mut t) }.is_ok());
-            if !known {
+            let Some(t) = zone_of(city, &keys).and_then(|k| cal.to_zone(k, utc)) else {
                 return Value::obj([("city", city.into()), ("time", "?".into()), ("known", false.into())]);
-            }
-            let (h, m) = (t.wHour as u32, t.wMinute as u32);
-            let day = days_from_civil(t.wYear as i32, t.wMonth as u32, t.wDay as u32);
+            };
+            let (h, m) = (t.hour, t.minute);
+            let day = days_from_civil(t.year, t.month, t.day);
             let offset = day * 1440 + h as i64 * 60 + m as i64 - here_min;
             let h12 = if h % 12 == 0 { 12 } else { h % 12 };
             Value::obj([
@@ -203,7 +124,15 @@ pub fn zone_times(cities: &str, utc: &windows::Win32::Foundation::SYSTEMTIME, he
         .collect()
 }
 
-pub struct Clock;
+pub struct Clock {
+    calendar: Arc<dyn Calendar>,
+}
+
+impl Clock {
+    pub fn new(calendar: Arc<dyn Calendar>) -> Self {
+        Self { calendar }
+    }
+}
 
 impl DataSource for Clock {
     fn name(&self) -> &str {
@@ -211,25 +140,14 @@ impl DataSource for Clock {
     }
 
     fn value(&self, cx: &SourceCx) -> Value {
-        let mut v = clock_value(&cx.tm);
+        let cal = &*self.calendar;
+        let mut v = clock_value(cx.tm(), cal);
         // world clocks for the Instance's `cities` param, if its Widget has one
-        let cities = cx.params.get("cities").map(|c| c.to_string()).unwrap_or_default();
+        let cities = cx.params().get("cities").map(|c| c.to_string()).unwrap_or_default();
         if let Value::Obj(m) = &mut v {
             // the instant the clock shows, so city times always agree with the face
-            let local = windows::Win32::Foundation::SYSTEMTIME {
-                wYear: cx.tm.year as u16,
-                wMonth: cx.tm.month as u16,
-                wDay: cx.tm.day as u16,
-                wHour: cx.tm.hour as u16,
-                wMinute: cx.tm.minute as u16,
-                wSecond: cx.tm.second as u16,
-                ..Default::default()
-            };
-            let mut utc = windows::Win32::Foundation::SYSTEMTIME::default();
-            if unsafe { windows::Win32::System::Time::TzSpecificLocalTimeToSystemTimeEx(None, &local, &mut utc) }.is_err() {
-                utc = unsafe { windows::Win32::System::SystemInformation::GetSystemTime() };
-            }
-            m.insert("zones".into(), Value::List(zone_times(&cities, &utc, &cx.tm)));
+            let utc = cal.local_to_utc(cx.tm()).unwrap_or_else(|| Tm::from_unix_ms(cal.unix_ms()));
+            m.insert("zones".into(), Value::List(zone_times(&cities, &utc, cx.tm(), cal)));
         }
         v
     }
@@ -248,51 +166,83 @@ impl DataSource for Clock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ambient::{Ambient, FixedCalendar, WinCalendar};
 
     pub fn tm(h: u32, m: u32, s: u32, ms: u32) -> Tm {
         Tm { year: 2026, month: 9, day: 21, dow: 1, hour: h, minute: m, second: s, ms }
     }
 
-    fn utc(y: u16, mo: u16, d: u16, h: u16, mi: u16) -> windows::Win32::Foundation::SYSTEMTIME {
-        windows::Win32::Foundation::SYSTEMTIME { wYear: y, wMonth: mo, wDay: d, wHour: h, wMinute: mi, ..Default::default() }
+    fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> Tm {
+        Tm { year: y, month: mo, day: d, dow: 0, hour: h, minute: mi, second: 0, ms: 0 }
     }
 
-    #[test]
-    fn world_clocks_show_each_city_relative_to_here() {
+    /// The cities of the first world clock test, on whichever calendar `cal` is.
+    fn world_clocks(cal: &dyn Calendar) {
         // "here" is UTC, at noon on a January day (no daylight saving north of the equator)
         let here = Tm { year: 2026, month: 1, day: 15, dow: 4, hour: 12, minute: 0, second: 0, ms: 0 };
-        let z = zone_times("Tokyo, new york,Sydney, Atlantis", &utc(2026, 1, 15, 12, 0), &here);
+        let z = zone_times("Tokyo, new york,Sydney, Atlantis", &utc(2026, 1, 15, 12, 0), &here, cal);
         let field = |i: usize, k: &str| z[i].get(k).map(|v| v.to_string()).unwrap_or_default();
         assert_eq!((field(0, "city"), field(0, "time"), field(0, "offset"), field(0, "day")), ("Tokyo".into(), "21:00".into(), "+9h".into(), "".into()));
         assert_eq!((field(1, "city"), field(1, "time"), field(1, "offset")), ("new york".into(), "07:00".into(), "-5h".into()));
         assert_eq!((field(2, "time"), field(2, "offset")), ("23:00".into(), "+11h".into()), "Sydney is on summer time in January");
         assert_eq!((field(3, "city"), field(3, "time")), ("Atlantis".into(), "?".into()), "an unknown city is marked, never guessed");
 
-        let late = zone_times("Tokyo", &utc(2026, 1, 15, 20, 30), &Tm { hour: 20, minute: 30, ..here });
+        let late = zone_times("Tokyo", &utc(2026, 1, 15, 20, 30), &Tm { hour: 20, minute: 30, ..here }, cal);
         assert_eq!((late[0].get("time").unwrap().to_string(), late[0].get("day").unwrap().to_string()), ("05:30".into(), "+1".into()));
-        assert!(zone_times("", &utc(2026, 1, 15, 12, 0), &here).is_empty());
+        assert!(zone_times("", &utc(2026, 1, 15, 12, 0), &here, cal).is_empty());
+    }
+
+    #[test]
+    fn world_clocks_show_each_city_relative_to_here() {
+        world_clocks(&FixedCalendar::default());
+    }
+
+    #[test]
+    fn the_machines_calendar_gives_the_same_world_clocks() {
+        world_clocks(&WinCalendar);
+    }
+
+    #[test]
+    fn a_city_is_found_by_name_by_zone_key_or_by_part_of_a_key() {
+        let keys = FixedCalendar::default().zone_keys();
+        assert_eq!(zone_of(" Sao Paulo ", &keys), Some("E. South America Standard Time"));
+        assert_eq!(zone_of("pacific standard time", &keys), Some("Pacific Standard Time"));
+        assert_eq!(zone_of("korea", &keys), Some("Korea Standard Time"));
+        assert_eq!((zone_of("xx", &keys), zone_of("Atlantis", &keys)), (None, None));
+    }
+
+    #[test]
+    fn every_city_names_a_zone_the_fixed_table_knows_but_two() {
+        let keys = FixedCalendar::default().zone_keys();
+        let missing: std::collections::BTreeSet<_> = CITY_ZONES.iter().map(|(_, k)| *k).filter(|k| !keys.iter().any(|n| n == k)).collect();
+        assert_eq!(missing, std::collections::BTreeSet::from(["Egypt Standard Time", "Israel Standard Time"]));
+    }
+
+    #[test]
+    fn a_city_time_across_a_daylight_change_moves_an_hour_on_the_fixed_calendar() {
+        // London and New York on the morning the US has changed and the EU has not
+        let cal = FixedCalendar::default();
+        let here = Tm { year: 2026, month: 3, day: 9, dow: 1, hour: 12, minute: 0, second: 0, ms: 0 };
+        let z = zone_times("London, New York", &utc(2026, 3, 9, 12, 0), &here, &cal);
+        let offset = |i: usize| z[i].get("offset").unwrap().to_string();
+        assert_eq!((offset(0), offset(1)), ("same time".to_string(), "-4h".to_string()));
     }
 
     #[test]
     fn world_clocks_follow_the_time_the_clock_shows_not_the_system_clock() {
         // a moment far from now: the zones must be relative to it, so offsets stay within a day
-        let cfg = crate::workspace::InstanceCfg::default();
+        let saved = std::collections::BTreeMap::new();
         let params = std::collections::BTreeMap::from([("cities".to_string(), Value::Str("Tokyo, New York".into()))]);
-        let cx = SourceCx { cfg: &cfg, params: &params, tm: tm(15, 42, 0, 0), icon_pack: "Default" };
-        let Some(Value::List(z)) = Clock.value(&cx).get("zones").cloned() else { panic!("no zones") };
+        let cx = SourceCx::new(crate::data::InstanceRef::new("", &saved), &params, tm(15, 42, 0, 0), "Default");
+        let Some(Value::List(z)) = Clock::new(Ambient::fixed().calendar).value(&cx).get("zones").cloned() else { panic!("no zones") };
         for zone in &z {
             let off = zone.get("offset").unwrap().to_string();
             let hours: i32 = off.trim_start_matches(['+', '-']).split('h').next().unwrap_or("0").parse().unwrap_or(0);
             assert!(off == "same time" || hours <= 14, "{off}");
         }
-    }
-
-    #[test]
-    fn a_zone_key_ends_at_its_terminator_not_at_the_buffer() {
-        let mut buf = [0u16; 16];
-        buf[..3].copy_from_slice(&[b'G' as u16, b'M' as u16, b'T' as u16]);
-        buf[4..6].copy_from_slice(&[0x5b70, 0x87b3]); // what a release build found after the NUL
-        assert_eq!(wide_until_nul(&buf), "GMT");
+        // on the fixed calendar (local time is UTC) the offsets are exact
+        let off = |i: usize| z[i].get("offset").unwrap().to_string();
+        assert_eq!((off(0), off(1)), ("+9h".to_string(), "-4h".to_string()), "New York is on daylight time in September");
     }
 
     #[test]
@@ -302,12 +252,15 @@ mod tests {
 
     #[test]
     fn clock_fields_and_angles() {
-        let v = clock_value(&tm(15, 30, 20, 500));
+        let cal = FixedCalendar::default();
+        let v = clock_value(&tm(15, 30, 20, 500), &cal);
         assert_eq!(v.get("hour12"), Some(&Value::Num(3.0)));
         assert_eq!(v.get("ampm"), Some(&Value::Str("PM".into())));
         assert_eq!(v.get("hour_angle"), Some(&Value::Num(105.0))); // 3:30 -> 90 + 15
         assert_eq!(v.get("minute_angle"), Some(&Value::Num(182.0))); // 30*6 + floor(20/10)
         assert_eq!(v.get("second_angle"), Some(&Value::Num(120.0)));
-        assert_eq!(clock_value(&tm(0, 0, 0, 0)).get("hour12"), Some(&Value::Num(12.0)));
+        assert_eq!(clock_value(&tm(0, 0, 0, 0), &cal).get("hour12"), Some(&Value::Num(12.0)));
+        // the names come from the calendar, here English
+        assert_eq!((v.get("weekday"), v.get("date")), (Some(&Value::Str("Monday".into())), Some(&Value::Str("Monday, 21 September".into()))));
     }
 }

@@ -33,19 +33,21 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::platform::windows::WindowAttributesExtWindows;
 use winit::window::{CursorIcon, Window, WindowAttributes, WindowId};
 
+use crate::ambient::Ambient;
 use crate::anim::{self, Anim, Ease};
 use crate::card::Card;
 use crate::code::runtime::Limits;
 use crate::code::store::KvStore;
-use crate::code::{Deps, WasmSource};
+use crate::code::{CodeSources, Deps, WasmSource};
 use crate::content::{Catalog, Root};
 use crate::data::{self, DataSources};
+use crate::dialog::WinNative;
 use crate::draw::DrawList;
 use crate::edit::{self, Handle, Rect, Snap};
 use crate::gfx::{Gpu, Power, RenderError, Target};
-use crate::icons::IconService;
-use crate::net::Fetch;
+use crate::icons::ImageStore;
 use crate::platform::win32::{self, ZMode};
+use crate::native::Prompt;
 use crate::plugins::{self, Plugin, PluginRow, PluginStore};
 use crate::platform::vdesk;
 use crate::settings::{self, Cmd, Scope, SettingsWin, WsCmd};
@@ -201,7 +203,7 @@ pub fn run(mut opts: Options) {
     let running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
     let installing = opts.install.take();
     if let Some(file) = &installing {
-        let installed = install_from_explorer(&opts.dir, file, running);
+        let installed = install_from_explorer(&opts.dir, file, running, &mut WinNative::default());
         if running || !installed {
             return; // a running copy reloads by itself
         }
@@ -243,9 +245,13 @@ pub struct App {
     theme: Theme,
     reg: Registry,
     sources: DataSources,
+    /// What the machine says: the calendar, for now.
+    ambient: Ambient,
+    /// The Plugins' Code Sources, which `sources` also serves.
+    code: CodeSources,
     gpu: Option<Gpu>,
     text: TextEngine,
-    icons: IconService,
+    images: ImageStore,
     wins: Vec<Instance>,
     settings: Option<SettingsWin>,
     edit: bool,
@@ -282,8 +288,6 @@ pub struct App {
     plugin_note: String,
     /// Each code Plugin's saved data, shared by every generation of its Code Source.
     stores: BTreeMap<String, Arc<KvStore>>,
-    /// The network for plugin code, opened the first time a Plugin lists hosts.
-    fetch: Option<Arc<dyn Fetch>>,
     /// Which exe double-clicking a `.wfplugin` runs, for Settings.
     plugin_files: win32::FileOwner,
     /// The virtual desktop on screen, when Windows says (ADR-0011).
@@ -303,7 +307,8 @@ impl App {
     pub fn new(proxy: EventLoopProxy<UserEvent>, mut opts: Options) -> App {
         let dir = opts.dir.clone();
         let extra_sources = std::mem::take(&mut opts.extra_sources);
-        let mut sources = DataSources::builtin_in(&opts.dir);
+        let ambient = Ambient::windows(&opts.dir);
+        let mut sources = DataSources::from(&ambient);
         let waker = Mutex::new(proxy.clone());
         sources.set_waker(Arc::new(move || {
             let _ = waker.lock().unwrap().send_event(UserEvent::SourceNews);
@@ -321,22 +326,24 @@ impl App {
         let (ws, ws_err) = Workspace::load(&dir);
         let update_prerelease = Arc::new(AtomicBool::new(ws.flag(Flag::Prerelease)));
         let theme = Theme::default(); // composed by `rebuild_theme` below
-        let text = TextEngine::new();
-        let mut icons = IconService::default();
-        icons.set_cache(dir.join(".cache").join("thumbs"));
+        let text = TextEngine::with_fonts((ambient.fonts)());
+        let mut images = ImageStore::new(ambient.icons.clone(), BTreeMap::new());
+        images.set_cache(dir.join(".cache").join("thumbs"));
         let waker = Mutex::new(proxy.clone());
-        icons.set_waker(Arc::new(move || {
+        images.set_waker(Arc::new(move || {
             let _ = waker.lock().unwrap().send_event(UserEvent::ImagesReady);
         }));
         let mut app = App {
             proxy,
-            icons,
+            images,
             opts,
             ws,
             lib: Library::default(), // filled by `load_content` below
             theme,
             reg: Registry::default(),
             sources,
+            ambient,
+            code: CodeSources::default(),
             gpu: None,
             text,
             wins: Vec::new(),
@@ -371,7 +378,6 @@ impl App {
             plugin_rows: Vec::new(),
             plugin_note: String::new(),
             stores: BTreeMap::new(),
-            fetch: None,
             plugin_files: win32::FileOwner::Nobody,
             desktop: None,
             desktops: Vec::new(),
@@ -386,6 +392,10 @@ impl App {
         if let Some(e) = ws_err {
             app.log(e);
         }
+        let (mode, source) = app.opts.gpu_override.as_deref().map_or((app.ws.gpu.clone(), "the saved gpu setting"), |g| (g.to_string(), "--gpu"));
+        if let Err(e) = Power::parse(&mode) {
+            app.log(format!("{source}: {e}; using software"));
+        }
         for e in guide_errors.into_iter().chain(source_errors) {
             app.log(e);
         }
@@ -396,7 +406,9 @@ impl App {
         if self.forced_software {
             return Power::Software;
         }
-        Power::parse(self.opts.gpu_override.as_deref().unwrap_or(&self.ws.gpu))
+        // an unknown mode (hand-edited workspace.json, an app built on Wayfinder) is logged once
+        // at startup and runs on the software adapter, never on a hardware one by accident
+        Power::parse(self.opts.gpu_override.as_deref().unwrap_or(&self.ws.gpu)).unwrap_or(Power::Software)
     }
 
     pub fn request_edit_on_start(&mut self) {
@@ -414,7 +426,7 @@ impl App {
             use std::io::Write;
             let _ = writeln!(f, "[{:>7.2}s] {s}", self.started.elapsed().as_secs_f32());
         }
-        self.log.push(settings::LogLine::new(data::now_local(), &s));
+        self.log.push(settings::LogLine::new(self.ambient.calendar.now(), &s));
         if self.log.len() > 300 {
             self.log.drain(..100);
         }
@@ -582,7 +594,7 @@ impl App {
         self.log(format!("GPU lost ({why}): rebuilding"));
         self.settings = None;
         self.gpu = None;
-        self.icons.forget();
+        self.images.forget();
         let windows: Vec<(usize, Arc<Window>)> = self.wins.iter().enumerate().filter_map(|(i, w)| w.window.clone().map(|win| (i, win))).collect();
         for w in &mut self.wins {
             w.target = None;
@@ -617,7 +629,7 @@ impl App {
             _ => cfg.params_map(),
         };
         let icon_pack = cfg.theme.resolve(&self.ws.theme).icon_pack;
-        f(&data::SourceCx { cfg, params: &params, tm: data::now_local(), icon_pack: &icon_pack })
+        f(&data::SourceCx::new(cfg.instance(), &params, self.ambient.calendar.now(), &icon_pack))
     }
 
     /// The folders content is read from, after the built-ins; later ones win.
@@ -640,10 +652,8 @@ impl App {
         self.reg = cat.registry;
         self.migrate_instances();
         self.lib = cat.library;
-        self.icons.set_packs(cat.icon_packs);
-        if let Some(g) = self.gpu.as_mut() {
-            self.icons.flush_files(g);
-        }
+        self.images.set_packs(cat.icon_packs);
+        self.images.flush_files();
         let font_problems = self.text.sync_fonts(&cat.font_files);
         self.families = self.text.family_names();
         self.lib.set_installed_fonts(&self.families);
@@ -656,9 +666,10 @@ impl App {
     /// Starts the Code Sources of enabled Plugins and stops the rest; unchanged ones keep running.
     fn sync_code(&mut self) {
         let (specs, _) = plugins::code_specs(&self.plugins, &self.ws.disabled_plugins);
-        if self.fetch.is_none() && specs.iter().any(|(_, s)| !s.hosts.is_empty()) {
+        // the network is opened the first time a Plugin lists hosts
+        if self.ambient.fetch.is_none() && specs.iter().any(|(_, s)| !s.hosts.is_empty()) {
             match crate::platform::winhttp::WinHttp::new() {
-                Ok(w) => self.fetch = Some(Arc::new(w)),
+                Ok(w) => self.ambient.fetch = Some(Arc::new(w)),
                 Err(e) => self.log(format!("plugins cannot use the network: {e}")),
             }
         }
@@ -670,10 +681,10 @@ impl App {
         let notify: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let _ = proxy.lock().unwrap().send_event(UserEvent::SourceNews);
         });
-        let (fetch, stores) = (self.fetch.clone(), &self.stores);
+        let (fetch, stores) = (self.ambient.fetch.clone(), &self.stores);
         let places = crate::code::fs::Places { home: std::env::var_os("USERPROFILE").map(PathBuf::from), private: vec![self.opts.dir.clone()] };
-        self.sources.sync_code(specs, |spec| {
-            let deps = Deps { fetch: fetch.clone(), store: stores.get(&spec.plugin).cloned(), notify: notify.clone(), limits: Limits::default(), places: places.clone() };
+        self.code.sync(&mut self.sources, specs, |spec| {
+            let deps = Deps { fetch: fetch.clone(), store: stores.get(&spec.plugin).cloned(), notify: notify.clone(), limits: Limits::default(), places: places.clone(), calendar: self.ambient.calendar.clone() };
             WasmSource::start(spec, deps)
         });
         self.refresh_code_status();
@@ -706,7 +717,7 @@ impl App {
 
     /// Copies each running Code Source's status onto its Plugins page row.
     fn refresh_code_status(&mut self) {
-        let status: BTreeMap<String, String> = self.sources.code_status().into_iter().map(|(n, s)| (n, s.line())).collect();
+        let status: BTreeMap<String, String> = self.code.status().into_iter().map(|(n, s)| (n, s.line())).collect();
         for c in self.plugin_rows.iter_mut().flat_map(|r| &mut r.code).filter(|c| c.runs) {
             c.status = status.get(&c.source).cloned().unwrap_or_default();
         }
@@ -714,7 +725,7 @@ impl App {
 
     fn take_source_news(&mut self) {
         let mut status = false;
-        for (name, news) in self.sources.take_news() {
+        for (name, news) in self.sources.take_news().into_iter().chain(self.code.take_news()) {
             for l in news.logs {
                 self.log(format!("{name}: {l}"));
             }
@@ -750,8 +761,10 @@ impl App {
 
     /// Uploads the pictures made off-thread and redraws what shows them.
     fn images_ready(&mut self) {
-        let Some(gpu) = self.gpu.as_mut() else { return };
-        let ids = self.icons.take_ready(gpu);
+        if self.gpu.is_none() {
+            return;
+        }
+        let ids = self.images.take_ready();
         if ids.is_empty() {
             return;
         }
@@ -862,7 +875,8 @@ impl ApplicationHandler<UserEvent> for App {
         self.init_hotkey();
         if self.ws.wants_starter_widgets() {
             let card = self.new_card();
-            let mut host = AppHost::new(&self.opts.dir, None);
+            let mut native = WinNative::default();
+            let mut host = AppHost::new(&self.opts.dir, &mut native);
             self.ws.instances = default_instances(&self.monitors, &self.reg, card, &mut host);
             for l in host.into_logs() {
                 self.log(l);
@@ -971,16 +985,16 @@ impl ApplicationHandler<UserEvent> for App {
         if self.settings.as_ref().is_some_and(|s| s.window.id() == id) {
             let gpu_info = self.gpu.as_ref().map(|g| g.info.clone()).unwrap_or_else(|| "no GPU yet".into());
             let setup: Vec<workspace::MonitorRef> = self.monitor_setup();
-            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, desktops, desktop, update_releases, update_note, .. } = self;
+            let App { ws, reg, lib, theme, log, edit, settings, text, images, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, ambient, desktops, desktop, update_releases, update_note, .. } = self;
             let off = plugins::hidden_instances(ws, reg, installed);
             let hidden: Vec<(String, settings::Hidden)> = ws.instances.iter().zip(wins.iter()).filter(|(_, w)| w.window.is_none()).map(|(c, _)| (c.id.clone(), off.get(&c.id).map_or(settings::Hidden::Parked, |p| settings::Hidden::PluginOff(p.clone())))).collect();
             let source_names = sources.names();
-            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files, data: sources, desktops, desktop: desktop.as_deref(), setup: &setup, update_releases, update_note };
+            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files, data: sources, calendar: &*ambient.calendar, desktops, desktop: desktop.as_deref(), setup: &setup, update_releases, update_note };
             let s = settings.as_mut().unwrap();
             let cmds = s.event(&ev, &ctx, text);
             if matches!(ev, WindowEvent::RedrawRequested) {
                 if let Some(g) = gpu.as_mut() {
-                    s.render(g, text, icons, &ctx);
+                    s.render(g, text, images, &ctx);
                 }
             }
             for c in cmds {
@@ -1097,7 +1111,9 @@ impl ApplicationHandler<UserEvent> for App {
         if let Some(g) = self.gpu.as_mut() {
             let shown = self.wins.iter().filter(|w| w.window.is_some()).filter_map(|w| w.frame.as_ref());
             let drawn = shown.flat_map(|f| f.list.image_ids()).chain(self.settings.iter().flat_map(|s| s.drawn_images()));
-            self.icons.release_unused(g, drawn);
+            self.images.release_unused(drawn);
+            // uploads and drops made outside a render (thumbnails ready, content reloaded) land now
+            g.apply(self.images.drain());
         }
         if let Some(s) = &self.settings {
             match s.next_frame(now) {

@@ -1,0 +1,23 @@
+format = 1
+name = "media_controller at its smallest, default and largest size"
+tags = ["engine"]
+
+[widget]
+id = "media_controller"
+
+# the engine's own scene set: what every built-in Widget draws with its defaults and with
+# every switch on, at the smallest, the default and the largest size it allows
+# The pinned example track, paused.
+
+[expect]
+flags = "error"
+# the widget clips its rows, which a layout flag sees as reaching past the box: see scenes/fits
+allow = ["OVERFLOW-X", "OVERFLOW-Y", "OUTSIDE"]
+
+[sweep]
+sizes = ["170x56", "340x160", "640x720"]
+
+[sweep.variants]
+defaults = {}
+all_on = { params = "bools:true" }
+

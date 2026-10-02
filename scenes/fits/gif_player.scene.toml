@@ -1,0 +1,24 @@
+format = 1
+name = "gif_player lays out cleanly at every size it allows"
+
+[widget]
+id = "gif_player"
+
+# scale 1 and the widest realistic clock text: what the engine's own fit checks used
+[look]
+scale = 1
+
+[env]
+now = 2026-09-23T23:58:58
+
+[expect]
+flags = "error"
+
+# the default size, then a 4x4 grid from the smallest size to the largest, each with the
+# defaults and with every switch on
+[sweep]
+sizes = "grid:4x4"
+
+[sweep.variants]
+defaults = {}
+all_on = { params = "bools:true" }

@@ -6,9 +6,9 @@
 //! `today`, `weekend`), `day_names` and `day_letters` in the week's order, `month_name`,
 //! `year`, `day`, `weekday`, `week`.
 
-use std::sync::OnceLock;
+use std::sync::Arc;
 
-use super::clock::{days_from_civil, localized_date};
+use crate::ambient::{Calendar as Time, DateStyle, WinCalendar, days_from_civil};
 use super::{Cadence, DataSource, SourceCx, Tm};
 use crate::value::Value;
 
@@ -80,31 +80,13 @@ pub fn civil_from_days(z: i64) -> (i32, u32, u32) {
     (y, m, d)
 }
 
-/// The user's first day of the week and the shortest day names, Monday first, from Windows.
-/// Read once: a change of region shows after a restart.
-struct Locale {
-    first: u32,
-    names: [String; 7],
-}
-
-fn locale() -> &'static Locale {
-    static L: OnceLock<Locale> = OnceLock::new();
-    L.get_or_init(|| {
-        use windows::Win32::Globalization::{GetLocaleInfoEx, LOCALE_IFIRSTDAYOFWEEK, LOCALE_SSHORTESTDAYNAME1};
-        let read = |kind: u32| {
-            let mut buf = [0u16; 32];
-            let n = unsafe { GetLocaleInfoEx(windows::core::PCWSTR::null(), kind, Some(&mut buf)) };
-            (n > 1).then(|| String::from_utf16_lossy(&buf[..(n - 1) as usize]))
-        };
-        let first = read(LOCALE_IFIRSTDAYOFWEEK).and_then(|s| s.trim().parse::<u32>().ok()).filter(|f| *f < 7).unwrap_or(0);
-        let fallback = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
-        let names = std::array::from_fn(|i| read(LOCALE_SSHORTESTDAYNAME1 + i as u32).filter(|s| !s.is_empty()).unwrap_or_else(|| fallback[i].into()));
-        Locale { first, names }
-    })
-}
-
 /// The month around `tm`, from `first` (0 Monday ... 6 Sunday), with day names Monday first.
 pub fn calendar_value(tm: &Tm, first: u32, names: &[String; 7]) -> Value {
+    calendar_value_in(tm, first, names, &WinCalendar)
+}
+
+/// `calendar_value` with the month and weekday names of `time` (the ambient calendar).
+pub fn calendar_value_in(tm: &Tm, first: u32, names: &[String; 7], time: &dyn Time) -> Value {
     let weeks = month_grid(tm.year, tm.month, Some(tm.day), first)
         .iter()
         .map(|w| {
@@ -119,15 +101,24 @@ pub fn calendar_value(tm: &Tm, first: u32, names: &[String; 7]) -> Value {
         ("weeks", Value::List(weeks)),
         ("day_names", Value::List(order.iter().map(|n| Value::Str((*n).clone())).collect())),
         ("day_letters", Value::List(order.iter().map(|n| Value::Str(n.chars().next().map(String::from).unwrap_or_default())).collect())),
-        ("month_name", localized_date(tm, "MMMM").into()),
+        ("month_name", time.date_text(tm, DateStyle::Month).into()),
         ("year", tm.year.into()),
         ("day", (tm.day as i32).into()),
-        ("weekday", localized_date(tm, "dddd").into()),
+        ("weekday", time.date_text(tm, DateStyle::Weekday).into()),
         ("week", (iso_week(tm.year, tm.month, tm.day) as i32).into()),
     ])
 }
 
-pub struct Calendar;
+/// The calendar source over the ambient calendar: the real machine's locale in the app, en-US in a hermetic run.
+pub struct Calendar {
+    time: Arc<dyn Time>,
+}
+
+impl Calendar {
+    pub fn new(time: Arc<dyn Time>) -> Self {
+        Self { time }
+    }
+}
 
 impl DataSource for Calendar {
     fn name(&self) -> &str {
@@ -135,8 +126,8 @@ impl DataSource for Calendar {
     }
 
     fn value(&self, cx: &SourceCx) -> Value {
-        let l = locale();
-        calendar_value(&cx.tm, l.first, &l.names)
+        let w = self.time.week();
+        calendar_value_in(&cx.tm, w.first, &w.names, self.time.as_ref())
     }
 
     /// Only the date matters; a minute is the coarsest wake there is.

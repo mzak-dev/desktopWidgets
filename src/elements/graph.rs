@@ -1,8 +1,6 @@
-use super::{ElementKind, Shape, ShapeCx, rgba_with_opacity};
+use super::{Attrs, ElementKind, Kind, Shape, ShapeCx, num_str, rgba_with_opacity};
 use crate::color::Color;
 use crate::draw::{Inst, KIND_CAPSULE, KIND_RECT};
-use crate::format::Attrs;
-use crate::ui::Kind;
 use crate::value::Value;
 
 /// A line through `values`, newest on the right, scaled so `min` sits on the bottom and `max`
@@ -53,6 +51,14 @@ fn build(a: &mut Attrs) -> Result<Kind, String> {
 impl Shape for GraphSpec {
     fn name(&self) -> &'static str {
         "graph"
+    }
+
+    fn describe(&self) -> (&'static str, Vec<(&'static str, String)>) {
+        let mut a = vec![("values", self.values.len().to_string()), ("max", num_str(self.max)), ("span", self.span.to_string()), ("stroke", num_str(self.stroke)), ("color", self.color.to_hex())];
+        if let Some(area) = self.area {
+            a.push(("area", area.to_hex()));
+        }
+        ("graph", a)
     }
 
     fn emit(&self, cx: &ShapeCx, out: &mut Vec<Inst>) {

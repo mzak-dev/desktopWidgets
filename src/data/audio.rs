@@ -1,9 +1,11 @@
-//! What the speakers play (WASAPI loopback), for visualizers: frequency `bands` with their
-//! `peaks`, `level`, `bass`, the waveform as an oscilloscope draws it (`wave`, -1..1), the
-//! last second or so of bands for a waterfall (`history`, oldest first) and `active`. Built in because WebAssembly cannot reach WASAPI (ADR-0009).
+//! What the speakers play, for visualizers: frequency `bands` with their `peaks`, `level`,
+//! `bass`, the waveform as an oscilloscope draws it (`wave`, -1..1), the last second or so
+//! of bands for a waterfall (`history`, oldest first) and `active`. Built in because
+//! WebAssembly cannot reach WASAPI (ADR-0009). The samples come from the Ambient's `Capture`
+//! (WASAPI loopback on Windows).
 //!
-//! Capture runs only while a widget reads `audio`, and stops a few seconds after the last
-//! one does. A widget waiting through silence still counts: it sleeps (no cadence) and the
+//! A real-time capture runs only while a widget reads `audio`, and stops a few seconds after
+//! the last one does. A widget waiting through silence still counts: it sleeps (no cadence) and the
 //! capture thread wakes it when sound starts. Each widget has its own bands and smoothing,
 //! from its params: `bands fmin fmax gain attack release peak_fall timebase`.
 
@@ -16,6 +18,7 @@ use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
 
 use super::{Cadence, DataSource, Notifier, SourceCx};
+use crate::ambient::Capture;
 use crate::value::Value;
 
 /// Samples per analysis: about 43 ms at 48 kHz, 23 Hz per bin.
@@ -234,17 +237,6 @@ pub fn wanted(now: Instant, reads: impl IntoIterator<Item = Instant>, silent_sin
     reads.into_iter().any(|r| now.saturating_duration_since(r) < READER_TTL || silent_since.is_some_and(|s| r + Duration::from_secs(1) >= s))
 }
 
-/// Interleaved samples to mono, as 32-bit float or 16-bit PCM.
-pub fn to_mono(bytes: &[u8], channels: usize, float: bool) -> Vec<f32> {
-    let channels = channels.max(1);
-    let samples: Vec<f32> = if float {
-        bytes.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect()
-    } else {
-        bytes.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0).collect()
-    };
-    samples.chunks_exact(channels).map(|f| f.iter().sum::<f32>() / channels as f32).collect()
-}
-
 /// The latest samples and when sound was last heard, shared with the capture thread.
 #[derive(Default)]
 struct Ring {
@@ -277,6 +269,7 @@ impl Ring {
 }
 
 pub struct Audio {
+    capture: Arc<dyn Capture>,
     ring: Arc<Mutex<Ring>>,
     looks: Mutex<HashMap<String, Look>>,
     reads: Arc<Mutex<HashMap<String, Instant>>>,
@@ -285,22 +278,40 @@ pub struct Audio {
     fft: Arc<dyn Fft<f32>>,
 }
 
-impl Default for Audio {
-    fn default() -> Self {
-        Audio { ring: Arc::default(), looks: Mutex::default(), reads: Arc::default(), running: Arc::default(), notify: Arc::default(), fft: FftPlanner::new().plan_fft_forward(WINDOW) }
-    }
-}
-
 impl Audio {
+    pub fn new(capture: Arc<dyn Capture>) -> Audio {
+        Audio { capture, ring: Arc::default(), looks: Mutex::default(), reads: Arc::default(), running: Arc::default(), notify: Arc::default(), fft: FftPlanner::new().plan_fft_forward(WINDOW) }
+    }
+
     fn ensure_capture(&self) {
         if self.running.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
             return;
         }
-        let (ring, reads, running, notify) = (self.ring.clone(), self.reads.clone(), self.running.clone(), self.notify.clone());
-        let spawned = std::thread::Builder::new().name("audio".into()).spawn(move || capture(&ring, &reads, &running, &notify));
+        let (capture, ring, reads, running, notify) = (self.capture.clone(), self.ring.clone(), self.reads.clone(), self.running.clone(), self.notify.clone());
+        let spawned = std::thread::Builder::new().name("audio".into()).spawn(move || run(capture.as_ref(), &ring, &reads, &running, &notify));
         if spawned.is_err() {
             self.running.store(false, Ordering::SeqCst);
         }
+    }
+
+    /// A synthetic capture has no device to wait for: read it now, at least a chunk, until
+    /// the window is full.
+    fn read_now(&self, now: Instant) {
+        let mut ring = self.ring.lock().unwrap();
+        if ring.rate == 0 {
+            match self.capture.open() {
+                Ok(rate) => ring.rate = rate,
+                Err(_) => return,
+            }
+        }
+        let mut mono = Vec::new();
+        loop {
+            let before = mono.len();
+            if self.capture.read(&mut mono).is_err() || mono.len() == before || ring.samples.len() + mono.len() >= WINDOW {
+                break;
+            }
+        }
+        ring.push(&mono, now);
     }
 }
 
@@ -310,10 +321,14 @@ impl DataSource for Audio {
     }
 
     fn value(&self, cx: &SourceCx) -> Value {
-        let now = Instant::now();
-        self.reads.lock().unwrap().insert(cx.cfg.id.clone(), now);
-        self.ensure_capture();
-        let s = Settings::from_params(cx.params);
+        let now = cx.now();
+        self.reads.lock().unwrap().insert(cx.instance().id().to_string(), now);
+        if self.capture.realtime() {
+            self.ensure_capture();
+        } else {
+            self.read_now(now);
+        }
+        let s = Settings::from_params(cx.params());
         let (active, samples, rate) = {
             let r = self.ring.lock().unwrap();
             (r.active(now), r.samples.iter().copied().collect::<Vec<f32>>(), r.rate)
@@ -329,7 +344,7 @@ impl DataSource for Audio {
             (vec![0.0; s.bands], 0.0, 0.0, vec![0.0; WAVE_POINTS])
         };
         let mut looks = self.looks.lock().unwrap();
-        let look = looks.entry(cx.cfg.id.clone()).or_insert_with(Look::new);
+        let look = looks.entry(cx.instance().id().to_string()).or_insert_with(Look::new);
         let dt = look.step(&target, level, bass, now, &s);
         look.fit_wave(&raw, dt, s.gain);
         look.value(active)
@@ -337,8 +352,8 @@ impl DataSource for Audio {
 
     /// While sound plays, and until a widget's bars have fallen to rest after it stops.
     fn cadence(&self, _field: &str, cx: &SourceCx) -> Option<Cadence> {
-        let active = self.ring.lock().unwrap().active(Instant::now());
-        let moving = self.looks.lock().unwrap().get(&cx.cfg.id).is_some_and(|l| !l.settled());
+        let active = self.ring.lock().unwrap().active(cx.now());
+        let moving = self.looks.lock().unwrap().get(cx.instance().id()).is_some_and(|l| !l.settled());
         (active || moving).then_some(Cadence::Millis(FRAME_MS))
     }
 
@@ -354,10 +369,7 @@ impl DataSource for Audio {
 
 /// Captures until no widget wants it, reopening the device when it fails or the default
 /// output changes.
-fn capture(ring: &Mutex<Ring>, reads: &Mutex<HashMap<String, Instant>>, running: &AtomicBool, notify: &Mutex<Option<Notifier>>) {
-    unsafe {
-        let _ = windows::Win32::System::Com::CoInitializeEx(None, windows::Win32::System::Com::COINIT_MULTITHREADED);
-    }
+fn run(capture: &dyn Capture, ring: &Mutex<Ring>, reads: &Mutex<HashMap<String, Instant>>, running: &AtomicBool, notify: &Mutex<Option<Notifier>>) {
     let still_wanted = || {
         let silent_since = ring.lock().unwrap().silent_since;
         wanted(Instant::now(), reads.lock().unwrap().values().copied(), silent_since)
@@ -365,7 +377,7 @@ fn capture(ring: &Mutex<Ring>, reads: &Mutex<HashMap<String, Instant>>, running:
     let mut unwanted_since: Option<Instant> = None;
     let mut logged = false;
     loop {
-        let result = loopback(ring, notify, &mut || {
+        let result = session(capture, ring, notify, &mut || {
             match (still_wanted(), unwanted_since) {
                 (true, _) => unwanted_since = None,
                 (false, None) => unwanted_since = Some(Instant::now()),
@@ -402,85 +414,41 @@ fn capture(ring: &Mutex<Ring>, reads: &Mutex<HashMap<String, Instant>>, running:
 
 /// One capture session on the default output. Returns Ok when `keep` says stop or, in
 /// silence, when the default output changed (the caller reopens it); Err when the device fails.
-fn loopback(ring: &Mutex<Ring>, notify: &Mutex<Option<Notifier>>, keep: &mut dyn FnMut() -> bool) -> windows::core::Result<()> {
-    use windows::Win32::Media::Audio::{AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, IAudioCaptureClient, IAudioClient, IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator, WAVEFORMATEX, WAVEFORMATEXTENSIBLE, eConsole, eRender};
-    use windows::Win32::System::Com::{CLSCTX_ALL, CoCreateInstance, CoTaskMemFree};
-
-    fn id_of(d: &IMMDevice) -> String {
-        unsafe {
-            let Ok(p) = d.GetId() else { return String::new() };
-            let s = p.to_string().unwrap_or_default();
-            CoTaskMemFree(Some(p.0 as *const _));
-            s
+fn session(capture: &dyn Capture, ring: &Mutex<Ring>, notify: &Mutex<Option<Notifier>>, keep: &mut dyn FnMut() -> bool) -> Result<(), String> {
+    ring.lock().unwrap().rate = capture.open()?;
+    let mut checked = Instant::now();
+    let mut mono = Vec::new();
+    let result = loop {
+        if !keep() {
+            break Ok(());
         }
-    }
-
-    unsafe {
-        let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-        let device = devices.GetDefaultAudioEndpoint(eRender, eConsole)?;
-        let device_id = id_of(&device);
-        let client: IAudioClient = device.Activate(CLSCTX_ALL, None)?;
-        let fmt = client.GetMixFormat()?;
-        let f: WAVEFORMATEX = std::ptr::read_unaligned(fmt);
-        let (tag, bits, channels, rate) = (f.wFormatTag, f.wBitsPerSample, f.nChannels as usize, f.nSamplesPerSec);
-        // WAVE_FORMAT_IEEE_FLOAT, or WAVE_FORMAT_EXTENSIBLE naming float
-        let float = tag == 3 || (tag == 0xFFFE && std::ptr::read_unaligned(fmt as *const WAVEFORMATEXTENSIBLE).SubFormat.data1 == 3);
-        let init = client.Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 200_000, 0, fmt, None);
-        CoTaskMemFree(Some(fmt as *const _));
-        init?;
-        if !(float && bits == 32 || !float && bits == 16) {
-            return Err(windows::core::Error::new(windows::Win32::Foundation::E_FAIL, format!("an output format it cannot read ({bits}-bit)")));
+        let silent = ring.lock().unwrap().silent_since.is_some_and(|t| t.elapsed() > Duration::from_secs(1));
+        // in silence, look less often; the first sound wakes the widgets anyway
+        std::thread::sleep(Duration::from_millis(if silent { 60 } else { 10 }));
+        if silent && checked.elapsed() > Duration::from_secs(2) {
+            checked = Instant::now();
+            if capture.moved() {
+                break Ok(()); // the output changed: reopen on the new one
+            }
         }
-        let cap: IAudioCaptureClient = client.GetService()?;
-        client.Start()?;
-        let frame_bytes = channels * bits as usize / 8;
-        ring.lock().unwrap().rate = rate;
-        let mut checked = Instant::now();
-        let result = loop {
-            if !keep() {
-                break Ok(());
+        mono.clear();
+        if let Err(e) = capture.read(&mut mono) {
+            break Err(e);
+        }
+        if !mono.is_empty() && ring.lock().unwrap().push(&mono, Instant::now()) {
+            if let Some(n) = notify.lock().unwrap().as_ref() {
+                n.changed();
             }
-            let silent = ring.lock().unwrap().silent_since.is_some_and(|t| t.elapsed() > Duration::from_secs(1));
-            // in silence, look less often; the first sound wakes the widgets anyway
-            std::thread::sleep(Duration::from_millis(if silent { 60 } else { 10 }));
-            if silent && checked.elapsed() > Duration::from_secs(2) {
-                checked = Instant::now();
-                let now_id = devices.GetDefaultAudioEndpoint(eRender, eConsole).map(|d| id_of(&d));
-                if now_id.is_ok_and(|id| id != device_id) {
-                    break Ok(()); // the output changed: reopen on the new one
-                }
-            }
-            let mut woke = false;
-            loop {
-                match cap.GetNextPacketSize() {
-                    Ok(0) => break,
-                    Ok(_) => {}
-                    Err(e) => return Err(e),
-                }
-                let (mut data, mut frames, mut flags) = (std::ptr::null_mut(), 0u32, 0u32);
-                cap.GetBuffer(&mut data, &mut frames, &mut flags, None, None)?;
-                let mono = if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null() {
-                    vec![0.0; frames as usize]
-                } else {
-                    to_mono(std::slice::from_raw_parts(data, frames as usize * frame_bytes), channels, float)
-                };
-                cap.ReleaseBuffer(frames)?;
-                woke |= ring.lock().unwrap().push(&mono, Instant::now());
-            }
-            if woke {
-                if let Some(n) = notify.lock().unwrap().as_ref() {
-                    n.changed();
-                }
-            }
-        };
-        let _ = client.Stop();
-        result
-    }
+        }
+    };
+    capture.close();
+    result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     fn sine(freq: f32, rate: f32, amp: f32) -> Vec<f32> {
         (0..WINDOW).map(|i| amp * (std::f32::consts::TAU * freq * i as f32 / rate).sin()).collect()
@@ -636,11 +604,47 @@ mod tests {
         assert!(hiss.settled(), "a flat line is at rest");
     }
 
+    fn read_audio(a: &Audio, id: &str, now: Instant) -> Value {
+        let (cfg, params) = (BTreeMap::new(), BTreeMap::new());
+        a.value(&SourceCx::new(super::super::InstanceRef::new(id, &cfg), &params, crate::data::Tm::new(2026, 9, 21, 1, 12, 0, 0, 0), "Default").with_now(now))
+    }
+
+    fn list(v: &Value, key: &str) -> Vec<f64> {
+        let Some(Value::List(l)) = v.get(key) else { panic!("no {key}") };
+        l.iter().map(|x| x.as_f64().unwrap()).collect()
+    }
+
     #[test]
-    fn stereo_and_16_bit_mix_down_to_mono() {
-        let f: Vec<u8> = [0.5f32, -0.5, 1.0, 0.0].iter().flat_map(|x| x.to_le_bytes()).collect();
-        assert_eq!(to_mono(&f, 2, true), [0.0, 0.5]);
-        let i: Vec<u8> = [16384i16, 16384].iter().flat_map(|x| x.to_le_bytes()).collect();
-        assert_eq!(to_mono(&i, 1, false), [0.5, 0.5]);
+    fn a_tone_capture_gives_a_steady_spectrum_without_a_thread() {
+        let a = Audio::new(Arc::new(crate::ambient::Tone::new([1333.0], 0.5)));
+        let t0 = Instant::now();
+        let mut v = read_audio(&a, "w", t0);
+        for i in 1..30 {
+            v = read_audio(&a, "w", t0 + Duration::from_millis(33 * i));
+        }
+        assert_eq!(v.get("active"), Some(&Value::Bool(true)));
+        let bands = list(&v, "bands");
+        assert_eq!(bands.len(), 32);
+        let top = bands.iter().enumerate().max_by(|a, b| a.1.total_cmp(b.1)).unwrap().0;
+        // fmin 40 Hz to fmax 16 kHz over 32 bands: 1.33 kHz sits in band 18
+        assert_eq!(top, 18, "{bands:?}");
+        assert!(bands[18] > 0.8 && bands[0] < 0.3, "{bands:?}");
+        assert!(!a.running.load(Ordering::SeqCst), "a synthetic capture starts no thread");
+        // the same tone read again from a new source gives the same picture
+        let b = Audio::new(Arc::new(crate::ambient::Tone::new([1333.0], 0.5)));
+        let mut w = read_audio(&b, "w", t0);
+        for i in 1..30 {
+            w = read_audio(&b, "w", t0 + Duration::from_millis(33 * i));
+        }
+        assert_eq!(list(&v, "bands"), list(&w, "bands"));
+    }
+
+    #[test]
+    fn a_silent_capture_is_inactive_and_flat() {
+        let a = Audio::new(Arc::new(crate::ambient::Silence));
+        let v = read_audio(&a, "w", Instant::now());
+        assert_eq!(v.get("active"), Some(&Value::Bool(false)));
+        assert!(list(&v, "bands").iter().all(|b| *b == 0.0));
+        assert_eq!(list(&v, "peaks").len(), 32);
     }
 }

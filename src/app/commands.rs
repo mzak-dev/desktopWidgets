@@ -24,7 +24,8 @@ impl App {
             ..Default::default()
         };
         if let Some(Ok(w)) = self.reg.get(widget).cloned() {
-            let mut host = AppHost::new(&self.opts.dir, None);
+            let mut native = WinNative::default();
+            let mut host = AppHost::new(&self.opts.dir, &mut native);
             widgets::set_up_instance(&*w, &mut cfg, &mut host);
             for l in host.into_logs() {
                 self.log(l);
@@ -57,7 +58,7 @@ impl App {
         for cfg in &mut self.ws.instances {
             if let Some(Ok(w)) = self.reg.get(&cfg.widget) {
                 let before = cfg.clone();
-                w.meta().migrate(cfg);
+                crate::widgets::migrate(w.meta(), cfg);
                 changed |= *cfg != before;
             }
         }
@@ -235,7 +236,7 @@ impl App {
                 if let Ok((m, contents)) = plugins::describe(&path) {
                     if !m.code.is_empty() {
                         let installed = self.plugins.iter().find(|p| p.id == m.id).and_then(|p| p.manifest.as_ref().ok());
-                        if !crate::dialog::confirm("Install a Wayfinder plugin", &plugins::install_question(&m, &contents, installed)) {
+                        if !WinNative::default().confirm("Install a Wayfinder plugin", &plugins::install_question(&m, &contents, installed)) {
                             return;
                         }
                     }
@@ -263,7 +264,7 @@ impl App {
                     }
                     return;
                 };
-                if !crate::dialog::confirm("Install this version?", &format!("Wayfinder will download {version} and restart to apply it.")) {
+                if !WinNative::default().confirm("Install this version?", &format!("Wayfinder will download {version} and restart to apply it.")) {
                     return;
                 }
                 self.update_note = format!("Downloading {version}…");

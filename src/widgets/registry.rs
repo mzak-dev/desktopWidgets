@@ -106,11 +106,11 @@ mod tests {
         let r = Registry::load(Path::new("no-such-dir"));
         let Some(Ok(w)) = r.get("system_monitor") else { panic!("system_monitor") };
         let theme = Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[]);
-        let sys = Sys::default();
+        let sys = Sys::new(std::sync::Arc::new(crate::ambient::ScriptedProbe::demo()));
         let arcs = |layout: crate::workspace::Layout| {
             let (params, st) = (BTreeMap::new(), BTreeMap::new());
-            let read = |n: &str| (n == "sys").then(|| sys.sample());
-            let arrange = Some(crate::modules::Arrange { layout: &layout, tier: None, preview: false });
+            let read = |n: &str| (n == "sys").then(|| sys.sample(std::time::Instant::now()));
+            let arrange = Some(crate::format::Arrange { layout: &layout, tier: None, preview: false });
             let inp = Inputs { params: &params, state: &st, card_size: (700.0, 200.0), key_prefix: "t", read_source: &read, arrange };
             let b = w.build(&inp, &theme, &|_| None).unwrap();
             assert!(b.warnings.is_empty(), "{:?}", b.warnings);
@@ -154,13 +154,13 @@ mod tests {
         }
         let r = Registry::load(Path::new("no-such-dir"));
         let theme = Theme::compose(&Library::load(Path::new("nope")), &Selection::default(), &[]);
-        let sources = crate::data::DataSources::builtin();
+        let sources = crate::data::DataSources::fixed();
         let wake = |id: &str| {
             let Some(Ok(w)) = r.get(id) else { panic!("{id}") };
             let mut cfg = crate::workspace::InstanceCfg { id: format!("{id}-1"), widget: id.into(), ..Default::default() };
             cfg.params.insert("folder".into(), serde_json::Value::String(dir.to_string_lossy().into_owned()));
             let params = w.meta().effective_params(&cfg.params_map());
-            let cx = crate::data::SourceCx { cfg: &cfg, params: &params, tm: crate::data::Tm { year: 2026, month: 10, day: 1, dow: 4, hour: 9, minute: 0, second: 30, ms: 0 }, icon_pack: "Default" };
+            let cx = crate::data::SourceCx::new(cfg.instance(), &params, crate::data::Tm { year: 2026, month: 10, day: 1, dow: 4, hour: 9, minute: 0, second: 30, ms: 0 }, "Default");
             let read = |n: &str| sources.value(n, &cx);
             let st = BTreeMap::new();
             let inp = Inputs { params: &params, state: &st, card_size: w.meta().default_card_size, key_prefix: "t", read_source: &read, arrange: None };

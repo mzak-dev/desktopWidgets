@@ -1,0 +1,11 @@
+format = 1
+name = "System monitor at each tier"
+
+[widget]
+id = "system_monitor"
+
+[env.sys]
+cpu = 42
+
+[sweep]
+sizes = "tiers"

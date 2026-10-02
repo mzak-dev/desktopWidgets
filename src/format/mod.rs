@@ -8,13 +8,40 @@ use taffy::prelude::*;
 
 use crate::anim::Ease;
 use crate::color::{Color, MAGENTA};
-use crate::elements;
+use crate::elements::{self, AttrSource, Attrs};
 use crate::expr::{Scope, Template};
-use crate::modules::{Arrange, Arrangement, Each, Inst, ModuleDef, ModuleSet, Placed, PlacedSlot, SlotDef, TierDef, place};
+use crate::suggest::suggest;
+mod modules;
+pub use modules::{Arrange, Arrangement, Each, Inst, ModuleDef, ModuleSet, Placed, PlacedSlot, SlotDef, TierDef, place};
 use crate::theme::Theme;
 use crate::ui::*;
 use crate::value::Value;
-use crate::widgets::{Built, Choice, ExpandInfo, Inputs, ModuleMeta, ParamDef, ParamType, Seed, TierMeta, WidgetMeta};
+use crate::meta::{ModuleMeta, TierMeta, WidgetMeta, parse_params};
+
+
+/// What a build is given.
+pub struct Inputs<'a> {
+    pub params: &'a BTreeMap<String, Value>,
+    pub state: &'a BTreeMap<String, Value>,
+    /// Logical px.
+    pub card_size: (f32, f32),
+    /// Unique per Instance, so text, hover and animation state never collide.
+    pub key_prefix: &'a str,
+    pub read_source: &'a dyn Fn(&str) -> Option<Value>,
+    /// The Instance's arranged Modules; `None` uses each Widget's defaults.
+    pub arrange: Option<Arrange<'a>>,
+}
+
+#[derive(Debug)]
+pub struct Built {
+    pub root: Node,
+    pub deps: BTreeSet<String>,
+    pub image_ids: BTreeSet<String>,
+    pub warnings: Vec<String>,
+    pub expand: Option<ExpandInfo>,
+    /// What the Module slots held, for Widgets that declare them.
+    pub arrangement: Option<Arrangement>,
+}
 
 
 #[derive(Clone, Debug)]
@@ -57,29 +84,6 @@ const SLOT_ATTRS: &[&str] = &["slot", "max"];
 
 fn type_names() -> Vec<&'static str> {
     elements::KINDS.iter().map(|k| k.name).chain(["repeat", "slot"]).collect()
-}
-
-fn edit_distance(a: &str, b: &str) -> usize {
-    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    for i in 1..=a.len() {
-        let mut cur = vec![i];
-        for j in 1..=b.len() {
-            cur.push((prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + usize::from(a[i - 1] != b[j - 1])));
-        }
-        prev = cur;
-    }
-    prev[b.len()]
-}
-
-pub(crate) fn suggest(name: &str, pool: &[&[&str]]) -> String {
-    pool.iter()
-        .flat_map(|p| p.iter())
-        .map(|c| (edit_distance(name, c), *c))
-        .filter(|(d, _)| *d <= 2)
-        .min()
-        .map(|(_, c)| format!(" (did you mean `{c}`?)"))
-        .unwrap_or_default()
 }
 
 #[derive(Clone, Debug)]
@@ -179,66 +183,6 @@ fn pair(v: Option<&toml::Value>, default: (f32, f32), what: &str) -> Result<(f32
     let a = v.as_array().filter(|a| a.len() == 2).ok_or_else(|| format!("{what}: expected [width, height]"))?;
     let n = |x: &toml::Value| x.as_float().or_else(|| x.as_integer().map(|i| i as f64)).map(|f| f as f32);
     Ok((n(&a[0]).ok_or_else(|| format!("{what}: width is not a number"))?, n(&a[1]).ok_or_else(|| format!("{what}: height is not a number"))?))
-}
-
-/// A `[params]` table, in file order. Also parses the style schema (`assets/style.toml`).
-/// `"fast"`, or `{ value = "fast", label = "Fast (30 fps)" }`.
-fn choice(param: &str, c: &toml::Value) -> Result<Choice, String> {
-    let bad = || format!("params.{param}.choices: each is a string or {{ value = \"...\", label = \"...\" }}");
-    match c {
-        toml::Value::String(s) => Ok(Choice { value: s.clone(), label: s.clone() }),
-        toml::Value::Table(t) => {
-            let value = t.get("value").and_then(|v| v.as_str()).ok_or_else(bad)?.to_string();
-            let label = t.get("label").and_then(|v| v.as_str()).map_or_else(|| value.clone(), String::from);
-            Ok(Choice { value, label })
-        }
-        _ => Err(bad()),
-    }
-}
-
-pub fn parse_params(pt: &toml::Table) -> Result<Vec<ParamDef>, String> {
-    let mut params = Vec::new();
-    for (name, v) in pt {
-        let p = v.as_table().ok_or_else(|| format!("params.{name}: expected a table"))?;
-        let ty = p.get("type").and_then(|v| v.as_str()).ok_or_else(|| format!("params.{name}: missing `type`"))?;
-        let ty = ParamType::parse(ty).ok_or_else(|| format!("params.{name}: unknown param type `{ty}`"))?;
-        let f = |k: &str| p.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
-        let seed = match p.get("seed") {
-            None => None,
-            Some(v) => {
-                let s = v.as_str().ok_or_else(|| format!("params.{name}.seed: expected a string"))?;
-                let ids: Vec<&str> = Seed::ALL.iter().map(|x| x.id()).collect();
-                let seed = Seed::parse(s).ok_or_else(|| format!("params.{name}: unknown seed `{s}`{}", suggest(s, &[&ids])))?;
-                if seed.param_type() != ty {
-                    return Err(format!("params.{name}: seed `{s}` needs type = \"{}\"", seed.param_type().id()));
-                }
-                Some(seed)
-            }
-        };
-        params.push(ParamDef {
-            name: name.clone(),
-            ty,
-            default: p.get("default").map(Value::from).unwrap_or(match ty {
-                ParamType::Bool => Value::Bool(false),
-                ParamType::Number | ParamType::Duration => Value::Num(0.0),
-                ParamType::Shortcuts => Value::List(vec![]),
-                _ => Value::Str(String::new()),
-            }),
-            label: p.get("label").and_then(|v| v.as_str()).unwrap_or(name).to_string(),
-            help: p.get("help").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            min: f("min"),
-            max: f("max"),
-            step: f("step"),
-            choices: match p.get("choices") {
-                None => vec![],
-                Some(v) => v.as_array().ok_or_else(|| format!("params.{name}.choices: expected a list"))?.iter().map(|c| choice(name, c)).collect::<Result<_, _>>()?,
-            },
-            seed,
-            group: p.get("group").and_then(|v| v.as_str()).map(str::trim).filter(|g| !g.is_empty()).map(String::from),
-            module: p.get("module").and_then(|v| v.as_str()).map(String::from),
-        });
-    }
-    Ok(params)
 }
 
 fn table_of<'a>(v: &'a toml::Value, what: &str) -> Result<&'a toml::Table, String> {
@@ -497,40 +441,27 @@ pub fn error_card(msg: &str, size: (f32, f32), theme: &Theme) -> Node {
     card
 }
 
-/// Resolves tokens and bindings; bad values become warnings, not errors.
-pub struct Attrs<'r, 'a> {
+/// One element's view of the builder: `elements::Attrs` reads through it.
+struct ElemAttrs<'r, 'a> {
     b: &'r mut TreeBuilder<'a>,
     e: &'r Elem,
     path: &'r str,
 }
 
-impl<'a> Attrs<'_, 'a> {
-    pub fn theme(&self) -> &'a Theme {
+impl<'a> AttrSource<'a> for ElemAttrs<'_, 'a> {
+    fn theme(&self) -> &'a Theme {
         self.b.theme
     }
 
-    pub fn value(&mut self, k: &str) -> Result<Option<Value>, String> {
+    fn get(&mut self, k: &str) -> Result<Option<Value>, String> {
         self.b.get(self.e, k, self.path)
     }
 
-    pub fn num(&mut self, k: &str) -> Result<Option<f32>, String> {
-        self.b.num(self.e, k, self.path)
-    }
-
-    pub fn flag(&mut self, k: &str) -> Result<Option<bool>, String> {
-        self.b.flag(self.e, k, self.path)
-    }
-
-    pub fn text(&mut self, k: &str) -> Result<Option<String>, String> {
-        self.b.text(self.e, k, self.path)
-    }
-
-    pub fn color(&mut self, k: &str) -> Result<Option<Color>, String> {
+    fn color(&mut self, k: &str) -> Result<Option<Color>, String> {
         self.b.color(self.e, k, self.path)
     }
 
-    /// An image `src`: `./x.png` is a file next to the definition, inside its content root.
-    pub fn image_id(&mut self, src: &str) -> String {
+    fn image_id(&mut self, src: &str) -> String {
         // a full path, as a folder listing gives it (`src = "{item.path}"`)
         if Path::new(src).is_absolute() {
             return format!("file:{src}");
@@ -551,8 +482,7 @@ impl<'a> Attrs<'_, 'a> {
         }
     }
 
-    /// Its size, 32x32 until the image is uploaded, and whether it has been.
-    pub fn request_image(&mut self, id: &str) -> ((f32, f32), bool) {
+    fn request_image(&mut self, id: &str) -> ((f32, f32), bool) {
         self.b.images.insert(id.to_string());
         let size = (self.b.image_size)(id);
         (size.unwrap_or((32.0, 32.0)), size.is_some())
@@ -1029,7 +959,7 @@ impl<'a> TreeBuilder<'a> {
         self.interact(e, &mut n, &path)?;
 
         let kind = elements::find(&e.ty).ok_or_else(|| format!("{path}: unknown type `{}`", e.ty))?;
-        n.kind = (kind.build)(&mut Attrs { b: self, e, path: &path })?;
+        n.kind = (kind.build)(&mut Attrs::new(&mut ElemAttrs { b: self, e, path: &path }))?;
         for (i, c) in e.children.iter().enumerate() {
             let kids = self.build_elem(c, &format!("{key}/{i}"))?;
             n.children.extend(kids);
@@ -1070,6 +1000,7 @@ impl<'a> TreeBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::meta::{Choice, ParamDef, ParamType, Seed};
     use crate::theme::{Library, Selection};
     use std::path::Path;
 

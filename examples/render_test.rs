@@ -4,7 +4,7 @@
 //!
 //!   cargo run --release --example render_test -- out.png
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use wayfinder::anim::Anim;
 use wayfinder::color::Color;
@@ -87,7 +87,7 @@ fn main() {
     let (lw, lh) = (620.0f32, 290.0f32);
     let (pw, ph) = ((lw * scale) as u32, (lh * scale) as u32);
 
-    let mut gpu = Gpu::new_headless(Power::parse(&std::env::var("WAYFINDER_GPU").unwrap_or_else(|_| "software".into()))).expect("gpu");
+    let mut gpu = Gpu::new_headless(Power::from_env()).expect("gpu");
     println!("gpu: {}", gpu.info);
     let mut text = TextEngine::new();
     let mut anim = Anim::default();
@@ -99,7 +99,7 @@ fn main() {
         .justify(taffy::JustifyContent::SPACE_EVENLY)
         .child(clock(300.0, 60.5, 132.0))
         .child(digital());
-    let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale };
+    let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now: Instant::now(), scale, trace: false };
     let frame = layout(&root, (lw, lh), &mut env);
     println!(
         "content {:?}, shapes {}, texts {}, hits {}",
@@ -109,7 +109,7 @@ fn main() {
         frame.hits.len()
     );
 
-    let px = gpu.render_offscreen(pw, ph, &frame.list, &mut text).expect("render");
+    let px = gpu.render_offscreen(pw, ph, &frame.list, &mut text, Duration::ZERO).expect("render");
     // composite over a gradient "wallpaper" so the alpha is visible
     let mut img = image::RgbaImage::new(pw, ph);
     for y in 0..ph {
