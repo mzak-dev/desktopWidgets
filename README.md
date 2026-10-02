@@ -70,7 +70,7 @@ cargo build --release
 .\target\release\wayfinder.exe
 ```
 
-The first run puts four widgets on the right-hand side of your main monitor, clear of your desktop icons, and adds a **tray icon**. Left-click the tray icon for Settings; press **`Ctrl` + `Shift` + `E`** to move and resize widgets. [Using Wayfinder](docs/using.md) has the rest.
+The first run puts four widgets on the right-hand side of your main monitor, clear of your desktop icons, and adds a **tray icon**. Left-click the tray icon for Settings, right-click it for the menu (Edit layout, Workspaces, Reload, Quit); press **`Ctrl` + `Shift` + `E`** to move and resize widgets. [Using Wayfinder](docs/using.md) has the rest.
 
 <details>
 <summary><b>Try it without touching your GPU driver</b></summary>

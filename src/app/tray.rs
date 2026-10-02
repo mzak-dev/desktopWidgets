@@ -44,53 +44,46 @@ pub(super) fn set_autostart(on: bool) -> Result<(), String> {
 }
 
 impl App {
-    /// The tray's menu, with a Workspace submenu that ticks the one on screen.
-    fn tray_menu(&self) -> Menu {
-        let menu = Menu::new();
-        let items = [
-            MenuItem::with_id("edit", format!("Edit layout   {}", settings::EDIT_KEYS.join("+")), true, None),
-            MenuItem::with_id("settings", "Settings...", true, None),
-        ];
-        for it in &items {
-            let _ = menu.append(it);
-        }
-        let spaces = Submenu::new(format!("Workspace: {}", self.ws.active.replace('&', "&&")), true);
-        for (i, w) in self.ws.workspaces.iter().enumerate() {
-            // `&` would underline the next letter
-            let _ = spaces.append(&CheckMenuItem::with_id(format!("ws:{i}"), w.name.replace('&', "&&"), true, w.name == self.ws.active, None));
-        }
-        let _ = spaces.append(&PredefinedMenuItem::separator());
-        let _ = spaces.append(&MenuItem::with_id("wsmanage", "Manage workspaces...", true, None));
-        let _ = menu.append(&spaces);
-        let _ = menu.append(&PredefinedMenuItem::separator());
-        for it in [MenuItem::with_id("reload", "Reload widgets and themes", true, None), MenuItem::with_id("folder", "Open widgets folder", true, None)] {
-            let _ = menu.append(&it);
-        }
-        let _ = menu.append(&PredefinedMenuItem::separator());
-        let _ = menu.append(&MenuItem::with_id("quit", "Quit Wayfinder", true, None));
-        menu
+    pub(super) fn menu_data(&self) -> crate::menu::Data {
+        crate::menu::Data { workspaces: self.ws.workspaces.iter().map(|w| w.name.clone()).collect(), active: self.ws.active.clone() }
     }
 
     /// After a Workspace is added, renamed, removed or shown.
     pub(super) fn refresh_tray(&mut self) {
-        if let Some(t) = &self.tray {
-            t.set_menu(Some(Box::new(self.tray_menu())));
+        let d = self.menu_data();
+        if let Some(m) = &mut self.menu {
+            m.set_data(d);
         }
     }
 
+    /// A right-click on the tray icon, `at` in physical screen px.
+    pub(super) fn show_menu(&mut self, el: &ActiveEventLoop, at: PhysicalPosition<f64>) {
+        if self.menu.is_none() {
+            let power = self.power();
+            match MenuWin::new(el, &mut self.gpu, power) {
+                Ok(m) => self.menu = Some(m),
+                Err(e) => return self.log(format!("tray menu: {e}")),
+            }
+        }
+        let mon = self.monitors.iter().find(|m| at.x >= m.x as f64 && at.y >= m.y as f64 && at.x < (m.x + m.w as i32) as f64 && at.y < (m.y + m.h as i32) as f64).or(self.monitors.first()).cloned();
+        let d = self.menu_data();
+        let App { menu: Some(menu), gpu: Some(gpu), text, theme, .. } = self else { return };
+        menu.set_data(d);
+        menu.show(at, mon.as_ref(), gpu, text, theme);
+    }
+
     pub(super) fn init_tray(&mut self) {
-        let menu = self.tray_menu();
-        let p = self.proxy.clone();
-        MenuEvent::set_event_handler(Some(move |e: MenuEvent| {
-            let _ = p.send_event(UserEvent::Menu(e.id.0.clone()));
-        }));
         let p = self.proxy.clone();
         TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
-            if let TrayIconEvent::Click { button: tray_icon::MouseButton::Left, button_state: tray_icon::MouseButtonState::Up, .. } = e {
-                let _ = p.send_event(UserEvent::TrayClick);
+            if let TrayIconEvent::Click { button, button_state: tray_icon::MouseButtonState::Up, position, .. } = e {
+                let _ = p.send_event(match button {
+                    tray_icon::MouseButton::Left => UserEvent::TrayClick,
+                    tray_icon::MouseButton::Right => UserEvent::TrayMenu(position),
+                    _ => return,
+                });
             }
         }));
-        match TrayIconBuilder::new().with_menu(Box::new(menu)).with_menu_on_left_click(false).with_tooltip("Wayfinder").with_icon(tray_icon_image()).build() {
+        match TrayIconBuilder::new().with_tooltip("Wayfinder").with_icon(tray_icon_image()).build() {
             Ok(t) => self.tray = Some(t),
             Err(e) => self.log(format!("tray icon failed: {e}")),
         }

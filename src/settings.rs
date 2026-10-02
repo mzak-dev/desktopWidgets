@@ -371,24 +371,24 @@ enum Btn {
     Warn,
 }
 
-struct Kit<'a> {
+pub(crate) struct Kit<'a> {
     t: &'a Theme,
     /// Light text on a dark palette.
     dark: bool,
 }
 
 impl Kit<'_> {
-    fn new(t: &Theme) -> Kit<'_> {
+    pub(crate) fn new(t: &Theme) -> Kit<'_> {
         let [r, g, b, _] = t.color("text").0;
         Kit { t, dark: r + g + b > 1.5 }
     }
 
-    fn c(&self, n: &str) -> Color {
+    pub(crate) fn c(&self, n: &str) -> Color {
         self.t.color(n)
     }
 
     /// The text colour, faint: panels, hairlines and hovers that read on any palette.
-    fn ink(&self, a: f32) -> Color {
+    pub(crate) fn ink(&self, a: f32) -> Color {
         self.c("text").with_alpha(a)
     }
 
@@ -397,7 +397,7 @@ impl Kit<'_> {
         if self.dark { WARN } else { Color([0.62, 0.42, 0.02, 1.0]) }
     }
 
-    fn line(&self) -> Color {
+    pub(crate) fn line(&self) -> Color {
         self.ink(0.09)
     }
 
@@ -411,12 +411,12 @@ impl Kit<'_> {
     }
 
     /// The window: the palette's surface, deepened on a dark palette.
-    fn bg(&self) -> Color {
+    pub(crate) fn bg(&self) -> Color {
         let s = self.c("surface").with_alpha(1.0);
         if self.dark { s.lerp(Color([0.0, 0.0, 0.0, 1.0]), 0.45) } else { s }
     }
 
-    fn txt(&self, key: String, s: &str, size: f32, col: Color) -> Node {
+    pub(crate) fn txt(&self, key: String, s: &str, size: f32, col: Color) -> Node {
         let fam = self.t.str("font-body");
         Node::text(key, s, size, col).with_text(|t| t.family = fam)
     }
@@ -430,7 +430,7 @@ impl Kit<'_> {
         Node::text(key, s, size, col).with_text(|t| t.family = fam)
     }
 
-    fn glyph(&self, key: String, name: &str, size: f32, col: Color) -> Node {
+    pub(crate) fn glyph(&self, key: String, name: &str, size: f32, col: Color) -> Node {
         let (fam, ch) = (self.t.str("font-glyph"), self.t.str(&format!("glyph-{name}")));
         Node::text(key, ch, size, col).with_text(|t| t.family = fam)
     }

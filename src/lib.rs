@@ -17,6 +17,7 @@ pub mod format;
 pub mod gfx;
 pub mod icons;
 pub mod images;
+pub mod menu;
 pub mod modules;
 pub mod net;
 pub mod platform;
