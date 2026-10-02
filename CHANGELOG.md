@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to Wayfinder are documented here.
+## v0.7.1 - 2026-10-02
+
+
+### CI
+
+- **release:** Add a velopack switch to Manual Release
 ## v0.7.0 - 2026-10-02
 
 
