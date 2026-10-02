@@ -20,7 +20,7 @@ use crate::value::Value;
 
 pub use agents::Agents;
 pub use audio::Audio;
-pub use calendar::{Calendar, calendar_value};
+pub use calendar::{Calendar, calendar_value, calendar_value_in};
 pub use clock::{Clock, Tm, clock_value};
 pub use gallery::Gallery;
 pub use media::Media;
@@ -241,7 +241,7 @@ impl Default for DataSources {
 /// The built-in sources over `ambient`. The app builds them over `Ambient::windows`.
 impl From<&Ambient> for DataSources {
     fn from(ambient: &Ambient) -> Self {
-        Self::new(vec![Box::new(Clock::new(ambient.calendar.clone())), Box::new(Sys::new(ambient.sys.clone())), Box::new(Shortcuts::default()), Box::new(Media::new(ambient.media.clone())), Box::new(Audio::new(ambient.capture.clone())), Box::new(Gallery::default()), Box::new(Agents::default()), Box::new(Calendar)])
+        Self::new(vec![Box::new(Clock::new(ambient.calendar.clone())), Box::new(Sys::new(ambient.sys.clone())), Box::new(Shortcuts::default()), Box::new(Media::new(ambient.media.clone())), Box::new(Audio::new(ambient.capture.clone())), Box::new(Gallery::default()), Box::new(ambient.home.as_deref().map_or_else(Agents::default, Agents::at)), Box::new(Calendar::new(ambient.calendar.clone()))])
     }
 }
 

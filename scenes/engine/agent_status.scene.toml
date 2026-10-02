@@ -1,0 +1,22 @@
+format = 1
+name = "agent_status at its smallest, default and largest size"
+tags = ["engine"]
+
+[widget]
+id = "agent_status"
+
+# the engine's own scene set: what every built-in Widget draws with its defaults and with
+# every switch on, at the smallest, the default and the largest size it allows
+# Agent sessions are read from the render's own empty data folder, so the widget shows its
+# empty state: the sessions of the machine are never read.
+
+[expect]
+flags = "error"
+
+[sweep]
+sizes = ["150x52", "340x160", "560x700"]
+
+[sweep.variants]
+defaults = {}
+all_on = { params = "bools:true" }
+

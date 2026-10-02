@@ -39,6 +39,8 @@ pub struct Facts<'a> {
     pub adapter: Option<&'a AdapterReport>,
     /// Every data path the widget reads.
     pub deps: &'a BTreeSet<String>,
+    /// `param=value` of the file and folder params the widget was given (`world::Settled::paths`).
+    pub paths: &'a [String],
     pub code_sources: &'a [String],
     /// Frames rendered after the first one to settle (1 without any waiting to do).
     pub rounds: u32,
@@ -76,8 +78,8 @@ pub fn leaks(f: &Facts) -> Vec<String> {
     if let Some(a) = f.adapter.filter(|a| !a.software) {
         out.push(format!("drawn on a hardware adapter ({})", a.name));
     }
-    if f.deps.iter().any(|d| d.split('.').next() == Some("shortcuts")) {
-        out.push("the shortcuts source reads the machine's folders".into());
+    if !f.paths.is_empty() {
+        out.push(format!("reads the machine's files: {}", f.paths.join(", ")));
     }
     out
 }
@@ -191,7 +193,7 @@ mod tests {
     }
 
     fn facts<'a>(pins: &'a Pins, real: &'a BTreeSet<Seam>, adapter: &'a AdapterReport, deps: &'a BTreeSet<String>) -> Facts<'a> {
-        Facts { widget: "clock", size: (10, 10), pins, real, installed: false, roots: &[], faces: &[], adapter: Some(adapter), deps, code_sources: &[], rounds: 1 }
+        Facts { widget: "clock", size: (10, 10), pins, real, installed: false, roots: &[], faces: &[], adapter: Some(adapter), deps, paths: &[], code_sources: &[], rounds: 1 }
     }
 
     #[test]
@@ -210,8 +212,13 @@ mod tests {
         assert_eq!(leaks(&facts(&pins, &real, &soft, &deps)), ["read from the machine: clock, sys"]);
         let hard = adapter(false);
         assert!(leaks(&facts(&pins, &none, &hard, &deps))[0].starts_with("drawn on a hardware adapter"));
+        // a shortcut list the instance carries is not the machine's; a mirrored folder or a picked file is
         let shortcuts = BTreeSet::from(["shortcuts.items".to_string()]);
-        assert!(leaks(&facts(&pins, &none, &soft, &shortcuts))[0].contains("shortcuts"));
+        assert!(leaks(&facts(&pins, &none, &soft, &shortcuts)).is_empty());
+        let paths = ["folder=C:/Pictures".to_string()];
+        let mut f = facts(&pins, &none, &soft, &shortcuts);
+        f.paths = &paths;
+        assert_eq!(leaks(&f), ["reads the machine's files: folder=C:/Pictures"]);
         let mut f = facts(&pins, &none, &soft, &deps);
         f.installed = true;
         assert_eq!(leaks(&f), ["installed widgets and plugins were read"]);

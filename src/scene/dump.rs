@@ -384,7 +384,7 @@ pub fn build(id: &str, s: &Settled) -> SceneDump {
     let pins = s.pins.entries();
     let entry = |k: &str| pins.iter().find(|(n, _)| *n == k).map(|(_, v)| v.as_str().map_or_else(|| v.to_string(), str::to_string)).unwrap_or_default();
     let faces = s.text.font_faces();
-    let facts = env::Facts { widget: &s.content.id, size: (0, 0), pins: &s.pins, real: &s.real, installed: s.content.installed, roots: &s.content.roots, faces: &faces, adapter: None, deps: &s.prepared.deps, code_sources: &s.code_sources, rounds: s.rounds };
+    let facts = env::Facts { widget: &s.content.id, size: (0, 0), pins: &s.pins, real: &s.real, installed: s.content.installed, roots: &s.content.roots, faces: &faces, adapter: None, deps: &s.prepared.deps, paths: &s.paths, code_sources: &s.code_sources, rounds: s.rounds };
     let because = env::leaks(&facts);
     let pins_json = serde_json::to_string(&pins).unwrap_or_default();
     let mut dump = SceneDump {

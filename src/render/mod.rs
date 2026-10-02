@@ -109,7 +109,7 @@ pub fn render(r: &Request) -> Result<bool, String> {
 
     let faces = s.text.font_faces();
     let id = &s.content.id;
-    let facts = env::Facts { widget: id, size: (pw, ph), pins, real: &s.real, installed: r.installed, roots: &s.content.roots, faces: &faces, adapter: Some(&adapter), deps: &s.prepared.deps, code_sources: &s.code_sources, rounds: s.rounds };
+    let facts = env::Facts { widget: id, size: (pw, ph), pins, real: &s.real, installed: r.installed, roots: &s.content.roots, faces: &faces, adapter: Some(&adapter), deps: &s.prepared.deps, paths: &s.paths, code_sources: &s.code_sources, rounds: s.rounds };
     let because = env::leaks(&facts);
     let side = env::sidecar_path(&r.png);
     let json = serde_json::to_string_pretty(&env::sidecar(&facts)).map_err(|e| e.to_string())?;

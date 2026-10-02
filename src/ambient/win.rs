@@ -3,7 +3,7 @@
 use windows::Win32::Foundation::SYSTEMTIME;
 use windows::Win32::System::Time::DYNAMIC_TIME_ZONE_INFORMATION;
 
-use super::{Calendar, DateStyle, Tm};
+use super::{Calendar, DateStyle, Tm, Week};
 
 type Zone = DYNAMIC_TIME_ZONE_INFORMATION;
 
@@ -82,6 +82,24 @@ impl Calendar for WinCalendar {
                 DateStyle::DateShort => "d MMM",
             },
         )
+    }
+
+    /// Read once: a change of region shows after a restart.
+    fn week(&self) -> Week {
+        static L: std::sync::OnceLock<Week> = std::sync::OnceLock::new();
+        L.get_or_init(|| {
+            use windows::Win32::Globalization::{GetLocaleInfoEx, LOCALE_IFIRSTDAYOFWEEK, LOCALE_SSHORTESTDAYNAME1};
+            let read = |kind: u32| {
+                let mut buf = [0u16; 32];
+                let n = unsafe { GetLocaleInfoEx(windows::core::PCWSTR::null(), kind, Some(&mut buf)) };
+                (n > 1).then(|| String::from_utf16_lossy(&buf[..(n - 1) as usize]))
+            };
+            let first = read(LOCALE_IFIRSTDAYOFWEEK).and_then(|s| s.trim().parse::<u32>().ok()).filter(|f| *f < 7).unwrap_or(0);
+            let fallback = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+            let names = std::array::from_fn(|i| read(LOCALE_SSHORTESTDAYNAME1 + i as u32).filter(|s| !s.is_empty()).unwrap_or_else(|| fallback[i].into()));
+            Week { first, names }
+        })
+        .clone()
     }
 
     fn local_to_utc(&self, local: &Tm) -> Option<Tm> {

@@ -1,0 +1,20 @@
+format = 1
+name = "icon_list at its smallest, default and largest size"
+tags = ["engine"]
+
+[widget]
+id = "icon_list"
+items = "demo"
+# the engine's own scene set: what every built-in Widget draws with its defaults and with
+# every switch on, at the smallest, the default and the largest size it allows
+
+[expect]
+flags = "error"
+
+[sweep]
+sizes = ["140x96", "240x320", "480x900"]
+
+[sweep.variants]
+defaults = {}
+all_on = { params = "bools:true" }
+

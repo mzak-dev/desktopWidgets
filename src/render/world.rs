@@ -17,6 +17,7 @@ use crate::content::{Catalog, Root};
 use crate::data::{DataSources, SourceCx};
 use crate::gfx::Power;
 use crate::icons::ImageStore;
+use crate::meta::ParamType;
 use crate::plugins::{self, Plugin, PluginStore};
 use crate::text::TextEngine;
 use crate::theme::{Selection, Theme};
@@ -210,6 +211,9 @@ pub struct Settled {
     /// The effective Pins (`--time` applied).
     pub pins: Pins,
     pub real: BTreeSet<Seam>,
+    /// `param=value` for each file or folder param the widget was given (`folder`, `path`):
+    /// what it reads there is the machine's.
+    pub paths: Vec<String>,
     pub prepared: crate::widgets::Prepared,
     pub text: TextEngine,
     pub images: ImageStore,
@@ -244,6 +248,10 @@ pub fn settle(r: &Request, power: Power, trace: bool) -> Result<Settled, Failure
 
     let t0 = Instant::now();
     let mut ambient = ambient_for(&pins, &real, t0, &data).map_err(Failure::Run)?;
+    // the render's own empty folder stands in for the profile, so no agent session of the machine shows
+    if !r.installed {
+        ambient.home = Some(data.clone());
+    }
     let mut text = TextEngine::with_fonts((ambient.fonts)());
     for e in text.sync_fonts(&content.cat.font_files) {
         notes.push(format!("warning: {e}"));
@@ -296,6 +304,12 @@ pub fn settle(r: &Request, power: Power, trace: bool) -> Result<Settled, Failure
         Some((hour, minute)) if real.contains(&Seam::Clock) => Tm { hour, minute, second: 0, ms: 0, ..now_tm },
         _ => now_tm,
     };
+
+    // the files and folders the widget was pointed at: they are the machine's, not the run's
+    let mut paths: Vec<String> = meta.iter().flat_map(|m| &m.params).filter(|p| matches!(p.ty, ParamType::Path | ParamType::File)).filter_map(|p| params.get(&p.name).map(|v| (p.name.clone(), v.to_string()))).filter(|(_, v)| !v.is_empty()).map(|(k, v)| format!("{k}={v}")).collect();
+    if let Some(f) = Some(cfg.instance().folder()).filter(|f| !f.is_empty()).map(|f| format!("folder={f}")).filter(|f| !paths.contains(f)) {
+        paths.push(f);
+    }
 
     let settle = pins.settle;
     let mut anim = Anim::default();
@@ -376,7 +390,7 @@ pub fn settle(r: &Request, power: Power, trace: bool) -> Result<Settled, Failure
     if let Some(e) = &p.error {
         notes.push(format!("error: {e}"));
     }
-    Ok(Settled { content, card_size, window, pins, real, prepared: p, text, images, code_sources: code_names, rounds, at, notes, theme })
+    Ok(Settled { content, card_size, window, pins, real, paths, prepared: p, text, images, code_sources: code_names, rounds, at, notes, theme })
 }
 
 /// How long a hovered node is held before the frame a scene describes, so its colour

@@ -109,7 +109,7 @@ pub fn run(s: &Scene, o: &Overrides) -> Result<Outcome, Failure> {
     let dump = dump::build(&s.id, &settled);
     let faces = settled.text.font_faces();
     let px = |v: f32| (v * settled.pins.scale).round() as u32;
-    let facts = env::Facts { widget: &settled.content.id, size: (px(settled.window.0), px(settled.window.1)), pins: &settled.pins, real: &settled.real, installed: settled.content.installed, roots: &settled.content.roots, faces: &faces, adapter: None, deps: &settled.prepared.deps, code_sources: &settled.code_sources, rounds: settled.rounds };
+    let facts = env::Facts { widget: &settled.content.id, size: (px(settled.window.0), px(settled.window.1)), pins: &settled.pins, real: &settled.real, installed: settled.content.installed, roots: &settled.content.roots, faces: &faces, adapter: None, deps: &settled.prepared.deps, paths: &settled.paths, code_sources: &settled.code_sources, rounds: settled.rounds };
     let sidecar = env::sidecar(&facts);
     let unmet = unmet(&s.expect, &dump);
     let error = settled.prepared.error.clone();

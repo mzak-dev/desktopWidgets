@@ -206,3 +206,123 @@ fn check_of_a_clean_set_is_exit_0_and_a_bad_scene_is_exit_2() {
     assert!(text(&o.stderr).contains("did you mean `fits/digital_clock`"), "{}", text(&o.stderr));
     let _ = std::fs::remove_dir_all(out);
 }
+
+/// A scenes folder holding the text-free `plain` widget and a scene of it, so a baseline of it
+/// does not depend on the machine's fonts. Returns the scenes folder and the widget file.
+fn plain_set(name: &str) -> (PathBuf, PathBuf) {
+    let dir = temp(name).join("scenes");
+    let widget = write_scene(&dir.join("widget"), "plain.toml", &read(&repo().join("scenes/fixtures/widget/plain.toml")));
+    write_scene(&dir, "plain.scene.toml", "format = 1\n[widget]\nfile = \"widget/plain.toml\"\nsize = \"180x100\"\n");
+    (dir, widget)
+}
+
+fn baseline_files(dir: &Path) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(d) = todo.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                todo.push(p);
+            } else if p.extension().is_some_and(|x| x == "txt") {
+                out.push((p.strip_prefix(dir).unwrap().to_string_lossy().replace('\\', "/"), read(&p)));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn bless_needs_a_reason_then_diff_names_a_padding_change_by_node_key_and_exits_1() {
+    let (dir, widget) = plain_set("bless-diff");
+    let root = dir.to_str().unwrap();
+    let id = "plain";
+
+    // no baseline yet: a finding, not a pass
+    let o = scene(&["diff", id, "--root", root, "--no-pixels", "-q"]);
+    assert_eq!(o.status.code(), Some(1), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(text(&o.stdout).contains("NEW"), "{}", text(&o.stdout));
+
+    // bless refuses without a reason, and writes nothing
+    let o = scene(&["bless", id, "--root", root]);
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o.stderr));
+    assert!(text(&o.stderr).contains("--reason"), "{}", text(&o.stderr));
+    assert!(!dir.join("baselines").exists());
+
+    let o = scene(&["bless", id, "--root", root, "--reason", "first baseline"]);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    let files = baseline_files(&dir.join("baselines"));
+    assert_eq!(files.len(), 1, "{files:?}");
+    assert!(files[0].0.ends_with("/plain.dump.txt") && files[0].1.contains("fonts=system:"), "the baseline is filed under its font hash: {files:?}");
+    let log = std::fs::read_dir(dir.join("baselines")).unwrap().flatten().map(|e| e.path().join("bless.log")).find(|p| p.is_file()).expect("a bless.log");
+    assert!(read(&log).contains("first baseline"), "{}", read(&log));
+
+    // a second process finds the same dump: nothing changed
+    let o = scene(&["diff", id, "--root", root, "--no-pixels"]);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+
+    // change a padding: geometry, by node key, exit 1
+    let changed = read(&widget).replace("padding = 10", "padding = 18");
+    assert_ne!(changed, read(&widget));
+    std::fs::write(&widget, changed).unwrap();
+    let o = scene(&["diff", id, "--root", root, "--no-pixels"]);
+    let shown = text(&o.stdout);
+    assert_eq!(o.status.code(), Some(1), "{shown}{}", text(&o.stderr));
+    assert!(shown.contains("plain  DUMP  geometry ") && shown.contains("plain-1/0  rect  30,30 40x80 -> 38,38 40x64") && shown.contains("moved right 8"), "{shown}");
+    assert!(!shown.contains("geometry 0"), "{shown}");
+
+    // blessing it needs a reason again, and records the change
+    let o = scene(&["bless", id, "--root", root, "--reason", "wider padding"]);
+    assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    assert!(read(&log).contains("wider padding"));
+    assert_eq!(scene(&["diff", id, "--root", root, "--no-pixels", "-q"]).status.code(), Some(0));
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
+
+#[test]
+fn baselines_made_by_two_separate_processes_are_byte_identical() {
+    let (dir, _) = plain_set("bless-twice");
+    let root = dir.to_str().unwrap();
+    let (a, b) = (dir.join("a"), dir.join("b"));
+    for to in [&a, &b] {
+        let o = scene(&["bless", "plain", "--root", root, "--baselines", to.to_str().unwrap(), "--reason", "twice"]);
+        assert_eq!(o.status.code(), Some(0), "{}{}", text(&o.stdout), text(&o.stderr));
+    }
+    assert_eq!(baseline_files(&a), baseline_files(&b));
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
+
+#[test]
+fn a_baseline_made_with_other_fonts_is_never_compared() {
+    let (dir, _) = plain_set("bless-fonts");
+    let root = dir.to_str().unwrap();
+    assert_eq!(scene(&["bless", "plain", "--root", root, "--reason", "here"]).status.code(), Some(0));
+    // pretend the baselines came from another machine: move them under another font hash
+    let base = dir.join("baselines");
+    let mine = std::fs::read_dir(&base).unwrap().flatten().map(|e| e.path()).find(|p| p.is_dir()).unwrap();
+    let theirs = base.join("system-00000000");
+    std::fs::rename(&mine, &theirs).unwrap();
+    let file = theirs.join("plain.dump.txt");
+    let from = read(&file);
+    let at = from.find("fonts=system:").unwrap() + "fonts=system:".len();
+    let end = from[at..].find(|c: char| !c.is_ascii_hexdigit()).map_or(from.len(), |e| at + e);
+    std::fs::write(&file, format!("{}00000000{}", &from[..at], &from[end..])).unwrap();
+    let o = scene(&["diff", "plain", "--root", root, "--no-pixels"]);
+    let (shown, err) = (text(&o.stdout), text(&o.stderr));
+    assert_eq!(o.status.code(), Some(3), "{shown}{err}");
+    assert!(shown.contains("FONTS") && err.contains("font set") && !shown.contains("geometry"), "{shown}{err}");
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
+
+#[test]
+fn bless_refuses_a_flagged_run_and_writes_nothing() {
+    let (dir, _f) = narrow("bless-flagged", "flags = \"error\"");
+    let root = dir.to_str().unwrap();
+    let o = scene(&["bless", "narrow", "--root", root, "--reason", "should not be written"]);
+    let err = text(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{}{err}", text(&o.stdout));
+    assert!(err.contains("refused narrow") && err.contains("nothing was blessed"), "{err}");
+    assert!(!dir.join("baselines").exists());
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}

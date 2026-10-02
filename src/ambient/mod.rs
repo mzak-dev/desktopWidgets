@@ -15,7 +15,7 @@ mod win_icon;
 mod win_media;
 mod win_sys;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub use capture::{Capture, to_mono};
@@ -110,6 +110,15 @@ pub enum DateStyle {
     DateShort,
 }
 
+/// How the user's weeks are written: the first day and the shortest day names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Week {
+    /// Monday is 0, Sunday 6, as Windows numbers `LOCALE_IFIRSTDAYOFWEEK`.
+    pub first: u32,
+    /// The shortest day names, Monday first.
+    pub names: [String; 7],
+}
+
 /// The engine's view of time: the wall clock, the moment it shows in UTC, a zone's time and
 /// localized day and month names. The clock Data Source reads only this.
 pub trait Calendar: Send + Sync {
@@ -119,6 +128,8 @@ pub trait Calendar: Send + Sync {
     fn unix_ms(&self) -> i64;
     /// `tm`'s date as text, in the user's language.
     fn date_text(&self, tm: &Tm, style: DateStyle) -> String;
+    /// The first day of the week and the shortest day names (the calendar widget's columns).
+    fn week(&self) -> Week;
     /// The UTC moment the local time `local` shows, `None` if the zone cannot say.
     fn local_to_utc(&self, local: &Tm) -> Option<Tm>;
     /// Every time zone key this calendar knows.
@@ -143,6 +154,10 @@ pub struct Ambient {
     /// The transport for plugin code's network, `None` until something needs it: the app
     /// opens it when a Plugin lists hosts.
     pub fetch: Option<Arc<dyn Fetch>>,
+    /// Where the coding agents' session files are read (the `agents` source): `None` is the
+    /// user's profile. A hermetic render points it at its own empty data folder, so no
+    /// session of the machine shows.
+    pub home: Option<PathBuf>,
 }
 
 impl Ambient {
@@ -157,6 +172,7 @@ impl Ambient {
             icons: Arc::new(ShellIcons),
             fonts: FontSet::system,
             fetch: None,
+            home: None,
         }
     }
 
@@ -202,6 +218,7 @@ impl Ambient {
                 FontMode::System => FontSet::system_shared,
             },
             fetch,
+            home: None,
         }
     }
 }

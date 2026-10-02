@@ -12,7 +12,7 @@ use super::icon::IconSource;
 use super::media::{Control, MediaBackend, Notify, Track};
 use super::pins::{Canned, SysPins};
 use super::sys::{Battery, GpuLoad, Memory, Reading, SysProbe};
-use super::{Calendar, DateStyle, Tm, civil_from_days, days_from_civil};
+use super::{Calendar, DateStyle, Tm, Week, civil_from_days, days_from_civil};
 use crate::images::Decoded;
 use crate::net::{Fetch, Request, Response, Target};
 
@@ -162,6 +162,11 @@ impl Calendar for FixedCalendar {
             DateStyle::Date => format!("{day}, {} {month}", tm.day),
             DateStyle::DateShort => format!("{} {}", tm.day, &month[..3]),
         }
+    }
+
+    /// en-US: weeks start on Sunday.
+    fn week(&self) -> Week {
+        Week { first: 6, names: ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"].map(String::from) }
     }
 
     /// In the hour a fall-back repeats, the first one (daylight); in the hour a spring-forward

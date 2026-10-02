@@ -3,3 +3,5 @@ sdk/**/target
 .remember/
 *.log
 .look/
+# per machine: a dump is exact only on the font set that made it (see src/scene/baseline.rs)
+scenes/baselines/

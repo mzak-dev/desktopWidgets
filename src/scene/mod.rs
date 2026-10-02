@@ -12,14 +12,25 @@
 //! built-in `fits` set) can be a test and a command. A scene's `[expect].flags` says whether a
 //! flag is an error (a finding), a warning or ignored.
 //!
+//! `scene diff` re-runs scenes and compares each dump with its baseline (`baseline`), saying in
+//! words which node moved, was reworded or changed colour (`diff`); `scene bless` re-runs them
+//! and, when nothing is wrong with the run, writes the new baselines (`bless`). Baselines are
+//! per font environment: there are no bundled fonts, so a dump is exact on the machine and font
+//! set that made it, and a diff against baselines made with other fonts is refused instead of
+//! reported.
+//!
 //! Exit codes: 0 clean, 1 findings (a widget error card, a failed `[expect]`, an error-level
-//! flag, a code source that never answered), 2 bad arguments or scene file (nothing is run if a
-//! file is bad), 3 the output could not be written. The scene file, the dump and these verbs are tooling:
-//! they carry `format = 1` and may change in minor releases.
+//! flag, a code source that never answered, a diff or a scene with no baseline, a refused
+//! bless), 2 bad arguments or scene file (nothing is run if a file is bad), 3 the output could
+//! not be written, or the baselines were made with other fonts. The scene file, the dump and
+//! these verbs are tooling: they carry `format = 1` and may change in minor releases.
 //!
 //! Fonts are the machine's, so a dump is exact on the machine and font set it was made on
 //! (the header's `fonts=` says which); it is not a cross-machine artefact.
 
+pub mod baseline;
+pub mod bless;
+pub mod diff;
 pub mod dump;
 pub mod file;
 pub mod flags;
@@ -48,7 +59,9 @@ pub const USAGE: &str = "usage:
                        [--hover KEY] [--content-root DIR] [--wait secs]
   wayfinder scene dump --widget <id | file.toml> [same flags]
   wayfinder scene check <id|glob|set|file>... [--out DIR] [--root DIR] [-q] [--widget <id | file.toml>] [same flags as dump's environment]
-exit: 0 clean, 1 findings, 2 bad arguments or scene, 3 output not written";
+  wayfinder scene diff <id|glob|set|file>... [--no-pixels] [--changed-only] [--baselines DIR] [--out DIR] [--root DIR] [-q]
+  wayfinder scene bless <id|glob|set|file>... --reason \"what changed and why\" [--new-only] [--baselines DIR] [--out DIR] [--root DIR] [-q]
+exit: 0 clean, 1 findings (a diff, a scene with no baseline, a refused bless), 2 bad arguments or scene, 3 output not written or baselines made with other fonts";
 
 /// `v` as JSON when it is (numbers, booleans, lists), else as text.
 pub fn loose(v: &str) -> Json {
@@ -83,23 +96,29 @@ pub enum Invocation {
     List { select: Selection, sets: bool },
     Dump { select: Selection, query: Query, format: Format, out: Option<PathBuf>, quiet: bool, overrides: Overrides },
     Check { select: Selection, out: Option<PathBuf>, quiet: bool, overrides: Overrides },
+    Diff { select: Selection, opts: bless::Opts, changed_only: bool },
+    Bless { select: Selection, opts: bless::Opts, reason: String, new_only: bool },
 }
 
 /// The command in `args` (what follows `scene`).
 pub fn parse(args: &[String]) -> Result<Invocation, String> {
     let verbs = ["list", "dump", "render", "sheet", "check", "diff", "bless", "selfcheck", "guide"];
-    let verb = args.first().map(String::as_str).ok_or("scene needs a verb: list, dump or check")?;
+    let verb = args.first().map(String::as_str).ok_or("scene needs a verb: list, dump, check, diff or bless")?;
     if !verbs.contains(&verb) {
-        return Err(format!("unknown scene verb `{verb}`{} (this build has list, dump and check)", suggest(verb, &[&verbs])));
+        return Err(format!("unknown scene verb `{verb}`{} (this build has list, dump, check, diff and bless)", suggest(verb, &[&verbs])));
     }
-    if !["list", "dump", "check"].contains(&verb) {
-        return Err(format!("`scene {verb}` is not in this build yet; `scene list`, `scene dump` and `scene check` are"));
+    if !["list", "dump", "check", "diff", "bless"].contains(&verb) {
+        return Err(format!("`scene {verb}` is not in this build yet; `scene list`, `scene dump`, `scene check`, `scene diff` and `scene bless` are"));
     }
     let mut select = Selection::default();
     let (mut query, mut format, mut out, mut quiet, mut sets) = (Query::default(), Format::Text, None, false, false);
     let mut o = Overrides::default();
-    // the verbs that run scenes share the options that set the world they run in
+    let (mut baselines, mut reason, mut new_only, mut changed_only) = (None, None::<String>, false, false);
+    // the verbs that run scenes share --out and -q; dump and check also the options that set the
+    // world a scene runs in. diff and bless run a scene as its file says: a baseline is of the
+    // scene, not of an experiment
     let runs = verb != "list";
+    let env_ok = matches!(verb, "dump" | "check");
     let pin = |o: &mut Overrides, k: &str, v: Json| o.pins.push((k.to_string(), v));
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
@@ -107,7 +126,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         match a.as_str() {
             "--sets" if verb == "list" => sets = true,
             "--root" => select.root = Some(val()?.into()),
-            "--widget" if runs => select.widget = Some(val()?),
+            "--widget" if env_ok => select.widget = Some(val()?),
             "--view" if verb == "dump" => query.view = View::parse(&val()?)?,
             "--under" if verb == "dump" => query.under = Some(val()?),
             "--depth" if verb == "dump" => query.depth = Some(val()?.parse().map_err(|_| "--depth is a whole number")?),
@@ -121,31 +140,40 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
             }
             "--out" if runs => out = Some(val()?.into()),
             "-q" if runs => quiet = true,
-            "--env" if runs => {
+            "--env" if env_ok => {
                 let (k, v) = pair(&val()?, "--env")?;
                 pin(&mut o, &k, v);
             }
-            "--now" if runs => pin(&mut o, "now", Json::String(val()?)),
-            "--real" if runs => pin(&mut o, "real", Json::String(val()?)),
-            "--scale" if runs => pin(&mut o, "scale", loose(&val()?)),
-            "--palette" if runs => pin(&mut o, "palette", Json::String(val()?)),
-            "--transparent" if runs => pin(&mut o, "transparent", Json::Bool(true)),
-            "--time" if runs => {
+            "--now" if env_ok => pin(&mut o, "now", Json::String(val()?)),
+            "--real" if env_ok => pin(&mut o, "real", Json::String(val()?)),
+            "--scale" if env_ok => pin(&mut o, "scale", loose(&val()?)),
+            "--palette" if env_ok => pin(&mut o, "palette", Json::String(val()?)),
+            "--transparent" if env_ok => pin(&mut o, "transparent", Json::Bool(true)),
+            "--time" if env_ok => {
                 let v = val()?;
                 let (h, m) = v.split_once(':').ok_or("--time is HH:MM")?;
                 o.time = Some((h.parse().map_err(|_| "--time is HH:MM")?, m.parse().map_err(|_| "--time is HH:MM")?));
             }
-            "--size" if runs => {
+            "--size" if env_ok => {
                 let (w, h) = file::parse_size(&val()?).map_err(|e| format!("--size: {e}"))?;
                 o.size = Some(Size::Card(w, h));
             }
-            "--tier" if runs => o.size = Some(Size::Tier(val()?)),
-            "--param" if runs => o.params.push(pair(&val()?, "--param")?),
-            "--state" if runs => o.state.push(pair(&val()?, "--state")?),
-            "--hide" if runs => o.hide.push(val()?),
-            "--hover" if runs => o.hover = Some(val()?),
-            "--content-root" if runs => o.plugin = Some(val()?.into()),
-            "--wait" if runs => o.wait = Some(val()?.parse().map_err(|_| "--wait is seconds")?),
+            "--tier" if env_ok => o.size = Some(Size::Tier(val()?)),
+            "--param" if env_ok => o.params.push(pair(&val()?, "--param")?),
+            "--state" if env_ok => o.state.push(pair(&val()?, "--state")?),
+            "--hide" if env_ok => o.hide.push(val()?),
+            "--hover" if env_ok => o.hover = Some(val()?),
+            "--content-root" if env_ok => o.plugin = Some(val()?.into()),
+            "--wait" if env_ok => o.wait = Some(val()?.parse().map_err(|_| "--wait is seconds")?),
+            "--baselines" if matches!(verb, "diff" | "bless") => baselines = Some(PathBuf::from(val()?)),
+            "--changed-only" if verb == "diff" => changed_only = true,
+            "--no-pixels" if verb == "diff" => {}
+            "--pixels" if verb == "diff" => return Err("--pixels: pixel diffs are not in this build; `scene diff` compares dumps (--no-pixels is what it does)".into()),
+            "--reason" if verb == "bless" => reason = Some(val()?),
+            "--new-only" if verb == "bless" => new_only = true,
+            "--widget" | "--env" | "--now" | "--real" | "--scale" | "--palette" | "--transparent" | "--time" | "--size" | "--tier" | "--param" | "--state" | "--hide" | "--hover" | "--content-root" | "--wait" if matches!(verb, "diff" | "bless") => {
+                return Err(format!("{a} is not accepted by `scene {verb}`: a scene is compared and blessed as its file says, so change the scene file"));
+            }
             "--gpu" | "--allow-hardware" => return Err(format!("{a} is not accepted: scene commands never take a hardware adapter (a dump needs none)")),
             flag if flag.starts_with('-') => return Err(format!("unknown option `{flag}` for `scene {verb}`")),
             pattern => select.patterns.push(pattern.to_string()),
@@ -154,8 +182,17 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     if select.widget.is_some() && !select.patterns.is_empty() {
         return Err("--widget names one widget; it takes no scene ids".into());
     }
+    let opts = bless::Opts { out: out.clone(), quiet, baselines };
+    if verb == "bless" {
+        let reason = reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).ok_or("`scene bless` needs --reason \"what changed and why\": a baseline is only replaced on purpose")?;
+        if select.patterns.is_empty() {
+            return Err("`scene bless` needs the scenes to bless: an id, a glob or a set (nothing is blessed by default)".into());
+        }
+        return Ok(Invocation::Bless { select, opts, reason, new_only });
+    }
     Ok(match verb {
         "list" => Invocation::List { select, sets },
+        "diff" => Invocation::Diff { select, opts, changed_only },
         "check" => Invocation::Check { select, out, quiet, overrides: o },
         _ => Invocation::Dump { select, query, format, out, quiet, overrides: o },
     })
@@ -328,24 +365,34 @@ struct Totals {
     dump_hashes: Vec<String>,
     hermetic: bool,
     fonts: String,
+    /// A line for the top of the summary (a bless says why), and `reason` in `last.json`.
+    reason: Option<String>,
 }
 
 impl Totals {
     /// `summary.txt` and `last.json`: the summary lists every scene, or, with `only_bad`, the
-    /// ones that need a look when there are more than that many.
-    fn summaries(&self, code: i32, only_bad: Option<usize>) -> (String, String) {
+    /// ones that need a look when there are more than that many. `collapse_colour` leaves out
+    /// the scenes that changed only in colour (a palette tweak changes every scene): the
+    /// "N scenes changed only in colour" line stands for them.
+    fn summaries(&self, code: i32, only_bad: Option<usize>, collapse_colour: bool) -> (String, String) {
         let rows = &self.rows;
         let run_id = fnv(self.dump_hashes.iter().map(String::as_bytes).chain(rows.iter().map(|r| r.id.as_bytes())))[..6].to_string();
         let ok = rows.iter().filter(|r| r.verdict == "ok").count();
-        let mut summary = format!("{:<34}{:<9}{}
-", "scene", "verdict", "detail");
-        for r in rows.iter().filter(|r| only_bad.is_none_or(|n| rows.len() <= n || r.verdict != "ok")) {
-            summary.push_str(&format!("{:<34}{:<9}{}
-", r.id, r.verdict, r.detail));
+        let colour = rows.iter().filter(|r| r.verdict == "COLOUR").count();
+        let wide = rows.iter().map(|r| r.id.chars().count()).max().unwrap_or(0).max(33) + 1;
+        let mut summary = String::new();
+        if let Some(r) = &self.reason {
+            summary.push_str(&format!("reason: {r}\n"));
         }
-        summary.push_str(&format!("{} scene{}, {ok} ok, {} need a look. exit {code}. run {run_id} hermetic={} adapter=none fonts={}
-", rows.len(), if rows.len() == 1 { "" } else { "s" }, rows.len() - ok, self.hermetic, if self.fonts.is_empty() { "-" } else { &self.fonts }));
-        let last = json!({
+        summary.push_str(&format!("{:<wide$}{:<9}{}\n", "scene", "verdict", "detail"));
+        for r in rows.iter().filter(|r| only_bad.is_none_or(|n| rows.len() <= n || r.verdict != "ok")).filter(|r| !(collapse_colour && colour > 1 && r.verdict == "COLOUR")) {
+            summary.push_str(&format!("{:<wide$}{:<9}{}\n", r.id, r.verdict, r.detail));
+        }
+        if colour > 0 {
+            summary.push_str(&format!("{colour} scene{} changed only in colour{}\n", if colour == 1 { "" } else { "s" }, if collapse_colour && colour > 1 { " (listed in summary.txt)" } else { "" }));
+        }
+        summary.push_str(&format!("{} scene{}, {ok} ok, {} need a look. exit {code}. run {run_id} hermetic={} adapter=none fonts={}\n", rows.len(), if rows.len() == 1 { "" } else { "s" }, rows.len() - ok, self.hermetic, if self.fonts.is_empty() { "-" } else { &self.fonts }));
+        let mut last = json!({
             "format": 1,
             "engine": env!("CARGO_PKG_VERSION"),
             "exit": code,
@@ -355,8 +402,10 @@ impl Totals {
             "fonts": self.fonts,
             "scenes": rows.iter().map(|r| json!({ "id": r.id, "verdict": r.verdict, "detail": r.detail, "scene_hash": r.scene_hash, "dump_hash": r.dump_hash })).collect::<Vec<_>>(),
         });
-        (summary, serde_json::to_string_pretty(&last).unwrap_or_default() + "
-")
+        if let Some(r) = &self.reason {
+            last["reason"] = Json::String(r.clone());
+        }
+        (summary, serde_json::to_string_pretty(&last).unwrap_or_default() + "\n")
     }
 }
 
@@ -422,6 +471,8 @@ pub fn run(inv: Invocation) -> i32 {
         Invocation::List { select, sets } => list(&select, sets),
         Invocation::Dump { select, query, format, out, quiet, overrides } => dump_cmd(&select, &query, format, out, quiet, &overrides),
         Invocation::Check { select, out, quiet, overrides } => check_cmd(&select, out, quiet, &overrides),
+        Invocation::Diff { select, opts, changed_only } => bless::diff_cmd(&select, &opts, changed_only),
+        Invocation::Bless { select, opts, reason, new_only } => bless::bless_cmd(&select, &opts, &reason, new_only),
     }
 }
 
@@ -519,8 +570,8 @@ fn dump_cmd(select: &Selection, query: &Query, format: Format, out: Option<PathB
         rows.push(row);
     }
     let code = exit_of(bad, infra, findings);
-    let totals = Totals { rows, dump_hashes, hermetic, fonts };
-    let (summary, last) = totals.summaries(code, None);
+    let totals = Totals { rows, dump_hashes, hermetic, fonts, reason: None };
+    let (summary, last) = totals.summaries(code, None, false);
     let dir = out.clone().unwrap_or_else(|| first_root.join(".look"));
     for (name, text) in [("summary.txt", summary.clone()), ("last.json", last)] {
         if let Err(e) = write(&dir.join(name), &text) {
@@ -699,10 +750,10 @@ fn check_cmd(select: &Selection, out: Option<PathBuf>, quiet: bool, o: &Override
     let code = report.exit(infra);
     let rows = report.rows.iter().map(|r| Row { id: r.id.clone(), verdict: r.verdict, detail: r.detail.clone(), scene_hash: r.scene_hash.clone(), dump_hash: r.dump_hash.clone() }).collect();
     let dump_hashes = report.rows.iter().filter_map(|r| r.dump_hash.clone()).collect();
-    let totals = Totals { rows, dump_hashes, hermetic: report.hermetic, fonts: report.fonts.clone() };
+    let totals = Totals { rows, dump_hashes, hermetic: report.hermetic, fonts: report.fonts.clone(), reason: None };
     // the file lists every scene; the console only the ones that need a look in a long set
-    let (full, last) = totals.summaries(code, None);
-    let (console, _) = totals.summaries(code, Some(20));
+    let (full, last) = totals.summaries(code, None, false);
+    let (console, _) = totals.summaries(code, Some(20), false);
     let dir = out.unwrap_or_else(|| report.rows.first().map(|r| r.root.join(".look")).unwrap_or_default());
     for (name, text) in [("summary.txt", full), ("last.json", last)] {
         if let Err(e) = write(&dir.join(name), &text) {
@@ -820,6 +871,18 @@ mod tests {
         assert!(d.texts().iter().any(|(_, t)| *t == "London"), "{:?}", d.texts());
         assert_eq!((d.header.card, d.header.scale), ([340.0, 220.0], 1.0));
         assert!(dump_widget("no-such-widget", (100.0, 100.0)).unwrap_err().contains("no widget"));
+    }
+
+    #[test]
+    fn the_calendar_and_agent_widgets_show_the_pinned_world_not_the_machines() {
+        // the month and day names are the fixed en-US calendar's, not the Windows locale's,
+        // and the agents source reads the run's own empty folder, so both dumps are hermetic
+        let c = dump_widget("calendar", (340.0, 160.0)).unwrap();
+        let texts: Vec<&str> = c.texts().iter().map(|(_, t)| *t).collect();
+        assert!(texts.contains(&"January") && texts.contains(&"THURSDAY"), "{texts:?}");
+        assert!(c.header.hermetic, "{:?}", c.header.not_hermetic_because);
+        let a = dump_widget("agent_status", (340.0, 160.0)).unwrap();
+        assert!(a.header.hermetic && a.texts().iter().any(|(_, t)| *t == "No live sessions."), "{:?}", a.texts());
     }
 
     #[test]
