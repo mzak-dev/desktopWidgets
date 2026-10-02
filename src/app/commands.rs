@@ -209,6 +209,13 @@ impl App {
             }
             Cmd::Flag(flag, on) => {
                 self.ws.set_flag(flag, on);
+                if flag == Flag::Prerelease {
+                    self.update_prerelease.store(on, Ordering::Relaxed);
+                    if on {
+                        // don't make the user wait up to an hour to see the version picker fill in
+                        spawn_release_fetch(self.proxy.clone());
+                    }
+                }
                 self.mark_save();
             }
             Cmd::Grid(g) => {
@@ -247,6 +254,37 @@ impl App {
                 if let Some(s) = &mut self.settings {
                     s.invalidate();
                 }
+            }
+            Cmd::InstallUpdate(version) => {
+                let Some(asset) = self.update_releases.iter().find(|a| a.Version == version).cloned() else {
+                    self.update_note = format!("could not install {version}: it is no longer listed — reopen the picker and try again.");
+                    if let Some(s) = &mut self.settings {
+                        s.invalidate();
+                    }
+                    return;
+                };
+                if !crate::dialog::confirm("Install this version?", &format!("Wayfinder will download {version} and restart to apply it.")) {
+                    return;
+                }
+                self.update_note = format!("Downloading {version}…");
+                self.log(format!("update: installing {version} by hand"));
+                if let Some(s) = &mut self.settings {
+                    s.invalidate();
+                }
+                let proxy = self.proxy.clone();
+                std::thread::spawn(move || {
+                    let update = velopack::UpdateInfo { TargetFullRelease: asset, ..Default::default() };
+                    let outcome = (|| -> Result<(), velopack::Error> {
+                        // prerelease:true — otherwise a chosen pre-release build's own GitHub
+                        // release is filtered out of the feed and its asset can't be found.
+                        let um = velopack::UpdateManager::new(velopack::sources::GithubSource::new(UPDATE_REPO, None, true), None, None)?;
+                        um.download_updates(&update, None)?;
+                        um.apply_updates_and_restart(&update) // never returns on success
+                    })();
+                    if let Err(e) = outcome {
+                        let _ = proxy.send_event(UserEvent::UpdateInstallFailed(format!("could not install {version}: {e}")));
+                    }
+                });
             }
             Cmd::PluginEnabled(id, on) => {
                 if on {

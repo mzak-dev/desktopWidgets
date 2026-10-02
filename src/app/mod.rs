@@ -16,6 +16,7 @@ mod workspaces;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -53,7 +54,7 @@ use crate::theme::{Library, Theme};
 use crate::ui::{self, Env, Frame};
 use crate::value::Value;
 use crate::widgets::{self, ActionCx, Def, ExpandInfo, Host, Registry, Services, View};
-use crate::workspace::{self, InstanceCfg, MonitorInfo, Workspace};
+use crate::workspace::{self, Flag, InstanceCfg, MonitorInfo, Workspace};
 
 pub use self::explorer::install_from_explorer;
 
@@ -79,6 +80,10 @@ pub enum UserEvent {
     ImagesReady,
     /// The virtual desktops' registry keys changed: a switch, a new desktop, a rename.
     DesktopsChanged,
+    /// The latest releases from GitHub, for the Settings version picker.
+    UpdateReleases(Vec<velopack::VelopackAsset>),
+    /// A manually chosen update failed to download or apply.
+    UpdateInstallFailed(String),
 }
 
 /// How to run Wayfinder. `Options::from_args()` reads the command line; an app built on
@@ -130,14 +135,35 @@ impl Options {
 /// Where release builds are published; Velopack reads updates from this repo's GitHub Releases.
 const UPDATE_REPO: &str = "https://github.com/mzak-dev/desktopWidgets";
 
+/// Every full release on GitHub, newest first, always including pre-releases: used only to
+/// populate the Settings version picker, never to decide what the silent channel installs.
+fn fetch_releases() -> Option<Vec<velopack::VelopackAsset>> {
+    let um = velopack::UpdateManager::new(velopack::sources::GithubSource::new(UPDATE_REPO, None, true), None, None).ok()?;
+    let feed = um.get_release_feed().ok()?;
+    Some(feed.Assets.into_iter().filter(|a| a.Type.eq_ignore_ascii_case("Full")).collect())
+}
+
+/// One-shot: fetches the release list right away (e.g. when "Pre-release updates" is
+/// switched on) instead of waiting for the hourly cycle below to get to it.
+pub(super) fn spawn_release_fetch(proxy: EventLoopProxy<UserEvent>) {
+    std::thread::spawn(move || {
+        if let Some(releases) = fetch_releases() {
+            let _ = proxy.send_event(UserEvent::UpdateReleases(releases));
+        }
+    });
+}
+
 /// Checks for a newer release roughly hourly and downloads it, staged for next launch.
 /// Never applies or restarts here: `VelopackApp::run()` in `main()` already applies any
-/// pending package silently the next time the app starts.
-fn spawn_update_checker() {
-    std::thread::spawn(|| {
+/// pending package silently the next time the app starts. Also refreshes the release list
+/// above each cycle — `prerelease` only decides whether this silent channel treats a
+/// pre-release as "latest", not what the version picker's list contains.
+fn spawn_update_checker(proxy: EventLoopProxy<UserEvent>, prerelease: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        let waker = Mutex::new(proxy);
         std::thread::sleep(std::time::Duration::from_secs(30));
         loop {
-            match velopack::UpdateManager::new(velopack::sources::GithubSource::new(UPDATE_REPO, None, false), None, None) {
+            match velopack::UpdateManager::new(velopack::sources::GithubSource::new(UPDATE_REPO, None, prerelease.load(Ordering::Relaxed)), None, None) {
                 Ok(um) => match um.check_for_updates() {
                     Ok(velopack::UpdateCheck::UpdateAvailable(update)) => {
                         if let Err(e) = um.download_updates(&update, None) {
@@ -147,8 +173,12 @@ fn spawn_update_checker() {
                     Ok(_) => {}
                     Err(e) => eprintln!("wayfinder: update check failed: {e}"),
                 },
-                // Not installed via Velopack (e.g. a dev build) — nothing to check.
-                Err(_) => return,
+                // Usually "not installed via Velopack" (a dev build), but can also be a
+                // transient locator error — retry next cycle rather than give up forever.
+                Err(e) => eprintln!("wayfinder: update manager unavailable: {e}"),
+            }
+            if let Some(releases) = fetch_releases() {
+                let _ = waker.lock().unwrap().send_event(UserEvent::UpdateReleases(releases));
             }
             std::thread::sleep(std::time::Duration::from_secs(3600));
         }
@@ -195,7 +225,7 @@ pub fn run(mut opts: Options) {
     // Skip on automated runs (selftest, --exit-after): they don't live long enough to matter
     // and shouldn't make network calls.
     if !selftest && exit_after_secs.is_none() {
-        spawn_update_checker();
+        spawn_update_checker(app.proxy.clone(), app.update_prerelease.clone());
     }
     if let Err(e) = event_loop.run_app(&mut app) {
         eprintln!("wayfinder: event loop error: {e}");
@@ -258,6 +288,12 @@ pub struct App {
     desktops: Vec<vdesk::Desktop>,
     /// One desktop switch writes several values: look once they have settled.
     desktop_at: Option<Instant>,
+    /// The latest releases seen from GitHub, for the Settings version picker.
+    update_releases: Vec<velopack::VelopackAsset>,
+    /// The outcome of the last manually chosen install, for the General page.
+    update_note: String,
+    /// Mirrors `ws.flag(Flag::Prerelease)` for the update-checker thread, which can't borrow `ws`.
+    update_prerelease: Arc<AtomicBool>,
 }
 
 impl App {
@@ -280,6 +316,7 @@ impl App {
         let guide_errors = write_missing_guides(&dir);
         PluginStore::new(&dir).sweep();
         let (ws, ws_err) = Workspace::load(&dir);
+        let update_prerelease = Arc::new(AtomicBool::new(ws.flag(Flag::Prerelease)));
         let theme = Theme::default(); // composed by `rebuild_theme` below
         let text = TextEngine::new();
         let mut icons = IconService::default();
@@ -336,6 +373,9 @@ impl App {
             desktop: None,
             desktops: Vec::new(),
             desktop_at: None,
+            update_releases: Vec::new(),
+            update_note: String::new(),
+            update_prerelease,
         };
         app.load_content();
         app.rebuild_theme();
@@ -902,6 +942,19 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::SourceNews => self.take_source_news(),
             UserEvent::ImagesReady => self.images_ready(),
             UserEvent::DesktopsChanged => self.desktop_at = Some(Instant::now() + Duration::from_millis(150)),
+            UserEvent::UpdateReleases(releases) => {
+                self.update_releases = releases;
+                if let Some(s) = &mut self.settings {
+                    s.invalidate();
+                }
+            }
+            UserEvent::UpdateInstallFailed(msg) => {
+                self.log(format!("update: {msg}"));
+                self.update_note = msg;
+                if let Some(s) = &mut self.settings {
+                    s.invalidate();
+                }
+            }
         }
     }
 
@@ -909,11 +962,11 @@ impl ApplicationHandler<UserEvent> for App {
         if self.settings.as_ref().is_some_and(|s| s.window.id() == id) {
             let gpu_info = self.gpu.as_ref().map(|g| g.info.clone()).unwrap_or_else(|| "no GPU yet".into());
             let setup: Vec<workspace::MonitorRef> = self.monitor_setup();
-            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, desktops, desktop, .. } = self;
+            let App { ws, reg, lib, theme, log, edit, settings, text, icons, gpu, families, wins, plugins: installed, plugin_rows, plugin_note, sources, plugin_files, desktops, desktop, update_releases, update_note, .. } = self;
             let off = plugins::hidden_instances(ws, reg, installed);
             let hidden: Vec<(String, settings::Hidden)> = ws.instances.iter().zip(wins.iter()).filter(|(_, w)| w.window.is_none()).map(|(c, _)| (c.id.clone(), off.get(&c.id).map_or(settings::Hidden::Parked, |p| settings::Hidden::PluginOff(p.clone())))).collect();
             let source_names = sources.names();
-            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files, data: sources, desktops, desktop: desktop.as_deref(), setup: &setup };
+            let ctx = settings::Ctx { ws, reg, lib, theme, log, gpu_info: &gpu_info, fonts: families, edit: *edit, hidden: &hidden, plugins: plugin_rows, plugin_note, sources: &source_names, plugin_files, data: sources, desktops, desktop: desktop.as_deref(), setup: &setup, update_releases, update_note };
             let s = settings.as_mut().unwrap();
             let cmds = s.event(&ev, &ctx, text);
             if matches!(ev, WindowEvent::RedrawRequested) {

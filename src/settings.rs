@@ -58,6 +58,10 @@ pub struct Ctx<'a> {
     pub desktop: Option<&'a str>,
     /// The monitors connected now.
     pub setup: &'a [crate::workspace::MonitorRef],
+    /// The latest releases seen from GitHub, newest first, for the General page's version picker.
+    pub update_releases: &'a [velopack::VelopackAsset],
+    /// The outcome of the last manually chosen install.
+    pub update_note: &'a str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -160,6 +164,8 @@ pub enum Cmd {
     Reload,
     OpenFolder,
     InstallPlugin(PathBuf),
+    /// Download and install this specific version now, bypassing the "only if newer" check.
+    InstallUpdate(String),
     PluginEnabled(String, bool),
     RemovePlugin(String),
     OpenPluginsFolder,
@@ -806,11 +812,13 @@ pub struct UiState {
     step: usize,
     /// The adapter was changed here, so it waits for a restart.
     gpu_picked: bool,
+    /// A version chosen in the General page's picker, not yet (or just) installed.
+    update_pick: Option<String>,
 }
 
 impl Default for UiState {
     fn default() -> Self {
-        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), popup_anchor_rects: HashMap::new(), drop_hover: false, tier_tab: None, sel_module: None, advanced: false, mdrag: None, preview_arr: RefCell::new(None), tray_key: RefCell::new(String::new()), preview_rects: HashMap::new(), adding: false, category: None, queries: HashMap::new(), log_level: None, step: 0, gpu_picked: false }
+        Self { page: Page::Widgets, selected: None, scroll: HashMap::new(), focus: None, open: None, confirm_del: None, hsv: (0.6, 0.6, 1.0), caret_on: true, caret_at: Instant::now(), mods: ModifiersState::empty(), popup_anchor_rects: HashMap::new(), drop_hover: false, tier_tab: None, sel_module: None, advanced: false, mdrag: None, preview_arr: RefCell::new(None), tray_key: RefCell::new(String::new()), preview_rects: HashMap::new(), adding: false, category: None, queries: HashMap::new(), log_level: None, step: 0, gpu_picked: false, update_pick: None }
     }
 }
 
@@ -890,6 +898,9 @@ impl UiState {
         if key == "gpu" {
             return two(&[("low", "Integrated GPU (recommended)"), ("high", "Dedicated GPU"), ("software", "Software (CPU, slow)")]);
         }
+        if key == "update_version" {
+            return ctx.update_releases.iter().map(|a| (a.Version.clone(), a.Version.clone())).collect();
+        }
         match key {
             "th:palette" => return ctx.lib.palettes.iter().map(|a| (a.name.clone(), a.name.clone())).collect(),
             "th:fonts" => return ctx.lib.fonts.iter().map(|a| (a.name.clone(), a.name.clone())).collect(),
@@ -934,6 +945,7 @@ impl UiState {
         }
         match key {
             "gpu" => return ctx.ws.gpu.clone(),
+            "update_version" => return self.update_pick.clone().unwrap_or_default(),
             "th:palette" => return ctx.ws.theme.palette.clone(),
             "th:fonts" => return ctx.ws.theme.fonts.clone(),
             "th:glyphs" => return ctx.ws.theme.glyphs.clone(),
@@ -2120,13 +2132,30 @@ impl UiState {
         ];
         let folder = Node::new("gn/files/c").row().gap(8.0).child(k.btn("gn/open", Some("folder"), "Open folder", "openfolder".into(), Btn::Outline)).child(k.btn("gn/reload", Some("refresh"), "Reload all", "reload".into(), Btn::Outline));
         let files = vec![k.row("gn/files", "Your widgets folder", "Drop .toml widget definitions here — they reload as you save.", folder), self.plugin_files_row(k, ctx)];
-        let body = Node::new("gn")
+        let mut updates = vec![flag_row(k, ctx, "gn/pre", Flag::Prerelease)];
+        if ws.flag(Flag::Prerelease) {
+            let mut picker = Node::new("gn/upd/c").row().gap(10.0).align(taffy::AlignItems::CENTER).child(k.dropdown("update_version", &self.dropdown_label(ctx, "update_version"), CONTROL_W, f("update_version")));
+            if self.update_pick.is_some() {
+                picker = picker.child(k.btn("gn/upd/install", Some("refresh"), "Install", "installupdate".into(), Btn::Primary));
+            }
+            // picking a version never applies it by itself (see apply_pick), and the hourly
+            // checker always re-derives "latest" itself, so there is nothing here that can
+            // leave the app stuck on an old or pre-release build.
+            let help = if ctx.update_releases.is_empty() { "Fetching releases…" } else { "Downloads and installs it now, then restarts. Never changes what the background checker treats as newest." };
+            updates.push(k.row("gn/upd/pick", "Install a specific version", help, picker));
+        }
+        let mut body = Node::new("gn")
             .col()
             .gap(30.0)
             .child(k.page_head("gn/head", Page::General.heading(), Page::General.subtitle(), None))
             .child(k.group("gn/gfx", "Graphics", gfx))
             .child(k.group("gn/beh", "Behaviour", behaviour))
+            .child(k.group("gn/upd", "Updates", updates))
             .child(k.group("gn/fs", "Files", files));
+        if !ctx.update_note.is_empty() {
+            let bad = ctx.update_note.starts_with("could not");
+            body = body.child(k.txt("gn/upd/note".into(), ctx.update_note, 13.0, if bad { k.c("danger") } else { k.c("accent") }).wrap_text());
+        }
         self.page("gn/scroll", content_w(size, 780.0), body)
     }
 
@@ -2600,6 +2629,12 @@ impl UiState {
             self.gpu_picked = true;
             return vec![Cmd::Gpu(value.into())];
         }
+        if key == "update_version" {
+            // picking only stages it for the Install button below — never applied by itself,
+            // so nothing here can leave the user stuck on an old or pre-release build.
+            self.update_pick = Some(value.into());
+            return vec![];
+        }
         if let Some(axis) = key.strip_prefix("th:") {
             let mut sel = ctx.ws.theme.clone();
             match axis {
@@ -2845,6 +2880,7 @@ impl UiState {
             "quit" => vec![Cmd::Quit],
             "restart" => vec![Cmd::Restart],
             "gpufix" => vec![Cmd::Gpu("low".into()), Cmd::Restart],
+            "installupdate" => self.update_pick.clone().map(|v| vec![Cmd::InstallUpdate(v)]).unwrap_or_default(),
             "gallery" => {
                 self.adding = rest == "open";
                 vec![]
@@ -3648,7 +3684,7 @@ mod tests {
     }
 
     fn ctx(w: &World) -> Ctx<'_> {
-        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me, data: &w.data, desktops: &[], desktop: None, setup: &[] }
+        Ctx { ws: &w.ws, reg: &w.reg, lib: &w.lib, theme: &w.theme, log: &[], gpu_info: "test gpu", fonts: &[], edit: false, hidden: &w.hidden, plugins: &w.plugins, plugin_note: "", sources: &w.sources, plugin_files: &FileOwner::Me, data: &w.data, desktops: &[], desktop: None, setup: &[], update_releases: &[], update_note: "" }
     }
 
     #[test]
