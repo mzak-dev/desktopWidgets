@@ -1,6 +1,20 @@
 # Changelog
 
 All notable changes to Wayfinder are documented here.
+## v0.7.6 - 2026-10-03
+
+
+### Bug Fixes
+
+- **tray:** Center the menu highlight on its row
+
+### Documentation
+
+- **tray:** Add tray menu design
+
+### Features
+
+- **tray:** Draw the tray menu with the engine
 ## v0.7.5 - 2026-10-02
 
 ## v0.7.1 - 2026-10-02
