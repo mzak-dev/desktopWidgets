@@ -15,7 +15,7 @@ use crate::anim::{self, Anim, Ease};
 use crate::color::Color;
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::platform::win32::{self, ZMode};
-use crate::settings::{EDIT_KEYS, Kit};
+use crate::settings::{EDIT_KEYS, FG, Kit, LINE, MUTED, SURFACE};
 use crate::text::TextEngine;
 use crate::theme::Theme;
 use crate::ui::{self, Env, Frame, Node};
@@ -164,7 +164,7 @@ impl State {
 
 fn build(theme: &Theme, rows: &[Row], st: &State, bottom: bool, closing: bool, size: (f32, f32)) -> Node {
     let k = &Kit::new(theme);
-    let (accent, dim, text) = (k.c("accent"), k.c("text-dim"), k.c("text"));
+    let (accent, dim, text) = (k.accent(), MUTED, FG);
     let dy = if bottom { 1.0 } else { -1.0 };
     let radius = (theme.num("radius-lg") * 0.55).clamp(4.0, 14.0);
     let pill_a = if closing { 0.34 } else if st.cursor.is_some() { 0.14 } else { 0.0 };
@@ -175,8 +175,8 @@ fn build(theme: &Theme, rows: &[Row], st: &State, bottom: bool, closing: bool, s
         .no_shrink()
         .pad(PAD)
         .radius(radius)
-        .fill(k.bg().lerp(text, 0.05).with_alpha(0.98))
-        .border(1.0, k.line())
+        .fill(SURFACE.with_alpha(0.98))
+        .border(1.0, LINE)
         .shadow(18.0, 6.0, Color([0.0, 0.0, 0.0, 0.45]))
         .clip()
         .enter(180, 8.0 * dy, 0)
@@ -188,7 +188,7 @@ fn build(theme: &Theme, rows: &[Row], st: &State, bottom: bool, closing: bool, s
     let mut sub = 0u32;
     for (i, r) in rows.iter().enumerate() {
         if r.sep {
-            card = card.child(Node::new(format!("m/sep/{}", r.id)).h(SEP).no_shrink().pad_xy(8.0, 4.0).child(Node::new(format!("m/sep/{}/l", r.id)).h(1.0).fill(k.line())));
+            card = card.child(Node::new(format!("m/sep/{}", r.id)).h(SEP).no_shrink().pad_xy(8.0, 4.0).child(Node::new(format!("m/sep/{}/l", r.id)).h(1.0).fill(LINE)));
         }
         let indent = matches!(r.kind, RowKind::Sub(_));
         // the top rows build outward from the taskbar; the Workspace rows follow the one that opened them

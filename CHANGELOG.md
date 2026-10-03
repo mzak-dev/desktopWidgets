@@ -1,6 +1,8 @@
 # Changelog
 
 All notable changes to Wayfinder are documented here.
+## v0.7.5 - 2026-10-02
+
 ## v0.7.1 - 2026-10-02
 
 
