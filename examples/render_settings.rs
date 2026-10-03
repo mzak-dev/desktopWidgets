@@ -166,4 +166,33 @@ fn main() {
         img.save(&path).expect("save");
         println!("wrote {path}");
     }
+
+    // the tray menu, collapsed and expanded, with the pointer on a row
+    let theme = ws.global_theme(&lib);
+    let d = wayfinder::menu::Data { workspaces: vec!["Main".into(), "Work".into(), "Games".into()], active: "Work".into() };
+    for (name, expanded, cursor) in [("menu_collapsed", false, Some(1)), ("menu_expanded", true, Some(4))] {
+        let (root, size) = wayfinder::menu::preview(&theme, &d, expanded, cursor);
+        let mut anim = Anim::default();
+        let base = Instant::now();
+        let mut png = None;
+        for pass in 0..2 {
+            let now = base + Duration::from_millis(if pass == 0 { 0 } else { 2500 });
+            let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now, scale: 1.0 };
+            let frame = ui::layout(&root, size, &mut env);
+            if pass == 1 {
+                png = Some(gpu.render_offscreen(size.0 as u32, size.1 as u32, &frame.list, &mut text).expect("render"));
+            }
+        }
+        let px = png.unwrap();
+        let (w, h) = (size.0 as u32, size.1 as u32);
+        let img = image::RgbaImage::from_fn(w, h, |x, y| {
+            let i = ((y * w + x) * 4) as usize;
+            let a = px[i + 3] as f32 / 255.0;
+            let rgb = [0, 1, 2].map(|k| (px[i + k] as f32 + 128.0 * (1.0 - a)).clamp(0.0, 255.0) as u8);
+            image::Rgba([rgb[0], rgb[1], rgb[2], 255])
+        });
+        let path = format!("{out}/{name}.png");
+        img.save(&path).expect("save");
+        println!("wrote {path}");
+    }
 }
