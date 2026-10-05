@@ -1,10 +1,10 @@
 //! Win32 glue winit does not expose (winit#2059).
 
-use windows::Win32::Foundation::{HWND, LPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, FindWindowExW, GWL_EXSTYLE, GetClassNameW, GetWindowLongPtrW,
-    HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOPMOST, IsWindowVisible, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE, SetWindowLongPtrW, SetWindowPos, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    EnumWindows, FindWindowExW, GA_PARENT, GW_CHILD, GW_HWNDNEXT, GWL_EXSTYLE, GetAncestor, GetClassNameW, GetDesktopWindow, GetWindow,
+    GetWindowLongPtrW, GetWindowRect, HWND_BOTTOM, HWND_NOTOPMOST, HWND_TOPMOST, IsWindowVisible, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOOWNERZORDER, SWP_NOSENDCHANGING, SWP_NOSIZE, SetParent, SetWindowLongPtrW, SetWindowPos, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, w};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -108,6 +108,120 @@ pub fn desktop_icon_host() -> Option<HWND> {
                 pid == shell_pid && FindWindowExW(Some(h), None, w!("SHELLDLL_DefView"), None).is_ok()
             })
     }
+}
+
+/// Where widgets go to sit behind the desktop icons (ADR-0013).
+#[derive(Clone, Copy, Debug)]
+pub struct IconLayer {
+    /// The window they become children of.
+    pub parent: HWND,
+    /// 24H2+: the icons' own window among the parent's children; widgets go directly under it.
+    pub icons: Option<HWND>,
+    /// 24H2+: the WorkerW Explorer paints the wallpaper in, kept under the widgets.
+    pub wallpaper: Option<HWND>,
+}
+
+/// The layer between the wallpaper and the icons, found the way wallpaper apps do: 0x052C
+/// (undocumented) asks Progman to give the wallpaper a WorkerW of its own, a no-op once it
+/// has. On 24H2+ that WorkerW is Progman's child under `SHELLDLL_DefView` and widgets go
+/// between the two; before, it is a top-level window directly behind the icon host and
+/// widgets go inside it.
+pub fn icon_layer() -> Option<IconLayer> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId, SMTO_ABORTIFHUNG, SendMessageTimeoutW};
+    unsafe {
+        let shell = GetShellWindow();
+        if shell.0.is_null() || class_of(shell) != "Progman" {
+            return None;
+        }
+        let _ = SendMessageTimeoutW(shell, 0x052C, WPARAM(0xD), LPARAM(1), SMTO_ABORTIFHUNG, 500, None);
+        if let Ok(icons) = FindWindowExW(Some(shell), None, w!("SHELLDLL_DefView"), None) {
+            let wallpaper = FindWindowExW(Some(shell), None, w!("WorkerW"), None).ok();
+            return Some(IconLayer { parent: shell, icons: Some(icons), wallpaper });
+        }
+        let host = desktop_icon_host()?;
+        let behind = FindWindowExW(None, Some(host), w!("WorkerW"), None).ok()?;
+        let (mut shell_pid, mut pid) = (0u32, 0u32);
+        GetWindowThreadProcessId(shell, Some(&mut shell_pid));
+        GetWindowThreadProcessId(behind, Some(&mut pid));
+        (pid == shell_pid).then_some(IconLayer { parent: behind, icons: None, wallpaper: None })
+    }
+}
+
+/// Makes `hwnd` a child of the icon layer, drawn over the wallpaper and under the icons,
+/// in the same place on screen. False if Windows refused.
+pub fn sink_behind_icons(hwnd: HWND, layer: &IconLayer) -> bool {
+    let rect = screen_rect(hwnd);
+    unsafe {
+        if SetParent(hwnd, Some(layer.parent)).is_err() {
+            return false;
+        }
+        if let Some(icons) = layer.icons {
+            let _ = SetWindowPos(hwnd, Some(icons), 0, 0, 0, 0, OUR_ZPOS_FLAGS);
+        }
+        if let Some(wallpaper) = layer.wallpaper {
+            // it would paint over every widget under it
+            let _ = SetWindowPos(wallpaper, Some(HWND_BOTTOM), 0, 0, 0, 0, OUR_ZPOS_FLAGS);
+        }
+    }
+    if let Some((x, y, w, h)) = rect {
+        set_rect(hwnd, x, y, w, h);
+    }
+    true
+}
+
+/// Back to a top-level window in the same place on screen; the caller sets its z-mode.
+pub fn lift_from_icons(hwnd: HWND) {
+    let rect = screen_rect(hwnd);
+    unsafe {
+        let _ = SetParent(hwnd, None);
+    }
+    if let Some((x, y, w, h)) = rect {
+        set_rect(hwnd, x, y, w, h);
+    }
+}
+
+/// The window `hwnd` is a child of; `None` for a top-level window.
+pub fn parent_of(hwnd: HWND) -> Option<HWND> {
+    let p = unsafe { GetAncestor(hwnd, GA_PARENT) };
+    (!p.0.is_null() && p != unsafe { GetDesktopWindow() }).then_some(p)
+}
+
+/// Physical px: x, y, width, height.
+fn screen_rect(hwnd: HWND) -> Option<(i32, i32, i32, i32)> {
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(hwnd, &mut r) }.ok()?;
+    Some((r.left, r.top, r.right - r.left, r.bottom - r.top))
+}
+
+/// Topmost first.
+fn children(parent: HWND) -> Vec<isize> {
+    let mut out = Vec::new();
+    let mut next = unsafe { GetWindow(parent, GW_CHILD) };
+    while let Ok(h) = next {
+        out.push(h.0 as isize);
+        next = unsafe { GetWindow(h, GW_HWNDNEXT) };
+    }
+    out
+}
+
+/// Pure, so it is tested on synthetic child orders (topmost first): under the icons, and
+/// above the wallpaper WorkerW, which would paint over it.
+pub fn between_icons_and_wallpaper(children: &[isize], icons: isize, me: isize, wallpaper: Option<isize>) -> Option<bool> {
+    let i = children.iter().position(|&w| w == icons)?;
+    let m = children.iter().position(|&w| w == me)?;
+    let under_wallpaper = wallpaper.and_then(|w| children.iter().position(|&c| c == w)).is_some_and(|w| w < m);
+    Some(i < m && !under_wallpaper)
+}
+
+/// Whether `hwnd` sits in the icon layer, under the icons and over the wallpaper.
+pub fn is_behind_icons(hwnd: HWND) -> bool {
+    let Some(parent) = parent_of(hwnd) else { return false };
+    if let Ok(icons) = unsafe { FindWindowExW(Some(parent), None, w!("SHELLDLL_DefView"), None) } {
+        let wallpaper = unsafe { FindWindowExW(Some(parent), None, w!("WorkerW"), None) }.ok();
+        return between_icons_and_wallpaper(&children(parent), icons.0 as isize, hwnd.0 as isize, wallpaper.map(|w| w.0 as isize)) == Some(true);
+    }
+    // before 24H2: inside a WorkerW behind the icon host
+    matches!((desktop_icon_host().and_then(z_index), z_index(parent)), (Some(host), Some(p)) if p > host)
 }
 
 pub struct ZEntry {
@@ -249,11 +363,17 @@ pub fn cursor_pos() -> (i32, i32) {
     (p.x, p.y)
 }
 
-/// One atomic call that leaves z-order and focus alone.
+/// One atomic call that leaves z-order and focus alone. Screen px, also for a widget behind
+/// the icons, whose own position is relative to its parent.
 pub fn set_rect(hwnd: HWND, x: i32, y: i32, w: i32, h: i32) {
+    use windows::Win32::Graphics::Gdi::ScreenToClient;
     use windows::Win32::UI::WindowsAndMessaging::{SWP_NOZORDER, SET_WINDOW_POS_FLAGS};
+    let mut p = POINT { x, y };
     unsafe {
-        let _ = SetWindowPos(hwnd, None, x, y, w, h, SET_WINDOW_POS_FLAGS(SWP_NOACTIVATE.0 | SWP_NOZORDER.0));
+        if let Some(parent) = parent_of(hwnd) {
+            let _ = ScreenToClient(parent, &mut p);
+        }
+        let _ = SetWindowPos(hwnd, None, p.x, p.y, w, h, SET_WINDOW_POS_FLAGS(SWP_NOACTIVATE.0 | SWP_NOZORDER.0));
     }
 }
 
@@ -468,8 +588,11 @@ pub fn watch_shell_events(on_change: impl Fn() + Send + Sync + 'static) {
 
 
 static DISPLAY_EVENT: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+static EXPLORER_EVENT: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
+/// The registered `TaskbarCreated` message; 0 until `watch_broadcasts`.
+static TASKBAR_CREATED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-unsafe extern "system" fn display_subclass(
+unsafe extern "system" fn broadcast_subclass(
     hwnd: HWND,
     msg: u32,
     wparam: windows::Win32::Foundation::WPARAM,
@@ -483,17 +606,24 @@ unsafe extern "system" fn display_subclass(
     if (msg == WM_DISPLAYCHANGE || msg == WM_SETTINGCHANGE) && let Some(f) = DISPLAY_EVENT.get() {
         f();
     }
+    let taskbar_created = TASKBAR_CREATED.load(std::sync::atomic::Ordering::Relaxed);
+    if taskbar_created != 0 && msg == taskbar_created && let Some(f) = EXPLORER_EVENT.get() {
+        f();
+    }
     unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) }
 }
 
-/// Subclasses one window: every top-level window gets the broadcast.
-pub fn watch_display_changes(window: &Window, on_change: impl Fn() + Send + Sync + 'static) {
+/// Subclasses one window for display changes and Explorer starting again (`TaskbarCreated`,
+/// which follows a crash or restart that took the icon layer down). Only top-level windows
+/// get these broadcasts, so not a widget behind the icons: pass the sentinel.
+pub fn watch_broadcasts(hwnd: HWND, on_display_change: impl Fn() + Send + Sync + 'static, on_explorer_restart: impl Fn() + Send + Sync + 'static) {
     use windows::Win32::UI::Shell::SetWindowSubclass;
-    let _ = DISPLAY_EVENT.set(Box::new(on_change));
-    if let Some(h) = hwnd_of(window) {
-        unsafe {
-            let _ = SetWindowSubclass(h, Some(display_subclass), 1, 0);
-        }
+    use windows::Win32::UI::WindowsAndMessaging::RegisterWindowMessageW;
+    let _ = DISPLAY_EVENT.set(Box::new(on_display_change));
+    let _ = EXPLORER_EVENT.set(Box::new(on_explorer_restart));
+    unsafe {
+        TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), std::sync::atomic::Ordering::Relaxed);
+        let _ = SetWindowSubclass(hwnd, Some(broadcast_subclass), 1, 0);
     }
 }
 
@@ -508,7 +638,18 @@ pub fn z_index(hwnd: HWND) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{blur_window_attributes, is_desktop_shown};
+    use super::{between_icons_and_wallpaper, blur_window_attributes, is_desktop_shown};
+
+    #[test]
+    fn behind_icons_means_under_the_icons_and_over_the_wallpaper() {
+        // Progman's children on 24H2+, topmost first: icons 1, widgets 7 and 8, wallpaper 9
+        assert_eq!(between_icons_and_wallpaper(&[1, 7, 8, 9], 1, 7, Some(9)), Some(true));
+        assert_eq!(between_icons_and_wallpaper(&[1, 7, 8, 9], 1, 8, Some(9)), Some(true));
+        assert_eq!(between_icons_and_wallpaper(&[7, 1, 9], 1, 7, Some(9)), Some(false), "over the icons");
+        assert_eq!(between_icons_and_wallpaper(&[1, 9, 7], 1, 7, Some(9)), Some(false), "the wallpaper paints over it");
+        assert_eq!(between_icons_and_wallpaper(&[1, 7], 1, 7, None), Some(true), "no wallpaper WorkerW: nothing to be under");
+        assert_eq!(between_icons_and_wallpaper(&[1, 9], 1, 7, Some(9)), None, "not a child at all");
+    }
 
     #[test]
     fn blur_off_returns_to_the_never_blurred_corners() {

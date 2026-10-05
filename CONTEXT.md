@@ -53,7 +53,7 @@ A named set of design tokens made of three independently swappable axes: a palet
 _Avoid_: skin
 
 **Style**:
-The Theme tokens `assets/style.toml` declares: accent, roundness, outlines, blur, transparency, tint, shadow, text scale, animation speed. Set globally, overridable per Instance, applied by the engine to every Card.
+The Theme tokens `assets/style.toml` declares: accent, roundness, outlines, blur, transparency, tint, shadow, text scale, animation speed, behind the icons. Set globally, overridable per Instance, applied by the engine to every Card.
 _Avoid_: tweaks, overrides (for the whole set)
 
 **Size Tier**:
@@ -91,6 +91,10 @@ _Avoid_: measure, plugin
 
 **Z-mode**:
 Where an Instance sits relative to other windows: Desktop, Bottom, Normal or Topmost. Desktop and Bottom both sit under application windows; Desktop stays visible while the desktop is shown (Win+D), Bottom is hidden by it.
+
+**Icon layer**:
+The part of the desktop between the wallpaper and the icons, inside Explorer's own windows. An Instance on the Desktop or Bottom Z-mode whose Style says so is put there: drawn under the icons, it can be looked at but not clicked (ADR-0013).
+_Avoid_: wallpaper mode, live wallpaper
 
 **Park**:
 To hide an Instance whose monitor is absent while remembering it, instead of relocating or deleting it.

@@ -77,3 +77,9 @@ choices = ["off", "fast", "normal", "relaxed"]
 default = "normal"
 label = "Animations"
 help = "Hover, appear and resize animations. Off switches them off."
+
+[params.behind-icons]
+type = "bool"
+default = false
+label = "Behind desktop icons"
+help = "Look only: clicks go to the desktop. Desktop and Bottom layers; turns Blur off."

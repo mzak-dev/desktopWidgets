@@ -15,7 +15,7 @@ Move and resize them in real time, restyle everything, and pay nothing while the
 [![DirectX 12](https://img.shields.io/badge/DirectX_12-DirectComposition-107C10?style=for-the-badge&logo=xbox&logoColor=white)](docs/adr/0001-dx12-dcomp-presentation.md)
 
 ![Status](https://img.shields.io/badge/status-alpha-F5A623?style=flat-square)
-![Tests](https://img.shields.io/badge/unit_tests-329_passing-2EA44F?style=flat-square)
+![Tests](https://img.shields.io/badge/unit_tests-331_passing-2EA44F?style=flat-square)
 ![Idle](https://img.shields.io/badge/idle_CPU-0%25-2EA44F?style=flat-square)
 ![Widgets](https://img.shields.io/badge/built--in_widgets-13-8A63D2?style=flat-square)
 ![Palettes](https://img.shields.io/badge/palettes-7-3B82F6?style=flat-square)
@@ -145,7 +145,7 @@ The words Wayfinder uses (Widget, Instance, Data Source, Workspace...) are defin
 
 ## 📊 Status
 
-**Alpha.** It works and is tested (329 unit tests, every widget rendered offscreen and checked to fit at each size), but it is young: some parts have not yet run on a real Windows desktop. See [what is and isn't verified](docs/development.md#status).
+**Alpha.** It works and is tested (331 unit tests, every widget rendered offscreen and checked to fit at each size), but it is young: some parts have not yet run on a real Windows desktop. See [what is and isn't verified](docs/development.md#status).
 
 <br>
 

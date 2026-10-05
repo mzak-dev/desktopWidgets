@@ -117,10 +117,12 @@ impl App {
             Cmd::Z(id, z) => {
                 if let Some(i) = find(self, &id) {
                     self.ws.instances[i].z = z.clone();
-                    if let Some(h) = self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w)) {
+                    self.wins[i].raised = false;
+                    // Normal and Topmost come out from behind the icons, Desktop and Bottom may go in
+                    self.place_layers();
+                    if let Some(h) = self.wins[i].window.as_ref().and_then(|w| win32::hwnd_of(w)).filter(|_| !self.wins[i].behind) {
                         win32::set_zmode(h, ZMode::parse(&z).unwrap_or(ZMode::Desktop));
                     }
-                    self.wins[i].raised = false;
                     self.update_z_guard(i);
                     if self.desktop_shown {
                         self.apply_show_desktop();
@@ -148,10 +150,7 @@ impl App {
             Cmd::ClickThrough(id, on) => {
                 if let Some(i) = find(self, &id) {
                     self.ws.instances[i].click_through = on;
-                    if let Some(w) = &self.wins[i].window {
-                        let _ = w.set_cursor_hittest(!on || self.edit);
-                        win32::set_no_activate(w, !self.edit);
-                    }
+                    self.update_hittest(i);
                     self.mark_save();
                 }
             }

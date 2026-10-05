@@ -11,7 +11,7 @@ Colours, fonts, icons and style, for every widget at once or for one. To bundle 
 ```mermaid
 flowchart LR
     FILES["📄 <b>Files</b><br/>reload as you save<br/>widgets · palettes<br/>font sets · glyph sets<br/>icon packs · plugins"]
-    ALL["🎨 <b>Every widget</b><br/>Settings → Appearance<br/>palette · font set<br/>glyph set · app icons<br/>transparency · blur<br/>shadow · outlines<br/>roundness · text size<br/>animation speed"]
+    ALL["🎨 <b>Every widget</b><br/>Settings → Appearance<br/>palette · font set<br/>glyph set · app icons<br/>transparency · blur<br/>shadow · outlines<br/>roundness · text size<br/>animation speed<br/>behind the icons"]
     ONE["🧩 <b>One widget</b><br/>Settings → Widgets<br/>its options, from its file<br/>its parts at each size<br/>layer · click-through<br/>size limit<br/>its own palette, fonts,<br/>glyphs and style"]
     SETS["🗂️ <b>A Workspace</b><br/>tray → Workspace<br/>a whole set: positions,<br/>options and look,<br/>tied to virtual desktops<br/>and monitors"]
     FILES --> ALL

@@ -13,11 +13,11 @@ impl App {
         self.edit = on;
         self.remove_armed = None;
         self.undo.clear();
+        // out from behind the icons to be moved, and back after (ADR-0013)
+        self.place_layers();
         for i in 0..self.wins.len() {
-            let click_through = self.ws.instances[i].click_through;
+            self.update_hittest(i);
             if let Some(w) = &self.wins[i].window {
-                let _ = w.set_cursor_hittest(on || !click_through);
-                win32::set_no_activate(w, !on);
                 if on {
                     w.focus_window();
                 }

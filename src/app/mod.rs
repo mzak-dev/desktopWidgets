@@ -89,6 +89,8 @@ pub enum UserEvent {
     /// An on-demand "Check for Updates" found nothing newer (a success path that restarts
     /// the app never reaches this event at all).
     UpdateChecked(String),
+    /// Explorer started again (`TaskbarCreated`), with a new icon layer.
+    ExplorerRestarted,
 }
 
 /// How to run Wayfinder. `Options::from_args()` reads the command line; an app built on
@@ -265,6 +267,9 @@ pub struct App {
     save_at: Option<Instant>,
     reload_at: Option<Instant>,
     show_desktop_checks: Vec<Instant>,
+    /// When to put widgets back behind the icons after Explorer started again: it builds
+    /// the desktop a while after the taskbar.
+    relayer_at: Vec<Instant>,
     sentinel: Option<win32::Sentinel>,
     fake_icon_host: Option<windows::Win32::Foundation::HWND>,
     display_at: Option<Instant>,
@@ -358,6 +363,7 @@ impl App {
             save_at: None,
             reload_at: None,
             show_desktop_checks: Vec::new(),
+            relayer_at: Vec::new(),
             sentinel: None,
             fake_icon_host: None,
             display_at: None,
@@ -463,6 +469,7 @@ impl App {
             }
         }
         self.rebuild_theme();
+        self.place_layers();
         self.mark_save();
     }
 
@@ -504,10 +511,12 @@ impl App {
                     iw.target = None;
                     iw.window = None;
                     iw.frame = None;
+                    iw.behind = false;
                 }
                 _ => {}
             }
         }
+        self.place_layers();
         self.retain_code();
     }
 
@@ -877,7 +886,6 @@ impl ApplicationHandler<UserEvent> for App {
         self.sync_windows(el);
         self.sync_watchers();
         let (p1, p2, p3) = (self.proxy.clone(), self.proxy.clone(), self.proxy.clone());
-        let _ = p3;
         win32::watch_shell_events(move || {
             let _ = p1.send_event(UserEvent::ForegroundChanged);
         });
@@ -885,10 +893,18 @@ impl ApplicationHandler<UserEvent> for App {
         vdesk::watch(move || {
             let _ = p4.send_event(UserEvent::DesktopsChanged);
         });
-        if let Some(w) = self.wins.iter().find_map(|w| w.window.clone()) {
-            win32::watch_display_changes(&w, move || {
-                let _ = p2.send_event(UserEvent::DisplaysChanged);
-            });
+        // the sentinel stays top-level: a widget behind the icons gets no broadcasts
+        let watcher = self.sentinel.as_ref().map(|s| s.hwnd()).or_else(|| self.front_hwnds().first().copied());
+        if let Some(h) = watcher {
+            win32::watch_broadcasts(
+                h,
+                move || {
+                    let _ = p2.send_event(UserEvent::DisplaysChanged);
+                },
+                move || {
+                    let _ = p3.send_event(UserEvent::ExplorerRestarted);
+                },
+            );
         }
         self.check_show_desktop();
         if self.start_edit {
@@ -944,6 +960,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.show_desktop_checks = [4u64, 20, 60, 140, 300, 700].iter().map(|ms| now + Duration::from_millis(*ms)).collect();
             }
             UserEvent::DisplaysChanged => self.display_at = Some(Instant::now() + Duration::from_millis(500)),
+            UserEvent::ExplorerRestarted => {
+                let now = Instant::now();
+                self.relayer_at = [1000u64, 3000, 8000].iter().map(|ms| now + Duration::from_millis(*ms)).collect();
+            }
             UserEvent::SourceNews => self.take_source_news(),
             UserEvent::ImagesReady => self.images_ready(),
             UserEvent::DesktopsChanged => self.desktop_at = Some(Instant::now() + Duration::from_millis(150)),
@@ -1026,6 +1046,18 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::ScaleFactorChanged { .. } => self.wins[i].redraw = true,
             WindowEvent::CloseRequested => {} // widgets are closed from Settings, not by Alt+F4
+            // we let go of a window before closing it, so this one was taken down with the
+            // icon layer it sat in (Explorer restarting): open it again
+            WindowEvent::Destroyed if self.wins[i].behind => {
+                let id = self.ws.instances[i].id.clone();
+                self.log(format!("{id} was closed with the desktop's icon layer: opening it again"));
+                let iw = &mut self.wins[i];
+                iw.target = None;
+                iw.window = None;
+                iw.frame = None;
+                iw.behind = false;
+                self.sync_windows(el);
+            }
             _ => {}
         }
     }
@@ -1044,6 +1076,10 @@ impl ApplicationHandler<UserEvent> for App {
         while self.show_desktop_checks.first().is_some_and(|t| *t <= now) {
             self.show_desktop_checks.remove(0);
             self.check_show_desktop();
+        }
+        if self.relayer_at.first().is_some_and(|t| *t <= now) {
+            self.relayer_at.remove(0);
+            self.relayer();
         }
         if self.desktop_at.is_some_and(|t| t <= now) {
             self.desktop_at = None;
@@ -1091,7 +1127,7 @@ impl ApplicationHandler<UserEvent> for App {
         } else if self.gpu.as_ref().is_some_and(|g| g.is_lost()) {
             self.recover_gpu(el, "device lost callback");
         }
-        let mut wake: Option<Instant> = [self.save_at, self.reload_at, self.show_desktop_checks.first().copied(), self.display_at, self.desktop_at, self.selftest.as_ref().map(|t| t.at), self.opts.exit_after_secs.map(|t| self.started + Duration::from_secs_f32(t))]
+        let mut wake: Option<Instant> = [self.save_at, self.reload_at, self.show_desktop_checks.first().copied(), self.relayer_at.first().copied(), self.display_at, self.desktop_at, self.selftest.as_ref().map(|t| t.at), self.opts.exit_after_secs.map(|t| self.started + Duration::from_secs_f32(t))]
             .into_iter()
             .flatten()
             .min();
