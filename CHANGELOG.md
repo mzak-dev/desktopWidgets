@@ -1,6 +1,12 @@
 # Changelog
 
 All notable changes to Wayfinder are documented here.
+## v0.7.7 - 2026-10-05
+
+
+### Features
+
+- **dock:** Extend plugin api
 ## v0.7.6 - 2026-10-03
 
 
