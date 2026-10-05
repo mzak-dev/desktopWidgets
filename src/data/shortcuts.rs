@@ -37,6 +37,16 @@ pub fn file_stem(target: &str) -> String {
     Path::new(t).file_stem().and_then(|s| s.to_str()).unwrap_or(t).to_string()
 }
 
+/// Dock actions never accept a target invented by a network/plugin source.
+/// Only an exact member of this instance's explicit, user-pinned list is trusted.
+pub fn dock_target(cfg: &InstanceCfg, verb: &str, arg: &str) -> Option<String> {
+    match verb {
+        "shortcuts.open" => cfg.items().into_iter().find(|s| s.target == arg && !arg.is_empty()).map(|s| s.target),
+        "shortcuts.recycle_bin" if arg.is_empty() => Some("shell:RecycleBinFolder".into()),
+        _ => None,
+    }
+}
+
 pub fn folder_items(dir: &str, cap: usize) -> Vec<Shortcut> {
     let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut v: Vec<Shortcut> = rd
@@ -123,6 +133,19 @@ impl DataSource for Shortcuts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dock_actions_only_open_explicit_pins_or_the_fixed_recycle_bin() {
+        let mut cfg = InstanceCfg::default();
+        cfg.set_items(&[Shortcut { name: "Editor".into(), target: "C:\\Apps\\Editor.exe".into(), icon: "".into() }]);
+        assert_eq!(dock_target(&cfg, "shortcuts.open", "C:\\Apps\\Editor.exe"), Some("C:\\Apps\\Editor.exe".into()));
+        for arg in ["", "C:\\Apps\\Other.exe", "C:\\Apps\\Editor.exe --flag", "shell:AppsFolder", "https://untrusted.example"] {
+            assert_eq!(dock_target(&cfg, "shortcuts.open", arg), None);
+        }
+        assert_eq!(dock_target(&cfg, "shortcuts.recycle_bin", ""), Some("shell:RecycleBinFolder".into()));
+        assert_eq!(dock_target(&cfg, "shortcuts.recycle_bin", "anything"), None);
+        assert_eq!(dock_target(&cfg, "shortcuts.empty_bin", ""), None);
+    }
 
     #[test]
     fn shortcut_round_trip_and_name_fallback() {

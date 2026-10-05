@@ -26,6 +26,7 @@ pub use clock::{Clock, Tm, clock_value, now_local};
 pub use gallery::Gallery;
 pub use media::Media;
 pub use shortcuts::{ID_SEP, Shortcut, Shortcuts, file_stem, folder_items, icon_id, shortcuts_value, starter_apps};
+pub(crate) use shortcuts::dock_target;
 pub use sys::Sys;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
