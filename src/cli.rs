@@ -4,10 +4,12 @@
 //!   wayfinder --render-widget <id | file.toml> --png <out.png> [--size WxH] [--param k=v]...
 //!             [--state k=v]... [--palette name] [--scale 1.25] [--time HH:MM] [--now ISO]
 //!             [--env key=value]... [--real seams] [--installed] [--transparent] [--wait secs]
-//!             [--data dir] [--content-root plugin-folder] [--gpu software|high|low]
+//!             [--data dir] [--content-root plugin-folder] [--gpu software]
 //!   wayfinder plugin pack <folder> [out.wfplugin]
 //!   wayfinder plugin check <file.wfplugin | folder>
-//!   wayfinder scene list | dump ...   (see `scene`)
+//!   wayfinder scene list | dump | check | render | sheet | diff | bless | selfcheck | guide
+//!             (see `scene`; `wayfinder scene --help` prints the loop, `scene guide` LOOK.md)
+//!   wayfinder --help
 //!
 //! Exit codes: 0 fine, 1 the widget or plugin has problems, 2 bad arguments.
 //!
@@ -28,10 +30,13 @@ pub const USAGE: &str = "usage:
   wayfinder --render-widget <id | file.toml> --png <out.png> [--size WxH] [--param k=v]... [--state k=v]...
             [--palette name] [--scale 1.25] [--time HH:MM] [--now ISO] [--env key=value]... [--real seams]
             [--installed] [--transparent] [--wait secs] [--data dir] [--content-root plugin-folder]
-            [--gpu software|low|high]
+            [--gpu software]
   wayfinder plugin pack <folder> [out.wfplugin]
   wayfinder plugin check <file.wfplugin | folder>
-  wayfinder scene list | dump ...           (`wayfinder scene` alone prints the scene usage)";
+  wayfinder scene list | dump | check | render | sheet | diff | bless | selfcheck | guide
+                                            (`wayfinder scene --help` shows how to look at a widget without opening it)
+  wayfinder --help
+Offscreen commands use the software adapter (WARP); `--render-widget` defaults to it and `scene` verbs take no --gpu.";
 
 #[derive(Debug, PartialEq)]
 pub enum Command {
@@ -41,11 +46,16 @@ pub enum Command {
     Scene(scene::Invocation),
     SceneUsage(String),
     Usage(String),
+    /// `--help`: print the usage and exit; it must not start the app.
+    Help,
 }
 
 /// The command in `args` (without the program name), or None to run the app.
 pub fn command(args: &[String]) -> Option<Command> {
     let usage = |e: String| Command::Usage(e);
+    if matches!(args.first().map(String::as_str), Some("--help" | "-h")) {
+        return Some(Command::Help);
+    }
     if args.first().map(String::as_str) == Some("scene") {
         return Some(scene::parse(&args[1..]).map_or_else(Command::SceneUsage, Command::Scene));
     }
@@ -120,6 +130,10 @@ pub fn run(cmd: Command) -> i32 {
         Command::Usage(e) => {
             eprintln!("wayfinder: {e}\n{USAGE}");
             2
+        }
+        Command::Help => {
+            println!("{USAGE}");
+            0
         }
         Command::Scene(inv) => scene::run(inv),
         Command::SceneUsage(e) => {
@@ -276,5 +290,135 @@ mod tests {
         for bad in [&["--render-widget", "clock"][..], &["--render-widget", "clock", "--png", "o.png", "--size", "big"], &["--render-widget", "clock", "--png", "o.png", "--nope"], &["--render-widget", "--png", "o.png"]] {
             assert!(matches!(command(&args(bad)), Some(Command::Usage(_))), "{bad:?}");
         }
+    }
+
+    /// The `wayfinder ...` commands a document shows: lines of its fenced blocks and inline code
+    /// spans that start with `wayfinder `, minus a trailing `| Out-Host` and `# comment`.
+    fn shown_commands(doc: &str) -> Vec<String> {
+        let doc = doc.replace("
+
+", "
+");
+        let mut out = Vec::new();
+        let mut fenced = false;
+        for line in doc.lines() {
+            if line.trim_start().starts_with("```") {
+                fenced = !fenced;
+                continue;
+            }
+            let mut found: Vec<&str> = Vec::new();
+            if fenced {
+                found.push(line.trim());
+            } else {
+                found.extend(line.split('`').skip(1).step_by(2).map(str::trim));
+            }
+            // "the `wayfinder scene` commands" names a topic; a command has more words
+            for c in found.into_iter().filter(|c| c.starts_with("wayfinder ") && c.split_whitespace().count() > 2) {
+                let c = if fenced { c.split(" # ").next().unwrap_or(c) } else { c };
+                out.push(c.trim_end().trim_end_matches("| Out-Host").trim_end().to_string());
+            }
+        }
+        out
+    }
+
+    /// Words as a shell would split them, honouring double quotes (no escapes: paths have backslashes).
+    fn words(line: &str) -> Vec<String> {
+        let (mut out, mut cur, mut quoted, mut any) = (Vec::new(), String::new(), false, false);
+        for c in line.chars() {
+            match c {
+                '"' => {
+                    quoted = !quoted;
+                    any = true;
+                }
+                c if c.is_whitespace() && !quoted => {
+                    if any {
+                        out.push(std::mem::take(&mut cur));
+                        any = false;
+                    }
+                }
+                c => {
+                    cur.push(c);
+                    any = true;
+                }
+            }
+        }
+        if any {
+            out.push(cur);
+        }
+        out
+    }
+
+    /// Every command the agent-facing documents show goes through the argument parser. Nothing
+    /// runs: no scene is read, no device is made, no image is drawn.
+    #[test]
+    fn every_command_the_guides_show_parses() {
+        let docs: [(&str, &str); 3] = [
+            ("LOOK.md", scene::GUIDE),
+            ("wayfinder-plugin/SKILL.md", include_str!("../assets/guides/wayfinder-plugin/SKILL.md")),
+            ("CLAUDE.md", include_str!("../CLAUDE.md")),
+        ];
+        for (name, text) in docs {
+            let shown = shown_commands(text);
+            assert!(!shown.is_empty(), "{name} shows no commands");
+            for line in shown {
+                let w = words(&line);
+                match command(&w[1..]) {
+                    Some(Command::Usage(e) | Command::SceneUsage(e)) => panic!("{name}: `{line}` does not parse: {e}"),
+                    Some(_) => {}
+                    None => panic!("{name}: `{line}` would start the app"),
+                }
+            }
+        }
+        // the loop is all there: LOOK.md shows every verb that helps look at a widget
+        let looked: String = shown_commands(scene::GUIDE).join("
+");
+        for verb in ["scene dump", "scene check", "scene diff", "scene sheet", "scene render", "scene bless", "scene selfcheck"] {
+            assert!(looked.contains(verb), "LOOK.md shows no `{verb}`");
+        }
+        assert!(matches!(command(&args(&["scene", "guide"])), Some(Command::Scene(scene::Invocation::Guide))));
+        assert!(matches!(command(&args(&["scene", "--help"])), Some(Command::Scene(scene::Invocation::Help))));
+        assert!(matches!(command(&args(&["scene", "guide", "extra"])), Some(Command::SceneUsage(_))));
+        // `--help` prints; it never falls through to the app
+        assert_eq!(command(&args(&["--help"])), Some(Command::Help));
+    }
+
+    /// The guides send nobody to the hardware adapter: `--gpu` is only ever followed by
+    /// `software`, and the commands that would start the app or the spike appear only in a
+    /// sentence that forbids them.
+    #[test]
+    fn the_docs_name_the_software_adapter_only() {
+        let docs: [(&str, String); 5] = [
+            ("LOOK.md", scene::GUIDE.into()),
+            ("SKILL.md", include_str!("../assets/guides/wayfinder-plugin/SKILL.md").into()),
+            ("CLAUDE.md", include_str!("../CLAUDE.md").into()),
+            ("development.md", include_str!("../docs/development.md").into()),
+            ("USAGE", format!("{USAGE}
+{}
+{}", scene::USAGE, scene::HELP)),
+        ];
+        for (name, text) in docs {
+            let text = text.replace("
+
+", "
+");
+            let mut it = text.split_whitespace().peekable();
+            let mut prev = "";
+            while let Some(w) = it.next() {
+                let before = std::mem::replace(&mut prev, w);
+                // "they take no `--gpu`" names the flag to say it is absent
+                if w.trim_matches(|c: char| c == '`' || c == '[') == "--gpu" && before != "no" {
+                    let v = it.peek().map_or("", |v| v.trim_matches(|c: char| !c.is_alphanumeric()));
+                    assert_eq!(v, "software", "{name}: `--gpu` is followed by `{v}`");
+                }
+            }
+            for bad in ["--gpu high", "--gpu low", "high|low", "software|low", "--allow-hardware", "--real gpu"] {
+                assert!(!text.lines().any(|l| l.contains(bad) && !l.to_lowercase().contains("never")), "{name} shows `{bad}`");
+            }
+            for l in text.lines().filter(|l| l.contains("phase0_spike") || l.contains("--selftest")) {
+                let l = l.to_lowercase();
+                assert!(name == "development.md" || l.contains("never") || l.contains("not "), "{name}: `--selftest` or the spike without a warning: {l}");
+            }
+        }
+        assert!(scene::GUIDE.contains("software adapter") && scene::GUIDE.contains("not a frozen interface") && scene::GUIDE.contains("per machine"));
     }
 }

@@ -88,4 +88,6 @@ The module runs sandboxed: it cannot write files or start programs, reads only t
 2. To share it, run `wayfinder plugin pack plugins\sunset | Out-Host` in PowerShell: it writes `sunset.wfplugin` next to the folder and checks it. Or zip the folder (right-click it → **Send to → Compressed (zipped) folder**) and rename the `.zip` to `.wfplugin`; `wayfinder plugin check sunset.wfplugin | Out-Host` then says whether it installs and loads cleanly.
 3. Double-clicking a `.wfplugin`, dropping it on the Settings window, or **Install from file...** installs it. Installing one with the same `id` replaces the old version and keeps it switched on or off.
 
+To see a widget without the desktop, and to keep checks beside it, put scenes in the plugin's own `scenes/` folder and read `LOOK.md` in this folder (`wayfinder scene guide` prints it). `scenes/` (and its `.look/` output and baselines) is yours: `wayfinder plugin pack` leaves it out of the `.wfplugin`, and `wayfinder plugin check` does not warn about it. If you zip the folder by hand, leave `scenes` out too.
+
 **With Claude Code:** run `claude` in this folder and ask for a plugin ("a plugin with a sunset palette and a matching clock"). The `wayfinder-plugin` skill in `.claude/skills/` tells it how.

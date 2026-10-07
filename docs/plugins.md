@@ -26,7 +26,7 @@ description = "Warm evening colours and a weather card."
 
 ## Install and share
 
-Double-click a `.wfplugin` (the first Wayfinder build to start takes `.wfplugin` files; **Settings → General → Plugin files** hands them to another), drop it on the Settings window or use **Install from file...** in **Settings → Plugins**, where each one can be switched off or removed. Because plugins load after the built-ins and before your own files, a plugin can restyle a built-in widget and your own copy still wins. Only content files unpack (`toml`, fonts, images, text, plus a `.wasm` module), and a widget can never launch anything inside `plugins/`. See `PLUGINS.md` in the data folder and [ADR-007](adr/0007-content-plugins.md).
+Double-click a `.wfplugin` (the first Wayfinder build to start takes `.wfplugin` files; **Settings → General → Plugin files** hands them to another), drop it on the Settings window or use **Install from file...** in **Settings → Plugins**, where each one can be switched off or removed. Because plugins load after the built-ins and before your own files, a plugin can restyle a built-in widget and your own copy still wins. Only content files unpack (`toml`, fonts, images, text, plus a `.wasm` module), and a widget can never launch anything inside `plugins/`. A plugin folder's own `scenes/` (the checks and baselines `wayfinder scene` keeps beside a widget, see `LOOK.md`) and `.look/` are left out of the bundle by `wayfinder plugin pack`. See `PLUGINS.md` in the data folder and [ADR-007](adr/0007-content-plugins.md).
 
 ## Plugin code
 

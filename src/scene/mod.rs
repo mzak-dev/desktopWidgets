@@ -35,6 +35,10 @@
 //!
 //! Fonts are the machine's, so a dump is exact on the machine and font set it was made on
 //! (the header's `fonts=` says which); it is not a cross-machine artefact.
+//!
+//! `scene guide` prints `LOOK.md` (the loop, for agents and plugin authors; the same file is
+//! written into the data folder with the other guides), and `scene --help` the loop in six
+//! lines. A test reads every command shown in `LOOK.md` through the argument parser.
 
 pub mod baseline;
 pub mod bless;
@@ -76,7 +80,29 @@ pub const USAGE: &str = "usage:
   wayfinder scene diff <id|glob|set|file>... [--pixels | --no-pixels] [--changed-only] [--baselines DIR] [--out DIR] [--root DIR] [-q]
   wayfinder scene bless <id|glob|set|file>... --reason \"what changed and why\" [--new-only] [--png] [--baselines DIR] [--out DIR] [--root DIR] [-q]
   wayfinder scene selfcheck [<id|glob|set|file>...] [--runs N] [--gap 1s|61s] [--perturb] [--controls] [--keep] [--out DIR] [--root DIR] [-q]
+  wayfinder scene guide                         (prints LOOK.md, the loop for agents and plugin authors)
+  wayfinder scene --help
 exit: 0 clean, 1 findings (a diff, a scene with no baseline, a refused bless), 2 bad arguments or scene, 3 output not written or baselines made with other fonts";
+
+/// `wayfinder scene --help`: the loop, then the verbs.
+pub const HELP: &str = r#"wayfinder scene: see what a widget looks like without opening it.
+Scenes render on the software adapter only (no hardware GPU; the verbs take no --gpu), in a fixed
+world: clock, system readings, no network. Text uses this machine's fonts, so baselines are per
+machine. The scene files, dumps and verbs are tooling (format = 1), not a frozen interface.
+
+the loop:
+  1. wayfinder scene dump <id> --find <text>     read the layout as text: rects, text, flags
+  2. wayfinder scene check <set>                 layout flags (TRUNCATED, CLIPPED, OUTSIDE ...): exit 1 on findings
+  3. wayfinder scene diff <set> --no-pixels      what moved since the baseline, by node key
+  4. wayfinder scene sheet <ids> --diff          one contact sheet to look at, not many PNGs
+  5. wayfinder scene bless <ids> --reason "..."  only when the change is intended
+  6. wayfinder scene guide                       the whole guide (LOOK.md)
+Output also goes to <scenes>\.look\summary.txt; exit 0 clean, 1 findings, 2 bad arguments, 3 infrastructure.
+"#;
+
+/// `LOOK.md`: the visual loop for agents and plugin authors. It is also written into the data
+/// folder with the other guides (`app::first_run`).
+pub const GUIDE: &str = include_str!("../../assets/guides/LOOK.md");
 
 /// `v` as JSON when it is (numbers, booleans, lists), else as text.
 pub fn loose(v: &str) -> Json {
@@ -116,17 +142,27 @@ pub enum Invocation {
     Diff { select: Selection, opts: bless::Opts, changed_only: bool },
     Bless { select: Selection, opts: bless::Opts, reason: String, new_only: bool },
     Selfcheck { select: Selection, opts: selfcheck::Opts },
+    /// `scene guide`: print `LOOK.md`.
+    Guide,
+    /// `scene --help`.
+    Help,
 }
 
 /// The command in `args` (what follows `scene`).
 pub fn parse(args: &[String]) -> Result<Invocation, String> {
     let verbs = ["list", "dump", "render", "sheet", "check", "diff", "bless", "selfcheck", "guide"];
-    let verb = args.first().map(String::as_str).ok_or("scene needs a verb: list, dump, render, sheet, check, diff, bless or selfcheck")?;
-    if !verbs.contains(&verb) {
-        return Err(format!("unknown scene verb `{verb}`{} (this build has list, dump, render, sheet, check, diff, bless and selfcheck)", suggest(verb, &[&verbs])));
+    let verb = args.first().map(String::as_str).ok_or("scene needs a verb: list, dump, render, sheet, check, diff, bless, selfcheck or guide (`scene --help` shows the loop)")?;
+    if matches!(verb, "--help" | "-h" | "help") {
+        return Ok(Invocation::Help);
     }
-    if !["list", "dump", "render", "sheet", "check", "diff", "bless", "selfcheck"].contains(&verb) {
-        return Err(format!("`scene {verb}` is not in this build yet; `scene list`, `scene dump`, `scene render`, `scene sheet`, `scene check`, `scene diff`, `scene bless` and `scene selfcheck` are"));
+    if !verbs.contains(&verb) {
+        return Err(format!("unknown scene verb `{verb}`{} (this build has list, dump, render, sheet, check, diff, bless, selfcheck and guide)", suggest(verb, &[&verbs])));
+    }
+    if verb == "guide" {
+        return match args.get(1) {
+            None => Ok(Invocation::Guide),
+            Some(a) => Err(format!("`scene guide` takes no arguments, not `{a}`")),
+        };
     }
     let mut select = Selection::default();
     let (mut query, mut format, mut out, mut quiet, mut sets) = (Query::default(), Format::Text, None, false, false);
@@ -533,6 +569,15 @@ fn run_here(inv: Invocation) -> i32 {
         Invocation::Diff { select, opts, changed_only } => bless::diff_cmd(&select, &opts, changed_only),
         Invocation::Bless { select, opts, reason, new_only } => bless::bless_cmd(&select, &opts, &reason, new_only),
         Invocation::Selfcheck { select, opts } => selfcheck::selfcheck_cmd(&select, &opts),
+        Invocation::Guide => {
+            print!("{GUIDE}");
+            0
+        }
+        Invocation::Help => {
+            println!("{HELP}
+{USAGE}");
+            0
+        }
     }
 }
 
