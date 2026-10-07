@@ -6,10 +6,11 @@
 //! Both images are composited over the fixed backdrop first (a transparent render has no
 //! colour of its own), so only what the engine drew is compared.
 //!
-//! The numbers are placeholders until `scene selfcheck` has measured them: a threshold of 0.6
-//! on the YIQ distance (`yiq_delta`: the weighted squared difference of two colours in 0..255
-//! units, so 0.6 is about one grey level), no failing pixel when the environment fingerprint
-//! matches the baseline's and 0.02 % of the pixels otherwise. `scenes/wayfinder-render.toml`
+//! The numbers: a threshold of 0.6 on the YIQ distance (`yiq_delta`: the weighted squared
+//! difference of two colours in 0..255 units, so 0.6 is about one grey level), no failing pixel
+//! when the environment fingerprint matches the baseline's (measured: `scene selfcheck` found
+//! no pixel differing between runs on this machine) and 0.02 % of the pixels otherwise (not
+//! measurable on one machine, so a placeholder). `scenes/wayfinder-render.toml`
 //! says them, and a scene may only tighten them. Fonts are the machine's, so a baseline is only
 //! ever compared on the machine and font set that made it (the fonts hash is part of the
 //! fingerprint, and the baseline folder is named for it); what can still differ is the adapter,

@@ -1,12 +1,22 @@
 format = 1
-# The pixel tolerances of `wayfinder scene diff` (tooling, not frozen). Placeholders until
-# `scene selfcheck` has measured them. A scene may tighten these in a [scene."<id or glob>"]
-# table, never loosen them.
+# The pixel tolerances of `wayfinder scene diff` (tooling, not frozen). A scene may tighten
+# these in a [scene."<id or glob>"] table, never loosen them.
 #
 # threshold: a pixel fails when its YIQ distance to the baseline's is above this (0.6 is about
 #   one grey level). failed_pixels: allowed failures when the environment fingerprint (fonts,
 #   adapter, Windows build, engine crates) matches the baseline's. failed_percent: allowed
 #   failures, in percent of all pixels, when it does not.
+#
+# Measured by `wayfinder scene selfcheck golden selfcheck engine --gap 61s --perturb --controls`
+# on the software adapter (Microsoft Basic Render Driver, Windows 11, fonts system:297b4419) on
+# 2026-10-07: 135 scenes rendered in 4 fresh processes (a 61 s gap, one CPU, below-normal
+# priority); 405 scene comparisons, every dump, PNG (bytes) and record identical: 0 pixels
+# differing, largest YIQ distance 0. So on one machine, one font set and one fingerprint, PNG
+# baselines are exact: failed_pixels = 0 is measured, not assumed. The threshold only matters
+# across fingerprints, and 0.6 is kept from the kittest default (nothing here could measure it).
+# failed_percent is the one number that stays a placeholder: another Windows build, WARP or
+# driver cannot be measured on one machine. It is used only for a baseline made under a
+# different fingerprint (a diff says so), never for a baseline of this machine.
 
 [pixels]
 threshold = 0.6
