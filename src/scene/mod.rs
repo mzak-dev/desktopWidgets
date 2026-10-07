@@ -23,6 +23,10 @@
 //! adapter (`render`, `sheet`), and `scene diff`/`bless` add a pixel tier for the scenes tagged
 //! `golden` (`pixel`). Only WARP is ever asked for; a scene verb has no `--gpu`.
 //!
+//! `scene selfcheck` renders scenes again and again in fresh child processes (a gap apart, on
+//! one CPU, at low priority) and says whether anything differed, with negative controls that
+//! must differ and assertions over the sidecars (`selfcheck`).
+//!
 //! Exit codes: 0 clean, 1 findings (a widget error card, a failed `[expect]`, an error-level
 //! flag, a code source that never answered, a diff or a scene with no baseline, a refused
 //! bless), 2 bad arguments or scene file (nothing is run if a file is bad), 3 the output could
@@ -41,6 +45,7 @@ pub mod flags;
 pub mod pixel;
 pub mod render;
 pub mod runner;
+pub mod selfcheck;
 pub mod sheet;
 pub mod views;
 
@@ -70,6 +75,7 @@ pub const USAGE: &str = "usage:
   wayfinder scene sheet <id|glob|set|file>... [--out FILE.png] [--cols N] [--diff] [--root DIR] [-q] [same flags as dump's environment]
   wayfinder scene diff <id|glob|set|file>... [--pixels | --no-pixels] [--changed-only] [--baselines DIR] [--out DIR] [--root DIR] [-q]
   wayfinder scene bless <id|glob|set|file>... --reason \"what changed and why\" [--new-only] [--png] [--baselines DIR] [--out DIR] [--root DIR] [-q]
+  wayfinder scene selfcheck [<id|glob|set|file>...] [--runs N] [--gap 1s|61s] [--perturb] [--controls] [--keep] [--out DIR] [--root DIR] [-q]
 exit: 0 clean, 1 findings (a diff, a scene with no baseline, a refused bless), 2 bad arguments or scene, 3 output not written or baselines made with other fonts";
 
 /// `v` as JSON when it is (numbers, booleans, lists), else as text.
@@ -109,17 +115,18 @@ pub enum Invocation {
     Sheet { select: Selection, out: Option<PathBuf>, quiet: bool, overrides: Overrides, cols: Option<usize>, diff: bool },
     Diff { select: Selection, opts: bless::Opts, changed_only: bool },
     Bless { select: Selection, opts: bless::Opts, reason: String, new_only: bool },
+    Selfcheck { select: Selection, opts: selfcheck::Opts },
 }
 
 /// The command in `args` (what follows `scene`).
 pub fn parse(args: &[String]) -> Result<Invocation, String> {
     let verbs = ["list", "dump", "render", "sheet", "check", "diff", "bless", "selfcheck", "guide"];
-    let verb = args.first().map(String::as_str).ok_or("scene needs a verb: list, dump, render, sheet, check, diff or bless")?;
+    let verb = args.first().map(String::as_str).ok_or("scene needs a verb: list, dump, render, sheet, check, diff, bless or selfcheck")?;
     if !verbs.contains(&verb) {
-        return Err(format!("unknown scene verb `{verb}`{} (this build has list, dump, render, sheet, check, diff and bless)", suggest(verb, &[&verbs])));
+        return Err(format!("unknown scene verb `{verb}`{} (this build has list, dump, render, sheet, check, diff, bless and selfcheck)", suggest(verb, &[&verbs])));
     }
-    if !["list", "dump", "render", "sheet", "check", "diff", "bless"].contains(&verb) {
-        return Err(format!("`scene {verb}` is not in this build yet; `scene list`, `scene dump`, `scene render`, `scene sheet`, `scene check`, `scene diff` and `scene bless` are"));
+    if !["list", "dump", "render", "sheet", "check", "diff", "bless", "selfcheck"].contains(&verb) {
+        return Err(format!("`scene {verb}` is not in this build yet; `scene list`, `scene dump`, `scene render`, `scene sheet`, `scene check`, `scene diff`, `scene bless` and `scene selfcheck` are"));
     }
     let mut select = Selection::default();
     let (mut query, mut format, mut out, mut quiet, mut sets) = (Query::default(), Format::Text, None, false, false);
@@ -127,6 +134,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     let (mut baselines, mut reason, mut new_only, mut changed_only) = (None, None::<String>, false, false);
     let (mut pixels, mut png, mut with_dump, mut with_sheet, mut cols, mut sheet_diff) = (bless::PixelMode::Golden, false, false, false, None::<usize>, false);
     let mut sheet_out: Option<PathBuf> = None;
+    let mut sc = selfcheck::Opts::default();
     // the verbs that run scenes share --out and -q; dump and check also the options that set the
     // world a scene runs in. diff and bless run a scene as its file says: a baseline is of the
     // scene, not of an experiment
@@ -185,6 +193,11 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
             "--hover" if env_ok => o.hover = Some(val()?),
             "--content-root" if env_ok => o.plugin = Some(val()?.into()),
             "--wait" if env_ok => o.wait = Some(val()?.parse().map_err(|_| "--wait is seconds")?),
+            "--runs" if verb == "selfcheck" => sc.runs = val()?.parse().ok().filter(|n| (2..=10).contains(n)).ok_or("--runs is a whole number from 2 to 10")?,
+            "--gap" if verb == "selfcheck" => sc.gap = selfcheck::parse_gap(&val()?)?,
+            "--perturb" if verb == "selfcheck" => sc.perturb = true,
+            "--controls" if verb == "selfcheck" => sc.controls = true,
+            "--keep" if verb == "selfcheck" => sc.keep = true,
             "--baselines" if matches!(verb, "diff" | "bless") => baselines = Some(PathBuf::from(val()?)),
             "--changed-only" if verb == "diff" => changed_only = true,
             "--no-pixels" if verb == "diff" => pixels = bless::PixelMode::Off,
@@ -201,6 +214,11 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     }
     if select.widget.is_some() && !select.patterns.is_empty() {
         return Err("--widget names one widget; it takes no scene ids".into());
+    }
+    if verb == "selfcheck" {
+        sc.out = out;
+        sc.quiet = quiet;
+        return Ok(Invocation::Selfcheck { select, opts: sc });
     }
     let opts = bless::Opts { out: out.clone(), quiet, baselines, pixels, png };
     if verb == "bless" {
@@ -491,6 +509,9 @@ fn write(path: &Path, text: &str) -> Result<(), String> {
 
 /// Runs the `scene` command and returns the process exit code.
 pub fn run(inv: Invocation) -> i32 {
+    // a selfcheck child puts itself on the CPUs and priority its parent asked for, before it has
+    // made a thread of its own
+    selfcheck::apply_limits_from_env();
     // a layout recurses as deep as a widget nests, and the verbs that draw run scenes on this
     // thread: give it room, as the workers have
     match std::thread::Builder::new().stack_size(16 << 20).spawn(move || run_here(inv)) {
@@ -511,6 +532,7 @@ fn run_here(inv: Invocation) -> i32 {
         Invocation::Sheet { select, out, quiet, overrides, cols, diff } => render::sheet_cmd(&select, out, quiet, &overrides, cols, diff),
         Invocation::Diff { select, opts, changed_only } => bless::diff_cmd(&select, &opts, changed_only),
         Invocation::Bless { select, opts, reason, new_only } => bless::bless_cmd(&select, &opts, &reason, new_only),
+        Invocation::Selfcheck { select, opts } => selfcheck::selfcheck_cmd(&select, &opts),
     }
 }
 
@@ -859,6 +881,11 @@ mod tests {
         let Ok(Invocation::Check { select, out, quiet, overrides }) = parse(&args(&["check", "fits", "--out", "o", "-q", "--env", "sys.cpu=1", "--root", "r", "--size", "300x200"])) else { panic!() };
         assert_eq!((select.patterns, select.root, out, quiet, overrides.pins.len(), overrides.size), (vec!["fits".to_string()], Some(PathBuf::from("r")), Some(PathBuf::from("o")), true, 1, Some(Size::Card(300.0, 200.0))));
         for bad in [&["check", "x", "--view", "full"][..], &["check", "x", "--format", "json"], &["check", "x", "--gpu", "software"], &["check", "x", "--sets"]] {
+            assert!(parse(&args(bad)).is_err(), "{bad:?}");
+        }
+        let Ok(Invocation::Selfcheck { select, opts }) = parse(&args(&["selfcheck", "golden", "--runs", "3", "--gap", "61s", "--perturb", "--controls", "--out", "o", "-q", "--root", "r"])) else { panic!() };
+        assert_eq!((select.patterns, select.root, opts.runs, opts.gap, opts.perturb, opts.controls, opts.out, opts.quiet), (vec!["golden".to_string()], Some(PathBuf::from("r")), 3, std::time::Duration::from_secs(61), true, true, Some(PathBuf::from("o")), true));
+        for bad in [&["selfcheck", "--runs", "1"][..], &["selfcheck", "--gap", "soon"], &["selfcheck", "--gpu", "software"], &["selfcheck", "--allow-hardware"], &["selfcheck", "--env", "now=2026-01-01"], &["render", "x", "--perturb"]] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
         assert!(parse(&args(&["dmp"])).unwrap_err().contains("did you mean `dump`"));
