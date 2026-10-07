@@ -20,7 +20,7 @@ mod world;
 use std::path::PathBuf;
 
 use crate::ambient::{Backdrop, Pins, Seam};
-use crate::gfx::{Gpu, Power};
+use crate::gfx::{AdapterReport, Gpu, Power};
 use crate::shortcut::Shortcut;
 
 pub use world::{Content, Failure, HOVER_HOLD, Settled, settle};
@@ -55,6 +55,8 @@ pub struct Request {
     /// A node key held hovered, or a point (logical px) whose node is, on the settled frame.
     pub hover: Option<String>,
     pub hover_at: Option<(f32, f32)>,
+    /// Draw the Edit Mode overlay over the card (`Some(true)`: with its remove button armed).
+    pub edit: Option<bool>,
     pub gpu: String,
     /// The environment: `--env`, `--palette`, `--scale`, `--transparent`, `--now`, `--real`.
     pub pins: Pins,
@@ -62,23 +64,33 @@ pub struct Request {
 
 impl Request {
     pub fn new(widget: String) -> Self {
-        Self { widget, png: PathBuf::new(), size: None, tier: None, params: vec![], state: vec![], time: None, wait: 5.0, data: None, installed: false, plugin: None, hide: vec![], items: None, hover: None, hover_at: None, gpu: "software".into(), pins: Pins::default() }
+        Self { widget, png: PathBuf::new(), size: None, tier: None, params: vec![], state: vec![], time: None, wait: 5.0, data: None, installed: false, plugin: None, hide: vec![], items: None, hover: None, hover_at: None, edit: None, gpu: "software".into(), pins: Pins::default() }
     }
 }
 
-/// Renders one widget as the desktop would, in the pinned environment, and writes a PNG and
-/// its `.env.json`. Returns whether the widget showed an error.
-pub fn render(r: &Request) -> Result<bool, String> {
-    let power = Power::parse(&r.gpu).map_err(|e| format!("--gpu: {e}"))?;
-    let mut s = settle(r, power, false).map_err(String::from)?;
-    let mut gpu = Gpu::new_headless(power)?;
+/// A headless device on the software adapter (WARP), and the report of the adapter it got.
+/// The power is the literal `Software`, never a parsed or variable value, and a device whose
+/// adapter is not a CPU rasteriser is refused: a scene render cannot reach a vendor driver.
+pub fn software_gpu() -> Result<(Gpu, AdapterReport), String> {
+    let gpu = Gpu::new_headless(Power::Software)?;
     let adapter = gpu.adapter_report();
-    if !adapter.software && !s.real.contains(&Seam::Gpu) {
+    if !adapter.software {
         return Err(format!("refusing to render on {} ({}): a hermetic render uses the software adapter", adapter.name, adapter.device_type));
     }
-    for n in &s.notes {
-        println!("{n}");
+    Ok((gpu, adapter))
+}
+
+/// The backdrop's colour at `(x, y)`, each in 0..1 across the image.
+pub fn backdrop_at(b: Backdrop, x: f32, y: f32) -> [f32; 3] {
+    match b {
+        Backdrop::Gradient => [30.0 + 70.0 * x, 60.0 + 50.0 * (1.0 - y), 120.0 + 60.0 * y],
+        Backdrop::Solid(rgb) => rgb.map(f32::from),
     }
+}
+
+/// Draws a settled frame on `gpu`: the pixels of the window at the pinned scale, composited
+/// over the pinned backdrop (or, for a transparent render, back to straight alpha).
+pub fn draw(gpu: &mut Gpu, s: &mut Settled) -> Result<image::RgbaImage, String> {
     let pins = &s.pins;
     let (pw, ph) = ((s.window.0 * pins.scale).round() as u32, (s.window.1 * pins.scale).round() as u32);
     gpu.apply(s.images.drain());
@@ -94,19 +106,34 @@ pub fn render(r: &Request) -> Result<bool, String> {
             }
         } else {
             let (x, y) = ((i as u32 % pw) as f32 / pw as f32, (i as u32 / pw) as f32 / ph as f32);
-            let bg = match pins.backdrop {
-                Backdrop::Gradient => [30.0 + 70.0 * x, 60.0 + 50.0 * (1.0 - y), 120.0 + 60.0 * y],
-                Backdrop::Solid(rgb) => rgb.map(f32::from),
-            };
+            let bg = backdrop_at(pins.backdrop, x, y);
             for k in 0..3 {
                 c[k] = (c[k] as f32 + bg[k] * (1.0 - a)).clamp(0.0, 255.0) as u8;
             }
             c[3] = 255;
         }
     }
-    let img = image::RgbaImage::from_raw(pw, ph, px).ok_or("the renderer returned the wrong size")?;
+    image::RgbaImage::from_raw(pw, ph, px).ok_or_else(|| "the renderer returned the wrong size".to_string())
+}
+
+/// Renders one widget as the desktop would, in the pinned environment, and writes a PNG and
+/// its `.env.json`. Returns whether the widget showed an error.
+pub fn render(r: &Request) -> Result<bool, String> {
+    let power = Power::parse(&r.gpu).map_err(|e| format!("--gpu: {e}"))?;
+    let mut s = settle(r, power, false).map_err(String::from)?;
+    let mut gpu = Gpu::new_headless(power)?;
+    let adapter = gpu.adapter_report();
+    if !adapter.software && !s.real.contains(&Seam::Gpu) {
+        return Err(format!("refusing to render on {} ({}): a hermetic render uses the software adapter", adapter.name, adapter.device_type));
+    }
+    for n in &s.notes {
+        println!("{n}");
+    }
+    let img = draw(&mut gpu, &mut s)?;
+    let (pw, ph) = img.dimensions();
     img.save(&r.png).map_err(|e| format!("{}: {e}", r.png.display()))?;
 
+    let pins = &s.pins;
     let faces = s.text.font_faces();
     let id = &s.content.id;
     let facts = env::Facts { widget: id, size: (pw, ph), pins, real: &s.real, installed: r.installed, roots: &s.content.roots, faces: &faces, adapter: Some(&adapter), deps: &s.prepared.deps, paths: &s.paths, code_sources: &s.code_sources, rounds: s.rounds };

@@ -73,6 +73,8 @@ pub struct Target {
     pub items: Option<Vec<Shortcut>>,
     pub hover: Option<String>,
     pub hover_at: Option<(f32, f32)>,
+    /// The Edit Mode overlay is drawn over the card (`Some(true)`: remove button armed).
+    pub edit: Option<bool>,
 }
 
 /// One scene to run (a sweep has been expanded into these).
@@ -146,7 +148,15 @@ struct RawWidget {
     items: Option<RawItems>,
     hover: Option<String>,
     hover_at: Option<[f32; 2]>,
-    edit: bool,
+    edit: Option<RawEdit>,
+}
+
+/// `edit = true` draws the Edit Mode overlay; `edit = "armed"` with its remove button armed.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RawEdit {
+    On(bool),
+    Name(String),
 }
 
 #[derive(Deserialize)]
@@ -374,9 +384,12 @@ fn build(t: &toml::Table, file: &Path, root: &Path, id: String, name: String, so
         return Err(format!("{shown}: `[settings]` scenes are not supported by this build yet; only `[widget]` scenes run"));
     }
     let w = raw.widget.ok_or_else(|| format!("{shown}: a scene needs a [widget] table"))?;
-    if w.edit {
-        return Err(format!("{shown}: `edit = true` (the Edit Mode overlay) is not supported by this build yet"));
-    }
+    let edit = match &w.edit {
+        None | Some(RawEdit::On(false)) => None,
+        Some(RawEdit::On(true)) => Some(false),
+        Some(RawEdit::Name(n)) if n == "armed" => Some(true),
+        Some(RawEdit::Name(n)) => return Err(format!("{shown}: [widget] edit is true, false or \"armed\" (the remove button armed), not `{n}`")),
+    };
     let dir = file.parent().map(Path::to_path_buf).unwrap_or_default();
     let abs = |base: &Path, p: &str| {
         let p = Path::new(p);
@@ -480,7 +493,7 @@ fn build(t: &toml::Table, file: &Path, root: &Path, id: String, name: String, so
             Some("each") => true,
             Some(other) => return Err(format!("{shown}: [sweep] hide is \"each\" (one variant per Module), not `{other}`")),
         };
-    let target = Target { widget, plugin, size, params: pairs(&w.params), state: pairs(&w.state), hide, items, hover: w.hover, hover_at: w.hover_at.map(|[x, y]| (x, y)) };
+    let target = Target { widget, plugin, size, params: pairs(&w.params), state: pairs(&w.state), hide, items, hover: w.hover, hover_at: w.hover_at.map(|[x, y]| (x, y)), edit };
     let scene = Scene { id, name, tags: raw.tags, file: file.to_path_buf(), root: root.to_path_buf(), target, pins, expect: Expect { flags, allow: raw.expect.allow, text: raw.expect.text, no_text: raw.expect.no_text }, source_hash };
     Ok(Base { scene, sweep: Sweep { sizes, variants, at: raw.sweep.at, each_module } })
 }
@@ -693,7 +706,9 @@ mod tests {
         assert!(one("format = 1\n[expect]\n[widget]\nid = \"a\"\n[expect]\nflags = \"warm\"\n").is_err());
         assert!(one("format = 1\n[widget]\nid = \"a\"\n[expect]\nflags = \"warm\"\n").unwrap_err().contains("did you mean `warn`"));
         assert!(one("format = 1\n[settings]\nfixture = \"demo\"\n").unwrap_err().contains("`[settings]` scenes are not supported"));
-        assert!(one("format = 1\n[widget]\nid = \"a\"\nedit = true\n").unwrap_err().contains("`edit = true`"));
+        assert!(one("format = 1\n[widget]\nid = \"a\"\nedit = \"loud\"\n").unwrap_err().contains("true, false or \"armed\""));
+        let edit = |v: &str| one(&format!("format = 1\n[widget]\nid = \"a\"\nedit = {v}\n")).unwrap().target.edit;
+        assert_eq!((edit("false"), edit("true"), edit("\"armed\"")), (None, Some(false), Some(true)));
     }
 
     #[test]

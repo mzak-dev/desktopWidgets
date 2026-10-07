@@ -1,0 +1,101 @@
+name = "Primitives"
+description = "Every look and shape primitive in one frame: radius, border, shadow, gradient, ticks, hands and weighted text. What examples/render_test.rs drew by hand."
+category = "Fixtures"
+icon = "box"
+size = [620, 290]
+min_size = [300, 150]
+max_size = [900, 500]
+
+# no card of its own: two shapes side by side on the backdrop
+[root]
+direction = "row"
+align = "center"
+justify = "evenly"
+
+  # a round clock face: radius, border, shadow, translucent fill, ticks, three hands
+  [[root.children]]
+  width = 240
+  height = 240
+  padding = 14
+  fill = "#1c2333e6"
+  radius = 28
+  border = 1
+  border_color = "#ffffff30"
+  shadow = { blur = 18, dy = 6, color = "#00000080" }
+  shrink = 0
+
+    [[root.children.children]]
+    inset = 14
+    radius = 999
+    border = 1
+    border_color = "#ffffff40"
+    fill = "#ffffff14"
+
+    [[root.children.children]]
+    type = "ticks"
+    inset = 14
+    count = 60
+    major_every = 5
+    tick_length = 5
+    major_length = 10
+    tick_width = 1.2
+    major_width = 2.4
+    color = "#ffffff90"
+    major_color = "#ffffffee"
+    tick_inset = 8
+
+    [[root.children.children]]
+    type = "hand"
+    inset = 14
+    angle = 300
+    length = 0.5
+    tail = 0.12
+    stroke = 5
+    color = "#f0f4ff"
+
+    [[root.children.children]]
+    type = "hand"
+    inset = 14
+    angle = 60.5
+    length = 0.78
+    tail = 0.12
+    stroke = 3.5
+    color = "#f0f4ff"
+
+    [[root.children.children]]
+    type = "hand"
+    inset = 14
+    angle = 132
+    length = 0.86
+    tail = 0.12
+    stroke = 1.6
+    color = "#ff6a5a"
+
+  # a gradient card with weighted text
+  [[root.children]]
+  width = 320
+  height = 150
+  direction = "column"
+  align = "center"
+  justify = "center"
+  gap = 2
+  fill = ["#3b4a7ae6", "#1d2540e6"]
+  radius = 24
+  border = 1
+  border_color = "#ffffff30"
+  shadow = { blur = 16, dy = 5, color = "#00000070" }
+  shrink = 0
+
+    [[root.children.children]]
+    type = "text"
+    text = "10:08"
+    size = 56
+    weight = 300
+    color = "#ffffff"
+
+    [[root.children.children]]
+    type = "text"
+    text = "Sunday, 21 September"
+    size = 15
+    weight = 500
+    color = "#c7d2f0"

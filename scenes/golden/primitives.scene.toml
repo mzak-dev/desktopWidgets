@@ -1,0 +1,21 @@
+format = 1
+name = "Every look and shape primitive"
+tags = ["golden"]
+
+# examples/render_test.rs drew this by hand (a clock face and a gradient card); the widget file
+# in scenes/fixtures/widget says it in the content format, so the pixels of radius, border,
+# shadow, gradient, ticks, hands and weighted text stay under a golden scene.
+
+[widget]
+file = "../fixtures/widget/primitives.toml"
+size = "620x290"
+
+[look]
+scale = 1.5
+palette = "Midnight"
+
+[env]
+now = 2026-09-21T10:08:00
+
+[expect]
+flags = "error"

@@ -1,0 +1,37 @@
+format = 1
+# The Edit Mode overlay over a card (outline, eight handles, the position label and the remove
+# button), as examples/render_widgets.rs drew it with `edit`: one plain, one with the remove
+# button armed. The overlay is drawn in the PNG and counted in the dump's draw trailer, and its
+# nodes are in the dump under `<instance>!ov`.
+
+[defaults]
+tags = ["golden"]
+
+[defaults.look]
+scale = 1.25
+palette = "Midnight"
+
+[defaults.env]
+now = 2026-09-21T15:42:18
+
+[defaults.widget]
+items = "demo"
+
+# the overlay's label row has no height of its own (it holds the absolutely placed label)
+[defaults.expect]
+flags = "error"
+allow = ["ZERO"]
+
+[[scene]]
+name = "clock-edit"
+[scene.widget]
+id = "clock"
+size = "220x220"
+edit = true
+
+[[scene]]
+name = "icon-list-edit-armed"
+[scene.widget]
+id = "icon_list"
+size = "240x320"
+edit = "armed"

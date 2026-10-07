@@ -9,7 +9,7 @@ use serde_json::Value as Json;
 use super::dump::{self, Kind, SceneDump};
 use super::file::{Expect, Scene, Size};
 use crate::ambient::Pins;
-use crate::gfx::Power;
+use crate::gfx::{AdapterReport, Gpu, Power};
 use crate::render::{self, Failure, Request, env};
 
 /// What the command line changes in every selected scene (`--env`, `--size`, `--param`...).
@@ -27,6 +27,55 @@ pub struct Overrides {
     pub wait: Option<f32>,
 }
 
+/// The software device scenes are drawn on, made when the first one is drawn. Only the
+/// software adapter (WARP) is ever asked for, and a device on any other is refused
+/// (`render::software_gpu`). One device serves every scene of a run: 25 golden scenes came out
+/// byte-identical whether each had a device of its own or they shared one (measured on this
+/// machine), and sharing is 2.6 times faster.
+pub struct Device {
+    made: Option<(Gpu, AdapterReport)>,
+}
+
+impl Device {
+    pub fn new() -> Device {
+        Device { made: None }
+    }
+
+    /// Runs `f` on the device (made if need be): the contact sheets and comparison pictures are
+    /// drawn on the same software adapter as the scenes.
+    pub fn with_gpu<T>(&mut self, f: impl FnOnce(&mut Gpu) -> Result<T, String>) -> Result<T, String> {
+        if self.made.is_none() {
+            self.made = Some(render::software_gpu()?);
+        }
+        f(&mut self.made.as_mut().expect("made above").0)
+    }
+
+    /// Draws a settled frame; the adapter it was drawn on comes with the image.
+    fn draw(&mut self, settled: &mut render::Settled) -> Result<Drawn, String> {
+        if self.made.is_none() {
+            self.made = Some(render::software_gpu()?);
+        }
+        let (gpu, adapter) = self.made.as_mut().expect("made above");
+        let image = render::draw(gpu, settled)?;
+        Ok(Drawn { image, adapter: adapter.clone() })
+    }
+}
+
+/// A scene drawn: the window's pixels over the backdrop, and the adapter that drew them.
+pub struct Drawn {
+    pub image: image::RgbaImage,
+    pub adapter: AdapterReport,
+}
+
+/// Whether and how a run drew its frame.
+pub enum Pixels {
+    /// The run needed no pixels (a dump).
+    Off,
+    Drawn(Drawn),
+    /// There was no software adapter, or it failed: infrastructure, not a finding.
+    Failed(String),
+}
+
 /// What running a scene produced.
 pub struct Outcome {
     pub dump: SceneDump,
@@ -40,6 +89,7 @@ pub struct Outcome {
     pub notes: Vec<String>,
     /// What the widget warned of while it was built (a binding that did not resolve...).
     pub warnings: Vec<String>,
+    pub pixels: Pixels,
 }
 
 /// The render request a scene stands for.
@@ -76,6 +126,7 @@ pub fn request(s: &Scene, o: &Overrides) -> Result<Request, String> {
     r.items = t.items.clone();
     r.hover = o.hover.clone().or_else(|| t.hover.clone());
     r.hover_at = if o.hover.is_some() { None } else { t.hover_at };
+    r.edit = t.edit;
     r.time = o.time;
     r.plugin = o.plugin.clone().or_else(|| t.plugin.clone());
     if let Some(w) = o.wait {
@@ -104,16 +155,26 @@ pub fn unmet(e: &Expect, d: &SceneDump) -> Vec<String> {
 /// Runs `s`. A request that cannot be made or a widget that cannot be found is `Failure::Bad`;
 /// a code source that never answers or pictures that never finish is `Failure::Run`.
 pub fn run(s: &Scene, o: &Overrides) -> Result<Outcome, Failure> {
+    run_with(s, o, None)
+}
+
+/// Runs `s` and, with a `device`, draws it too (the software adapter, see `Device`).
+pub fn run_with(s: &Scene, o: &Overrides, device: Option<&mut Device>) -> Result<Outcome, Failure> {
     let r = request(s, o).map_err(Failure::Bad)?;
-    let settled = render::settle(&r, Power::Software, true)?;
+    let mut settled = render::settle(&r, Power::Software, true)?;
     let dump = dump::build(&s.id, &settled);
+    let pixels = match device {
+        None => Pixels::Off,
+        Some(d) => d.draw(&mut settled).map_or_else(Pixels::Failed, Pixels::Drawn),
+    };
     let faces = settled.text.font_faces();
     let px = |v: f32| (v * settled.pins.scale).round() as u32;
-    let facts = env::Facts { widget: &settled.content.id, size: (px(settled.window.0), px(settled.window.1)), pins: &settled.pins, real: &settled.real, installed: settled.content.installed, roots: &settled.content.roots, faces: &faces, adapter: None, deps: &settled.prepared.deps, paths: &settled.paths, code_sources: &settled.code_sources, rounds: settled.rounds };
+    let adapter = if let Pixels::Drawn(d) = &pixels { Some(&d.adapter) } else { None };
+    let facts = env::Facts { widget: &settled.content.id, size: (px(settled.window.0), px(settled.window.1)), pins: &settled.pins, real: &settled.real, installed: settled.content.installed, roots: &settled.content.roots, faces: &faces, adapter, deps: &settled.prepared.deps, paths: &settled.paths, code_sources: &settled.code_sources, rounds: settled.rounds };
     let sidecar = env::sidecar(&facts);
     let unmet = unmet(&s.expect, &dump);
     let error = settled.prepared.error.clone();
-    Ok(Outcome { dump, sidecar, unmet, error, notes: settled.notes.clone(), warnings: settled.prepared.warnings.clone() })
+    Ok(Outcome { dump, sidecar, unmet, error, notes: settled.notes.clone(), warnings: settled.prepared.warnings.clone(), pixels })
 }
 
 impl Outcome {
@@ -129,7 +190,7 @@ mod tests {
     use crate::scene::file::{self, Target};
 
     fn scene(widget: &str) -> Scene {
-        Scene { id: "t/x".into(), name: "x".into(), tags: vec![], file: PathBuf::from("x.scene.toml"), root: PathBuf::from("."), target: Target { widget: widget.into(), plugin: None, size: Size::Default, params: vec![], state: vec![], hide: vec![], items: None, hover: None, hover_at: None }, pins: vec![], expect: Expect::default(), source_hash: String::new() }
+        Scene { id: "t/x".into(), name: "x".into(), tags: vec![], file: PathBuf::from("x.scene.toml"), root: PathBuf::from("."), target: Target { widget: widget.into(), plugin: None, size: Size::Default, params: vec![], state: vec![], hide: vec![], items: None, hover: None, hover_at: None, edit: None }, pins: vec![], expect: Expect::default(), source_hash: String::new() }
     }
 
     #[test]

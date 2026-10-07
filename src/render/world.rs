@@ -384,6 +384,21 @@ pub fn settle(r: &Request, power: Power, trace: bool) -> Result<Settled, Failure
         at = settle + HOVER_HOLD;
         p = frame(t0 + at, Some(&key), &mut text, &mut images, &mut anim);
     }
+    // the Edit Mode overlay is laid out on top of the last frame (its enter animation settled
+    // the same way), and its nodes join the trace
+    if let Some(armed) = r.edit {
+        let ov = crate::edit::overlay(&cfg.id, window, card.gutter, &format!("60, 60   {}x{}", card_size.0, card_size.1), &theme, None, armed);
+        let mut ov_anim = Anim::default();
+        for when in [Duration::ZERO, at] {
+            let mut env = crate::ui::Env { text: &mut text, anim: &mut ov_anim, hover: None, now: t0 + when, scale: pins.scale, trace };
+            let f = crate::ui::layout(&ov, window, &mut env);
+            if when == at {
+                p.frame.list.put_on_top(f.list);
+                p.frame.nodes.extend(f.nodes);
+                p.frame.rects.extend(f.rects);
+            }
+        }
+    }
     for w in &p.warnings {
         notes.push(format!("warning: {w}"));
     }

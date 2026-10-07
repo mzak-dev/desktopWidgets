@@ -19,6 +19,10 @@
 //! set that made it, and a diff against baselines made with other fonts is refused instead of
 //! reported.
 //!
+//! `scene render` and `scene sheet` draw scenes (PNG, record, contact sheet) on the software
+//! adapter (`render`, `sheet`), and `scene diff`/`bless` add a pixel tier for the scenes tagged
+//! `golden` (`pixel`). Only WARP is ever asked for; a scene verb has no `--gpu`.
+//!
 //! Exit codes: 0 clean, 1 findings (a widget error card, a failed `[expect]`, an error-level
 //! flag, a code source that never answered, a diff or a scene with no baseline, a refused
 //! bless), 2 bad arguments or scene file (nothing is run if a file is bad), 3 the output could
@@ -34,7 +38,10 @@ pub mod diff;
 pub mod dump;
 pub mod file;
 pub mod flags;
+pub mod pixel;
+pub mod render;
 pub mod runner;
+pub mod sheet;
 pub mod views;
 
 use std::collections::BTreeMap;
@@ -59,8 +66,10 @@ pub const USAGE: &str = "usage:
                        [--hover KEY] [--content-root DIR] [--wait secs]
   wayfinder scene dump --widget <id | file.toml> [same flags]
   wayfinder scene check <id|glob|set|file>... [--out DIR] [--root DIR] [-q] [--widget <id | file.toml>] [same flags as dump's environment]
-  wayfinder scene diff <id|glob|set|file>... [--no-pixels] [--changed-only] [--baselines DIR] [--out DIR] [--root DIR] [-q]
-  wayfinder scene bless <id|glob|set|file>... --reason \"what changed and why\" [--new-only] [--baselines DIR] [--out DIR] [--root DIR] [-q]
+  wayfinder scene render <id|glob|set|file>... [--dump] [--sheet] [--out DIR] [--root DIR] [-q] [--widget <id | file.toml>] [same flags as dump's environment]
+  wayfinder scene sheet <id|glob|set|file>... [--out FILE.png] [--cols N] [--diff] [--root DIR] [-q] [same flags as dump's environment]
+  wayfinder scene diff <id|glob|set|file>... [--pixels | --no-pixels] [--changed-only] [--baselines DIR] [--out DIR] [--root DIR] [-q]
+  wayfinder scene bless <id|glob|set|file>... --reason \"what changed and why\" [--new-only] [--png] [--baselines DIR] [--out DIR] [--root DIR] [-q]
 exit: 0 clean, 1 findings (a diff, a scene with no baseline, a refused bless), 2 bad arguments or scene, 3 output not written or baselines made with other fonts";
 
 /// `v` as JSON when it is (numbers, booleans, lists), else as text.
@@ -96,6 +105,8 @@ pub enum Invocation {
     List { select: Selection, sets: bool },
     Dump { select: Selection, query: Query, format: Format, out: Option<PathBuf>, quiet: bool, overrides: Overrides },
     Check { select: Selection, out: Option<PathBuf>, quiet: bool, overrides: Overrides },
+    Render { select: Selection, out: Option<PathBuf>, quiet: bool, overrides: Overrides, dump: bool, sheet: bool },
+    Sheet { select: Selection, out: Option<PathBuf>, quiet: bool, overrides: Overrides, cols: Option<usize>, diff: bool },
     Diff { select: Selection, opts: bless::Opts, changed_only: bool },
     Bless { select: Selection, opts: bless::Opts, reason: String, new_only: bool },
 }
@@ -103,22 +114,24 @@ pub enum Invocation {
 /// The command in `args` (what follows `scene`).
 pub fn parse(args: &[String]) -> Result<Invocation, String> {
     let verbs = ["list", "dump", "render", "sheet", "check", "diff", "bless", "selfcheck", "guide"];
-    let verb = args.first().map(String::as_str).ok_or("scene needs a verb: list, dump, check, diff or bless")?;
+    let verb = args.first().map(String::as_str).ok_or("scene needs a verb: list, dump, render, sheet, check, diff or bless")?;
     if !verbs.contains(&verb) {
-        return Err(format!("unknown scene verb `{verb}`{} (this build has list, dump, check, diff and bless)", suggest(verb, &[&verbs])));
+        return Err(format!("unknown scene verb `{verb}`{} (this build has list, dump, render, sheet, check, diff and bless)", suggest(verb, &[&verbs])));
     }
-    if !["list", "dump", "check", "diff", "bless"].contains(&verb) {
-        return Err(format!("`scene {verb}` is not in this build yet; `scene list`, `scene dump`, `scene check`, `scene diff` and `scene bless` are"));
+    if !["list", "dump", "render", "sheet", "check", "diff", "bless"].contains(&verb) {
+        return Err(format!("`scene {verb}` is not in this build yet; `scene list`, `scene dump`, `scene render`, `scene sheet`, `scene check`, `scene diff` and `scene bless` are"));
     }
     let mut select = Selection::default();
     let (mut query, mut format, mut out, mut quiet, mut sets) = (Query::default(), Format::Text, None, false, false);
     let mut o = Overrides::default();
     let (mut baselines, mut reason, mut new_only, mut changed_only) = (None, None::<String>, false, false);
+    let (mut pixels, mut png, mut with_dump, mut with_sheet, mut cols, mut sheet_diff) = (bless::PixelMode::Golden, false, false, false, None::<usize>, false);
+    let mut sheet_out: Option<PathBuf> = None;
     // the verbs that run scenes share --out and -q; dump and check also the options that set the
     // world a scene runs in. diff and bless run a scene as its file says: a baseline is of the
     // scene, not of an experiment
     let runs = verb != "list";
-    let env_ok = matches!(verb, "dump" | "check");
+    let env_ok = matches!(verb, "dump" | "check" | "render" | "sheet");
     let pin = |o: &mut Overrides, k: &str, v: Json| o.pins.push((k.to_string(), v));
     let mut it = args[1..].iter();
     while let Some(a) = it.next() {
@@ -138,7 +151,14 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
                     other => return Err(format!("--format is text or json, not `{other}`")),
                 }
             }
+            "--out" if verb == "sheet" => sheet_out = Some(val()?.into()),
             "--out" if runs => out = Some(val()?.into()),
+            "--dump" if verb == "render" => with_dump = true,
+            "--png" if verb == "render" => {}
+            "--png" if verb == "bless" => png = true,
+            "--sheet" if verb == "render" => with_sheet = true,
+            "--cols" if verb == "sheet" => cols = Some(val()?.parse().ok().filter(|n| *n >= 1).ok_or("--cols is a whole number from 1")?),
+            "--diff" if verb == "sheet" => sheet_diff = true,
             "-q" if runs => quiet = true,
             "--env" if env_ok => {
                 let (k, v) = pair(&val()?, "--env")?;
@@ -167,8 +187,8 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
             "--wait" if env_ok => o.wait = Some(val()?.parse().map_err(|_| "--wait is seconds")?),
             "--baselines" if matches!(verb, "diff" | "bless") => baselines = Some(PathBuf::from(val()?)),
             "--changed-only" if verb == "diff" => changed_only = true,
-            "--no-pixels" if verb == "diff" => {}
-            "--pixels" if verb == "diff" => return Err("--pixels: pixel diffs are not in this build; `scene diff` compares dumps (--no-pixels is what it does)".into()),
+            "--no-pixels" if verb == "diff" => pixels = bless::PixelMode::Off,
+            "--pixels" if verb == "diff" => pixels = bless::PixelMode::All,
             "--reason" if verb == "bless" => reason = Some(val()?),
             "--new-only" if verb == "bless" => new_only = true,
             "--widget" | "--env" | "--now" | "--real" | "--scale" | "--palette" | "--transparent" | "--time" | "--size" | "--tier" | "--param" | "--state" | "--hide" | "--hover" | "--content-root" | "--wait" if matches!(verb, "diff" | "bless") => {
@@ -182,7 +202,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     if select.widget.is_some() && !select.patterns.is_empty() {
         return Err("--widget names one widget; it takes no scene ids".into());
     }
-    let opts = bless::Opts { out: out.clone(), quiet, baselines };
+    let opts = bless::Opts { out: out.clone(), quiet, baselines, pixels, png };
     if verb == "bless" {
         let reason = reason.map(|r| r.trim().to_string()).filter(|r| !r.is_empty()).ok_or("`scene bless` needs --reason \"what changed and why\": a baseline is only replaced on purpose")?;
         if select.patterns.is_empty() {
@@ -194,6 +214,8 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         "list" => Invocation::List { select, sets },
         "diff" => Invocation::Diff { select, opts, changed_only },
         "check" => Invocation::Check { select, out, quiet, overrides: o },
+        "render" => Invocation::Render { select, out, quiet, overrides: o, dump: with_dump, sheet: with_sheet },
+        "sheet" => Invocation::Sheet { select, out: sheet_out, quiet, overrides: o, cols, diff: sheet_diff },
         _ => Invocation::Dump { select, query, format, out, quiet, overrides: o },
     })
 }
@@ -269,7 +291,7 @@ fn adhoc(widget: &str, o: &Overrides) -> Scene {
         tags: vec![],
         file: root.join(format!("{name}.scene.toml")),
         root,
-        target: file::Target { widget: widget_ref, plugin: o.plugin.clone(), size: Size::Default, params: vec![], state: vec![], hide: vec![], items: None, hover: None, hover_at: None },
+        target: file::Target { widget: widget_ref, plugin: o.plugin.clone(), size: Size::Default, params: vec![], state: vec![], hide: vec![], items: None, hover: None, hover_at: None, edit: None },
         pins: vec![],
         expect: file::Expect::default(),
         source_hash: fnv([widget.as_bytes()]),
@@ -367,6 +389,8 @@ struct Totals {
     fonts: String,
     /// A line for the top of the summary (a bless says why), and `reason` in `last.json`.
     reason: Option<String>,
+    /// The adapter that drew pixels (WARP); none for a run that drew nothing.
+    adapter: Option<String>,
 }
 
 impl Totals {
@@ -391,14 +415,14 @@ impl Totals {
         if colour > 0 {
             summary.push_str(&format!("{colour} scene{} changed only in colour{}\n", if colour == 1 { "" } else { "s" }, if collapse_colour && colour > 1 { " (listed in summary.txt)" } else { "" }));
         }
-        summary.push_str(&format!("{} scene{}, {ok} ok, {} need a look. exit {code}. run {run_id} hermetic={} adapter=none fonts={}\n", rows.len(), if rows.len() == 1 { "" } else { "s" }, rows.len() - ok, self.hermetic, if self.fonts.is_empty() { "-" } else { &self.fonts }));
+        summary.push_str(&format!("{} scene{}, {ok} ok, {} need a look. exit {code}. run {run_id} hermetic={} adapter={} fonts={}\n", rows.len(), if rows.len() == 1 { "" } else { "s" }, rows.len() - ok, self.hermetic, self.adapter.as_deref().unwrap_or("none"), if self.fonts.is_empty() { "-" } else { &self.fonts }));
         let mut last = json!({
             "format": 1,
             "engine": env!("CARGO_PKG_VERSION"),
             "exit": code,
             "run": run_id,
             "hermetic": self.hermetic,
-            "adapter": Json::Null,
+            "adapter": self.adapter.clone().map_or(Json::Null, Json::String),
             "fonts": self.fonts,
             "scenes": rows.iter().map(|r| json!({ "id": r.id, "verdict": r.verdict, "detail": r.detail, "scene_hash": r.scene_hash, "dump_hash": r.dump_hash })).collect::<Vec<_>>(),
         });
@@ -467,10 +491,24 @@ fn write(path: &Path, text: &str) -> Result<(), String> {
 
 /// Runs the `scene` command and returns the process exit code.
 pub fn run(inv: Invocation) -> i32 {
+    // a layout recurses as deep as a widget nests, and the verbs that draw run scenes on this
+    // thread: give it room, as the workers have
+    match std::thread::Builder::new().stack_size(16 << 20).spawn(move || run_here(inv)) {
+        Ok(h) => h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)),
+        Err(e) => {
+            eprintln!("wayfinder: cannot start the scene thread: {e}");
+            3
+        }
+    }
+}
+
+fn run_here(inv: Invocation) -> i32 {
     match inv {
         Invocation::List { select, sets } => list(&select, sets),
         Invocation::Dump { select, query, format, out, quiet, overrides } => dump_cmd(&select, &query, format, out, quiet, &overrides),
         Invocation::Check { select, out, quiet, overrides } => check_cmd(&select, out, quiet, &overrides),
+        Invocation::Render { select, out, quiet, overrides, dump, sheet } => render::render_cmd(&select, out, quiet, &overrides, dump, sheet),
+        Invocation::Sheet { select, out, quiet, overrides, cols, diff } => render::sheet_cmd(&select, out, quiet, &overrides, cols, diff),
         Invocation::Diff { select, opts, changed_only } => bless::diff_cmd(&select, &opts, changed_only),
         Invocation::Bless { select, opts, reason, new_only } => bless::bless_cmd(&select, &opts, &reason, new_only),
     }
@@ -570,7 +608,7 @@ fn dump_cmd(select: &Selection, query: &Query, format: Format, out: Option<PathB
         rows.push(row);
     }
     let code = exit_of(bad, infra, findings);
-    let totals = Totals { rows, dump_hashes, hermetic, fonts, reason: None };
+    let totals = Totals { rows, dump_hashes, hermetic, fonts, reason: None, adapter: None };
     let (summary, last) = totals.summaries(code, None, false);
     let dir = out.clone().unwrap_or_else(|| first_root.join(".look"));
     for (name, text) in [("summary.txt", summary.clone()), ("last.json", last)] {
@@ -650,6 +688,12 @@ impl Report {
 
 /// Runs `scenes` on a few threads (each scene builds its own world), results in order.
 fn run_all(scenes: &[Scene], o: &Overrides) -> Vec<Result<Outcome, Failure>> {
+    run_all_with(scenes, o, &|_| false, &mut runner::Device::new())
+}
+
+/// `run_all`, and the scenes `px` picks are also drawn, one after the other on this thread
+/// (WARP spreads one draw over the cores itself) on `device`.
+pub(crate) fn run_all_with(scenes: &[Scene], o: &Overrides, px: &(dyn Fn(&Scene) -> bool + Sync), device: &mut runner::Device) -> Vec<Result<Outcome, Failure>> {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let slots: Vec<Mutex<Option<Result<Outcome, Failure>>>> = scenes.iter().map(|_| Mutex::new(None)).collect();
@@ -662,13 +706,21 @@ fn run_all(scenes: &[Scene], o: &Overrides) -> Vec<Result<Outcome, Failure>> {
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(s) = scenes.get(i) else { break };
-                    *slots[i].lock().unwrap() = Some(runner::run(s, o));
+                    if !px(s) {
+                        *slots[i].lock().unwrap() = Some(runner::run(s, o));
+                    }
                 }
             };
             std::thread::Builder::new().stack_size(8 << 20).spawn_scoped(scope, work).expect("a worker thread starts");
         }
     });
-    slots.into_iter().map(|m| m.into_inner().unwrap().expect("every scene ran")).collect()
+    let mut out: Vec<Option<Result<Outcome, Failure>>> = slots.into_iter().map(|m| m.into_inner().unwrap()).collect();
+    for (i, s) in scenes.iter().enumerate() {
+        if px(s) {
+            out[i] = Some(runner::run_with(s, o, Some(device)));
+        }
+    }
+    out.into_iter().map(|r| r.expect("every scene ran")).collect()
 }
 
 /// Runs the scenes `select` names and judges each by its flags, `[expect]` and the widget's own
@@ -750,7 +802,7 @@ fn check_cmd(select: &Selection, out: Option<PathBuf>, quiet: bool, o: &Override
     let code = report.exit(infra);
     let rows = report.rows.iter().map(|r| Row { id: r.id.clone(), verdict: r.verdict, detail: r.detail.clone(), scene_hash: r.scene_hash.clone(), dump_hash: r.dump_hash.clone() }).collect();
     let dump_hashes = report.rows.iter().filter_map(|r| r.dump_hash.clone()).collect();
-    let totals = Totals { rows, dump_hashes, hermetic: report.hermetic, fonts: report.fonts.clone(), reason: None };
+    let totals = Totals { rows, dump_hashes, hermetic: report.hermetic, fonts: report.fonts.clone(), reason: None, adapter: None };
     // the file lists every scene; the console only the ones that need a look in a long set
     let (full, last) = totals.summaries(code, None, false);
     let (console, _) = totals.summaries(code, Some(20), false);
@@ -791,7 +843,17 @@ mod tests {
         assert_eq!((overrides.pins.len(), overrides.size, overrides.params.len(), overrides.hover.as_deref()), (2, Some(Size::Card(300.0, 200.0)), 1, Some("w/c/b")));
         assert!(matches!(parse(&args(&["list", "--sets", "widgets"])), Ok(Invocation::List { sets: true, .. })));
         assert!(matches!(parse(&args(&["dump", "--widget", "clock"])), Ok(Invocation::Dump { select: Selection { widget: Some(_), .. }, .. })));
-        for bad in [&["render", "x"][..], &["sheet"], &[], &["dmp"], &["dump", "x", "--gpu", "software"], &["dump", "x", "--allow-hardware"], &["dump", "x", "--view", "tree"], &["dump", "x", "--format", "xml"], &["dump", "x", "--depth", "deep"], &["dump", "x", "--nope"], &["dump", "x", "--find"], &["dump", "x", "--widget", "clock"], &["list", "--view", "full"]] {
+        let Ok(Invocation::Render { select, out, quiet, overrides, dump, sheet }) = parse(&args(&["render", "golden", "--dump", "--sheet", "--out", "o", "-q", "--env", "sys.cpu=1", "--size", "300x200"])) else { panic!() };
+        assert_eq!((select.patterns, out, quiet, overrides.pins.len(), dump, sheet), (vec!["golden".to_string()], Some(PathBuf::from("o")), true, 1, true, true));
+        let Ok(Invocation::Sheet { select, out, cols, diff, .. }) = parse(&args(&["sheet", "golden", "--out", "s.png", "--cols", "3", "--diff"])) else { panic!() };
+        assert_eq!((select.patterns, out, cols, diff), (vec!["golden".to_string()], Some(PathBuf::from("s.png")), Some(3), true));
+        let Ok(Invocation::Diff { opts, .. }) = parse(&args(&["diff", "golden", "--pixels"])) else { panic!() };
+        assert_eq!(opts.pixels, bless::PixelMode::All);
+        let Ok(Invocation::Diff { opts, .. }) = parse(&args(&["diff", "golden", "--no-pixels"])) else { panic!() };
+        assert_eq!(opts.pixels, bless::PixelMode::Off);
+        let Ok(Invocation::Bless { opts, .. }) = parse(&args(&["bless", "golden", "--reason", "r", "--png"])) else { panic!() };
+        assert!(opts.png);
+        for bad in [&["render", "x", "--gpu", "software"][..], &["render", "x", "--allow-hardware"], &["sheet", "x", "--dump"], &["sheet", "x", "--cols", "0"], &["diff", "x", "--png"], &[],&["dmp"], &["dump", "x", "--gpu", "software"], &["dump", "x", "--allow-hardware"], &["dump", "x", "--view", "tree"], &["dump", "x", "--format", "xml"], &["dump", "x", "--depth", "deep"], &["dump", "x", "--nope"], &["dump", "x", "--find"], &["dump", "x", "--widget", "clock"], &["list", "--view", "full"]] {
             assert!(parse(&args(bad)).is_err(), "{bad:?}");
         }
         let Ok(Invocation::Check { select, out, quiet, overrides }) = parse(&args(&["check", "fits", "--out", "o", "-q", "--env", "sys.cpu=1", "--root", "r", "--size", "300x200"])) else { panic!() };
@@ -806,7 +868,7 @@ mod tests {
     fn outcome(flags: &[(&str, &str)], warnings: &[&str]) -> Outcome {
         let mut dump = crate::scene::dump::fixtures::tiny_dump(&["Hello"]);
         dump.flags = flags.iter().map(|(f, k)| dump::FlagRow { flag: (*f).into(), key: (*k).into(), detail: "d".into() }).collect();
-        Outcome { dump, sidecar: Json::Null, unmet: vec![], error: None, notes: vec![], warnings: warnings.iter().map(|w| (*w).to_string()).collect() }
+        Outcome { dump, sidecar: Json::Null, unmet: vec![], error: None, notes: vec![], warnings: warnings.iter().map(|w| (*w).to_string()).collect(), pixels: runner::Pixels::Off }
     }
 
     fn scene_with(flags: FlagLevel, allow: &[&str]) -> Scene {

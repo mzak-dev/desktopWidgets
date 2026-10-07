@@ -7,20 +7,58 @@
 //! other fonts are not compared at all (`FONTS`, exit 3): a dump is exact on the machine and
 //! font set that made it, and a diff across font sets would be false geometry changes.
 //!
+//! The pixel tier (`pixel`) joins the dump tier for the scenes tagged `golden`, whose renders
+//! are kept as PNG baselines beside the dumps (`--pixels` asks for it of every scene, which
+//! then has a baseline only if one exists; `--no-pixels` leaves it out and needs no device).
+//! Pixels are drawn on the software adapter only (WARP). `diff` writes `<id>.new.png`,
+//! `<id>.diff.png` and `<id>.cmp.png` (baseline | new | diff) for a scene whose pixels changed.
+//!
 //! `bless` needs `--reason`, takes no environment overrides and has no environment variable
 //! that updates baselines. It refuses (exit 1, nothing written) when any selected run is not
 //! hermetic, shows an error card, fails an `[expect]` or carries an error-level layout flag:
 //! fix the scene or loosen its `[expect]` in the same change, visibly. `--new-only` writes only
-//! scenes that have no baseline yet.
+//! scenes that have no baseline yet. A golden scene (or any with `--png`) also gets its PNG
+//! baseline and the record of the render written, when there is none or the pixels changed.
 
 use std::path::{Path, PathBuf};
+
+use image::RgbaImage;
 
 use super::baseline::{Against, Store, against};
 use super::diff::Diff;
 use super::file::Scene;
-use super::runner::Overrides;
-use super::{Row, Selection, Totals, exit_of, find, judge, matches, run_all, write};
+use super::pixel::{self, Fingerprint, Pair, Tolerances};
+use super::runner::{Device, Outcome, Overrides, Pixels};
+use super::sheet::{self, Tile, Tone};
+use super::{Row, Selection, Totals, exit_of, find, judge, matches, run_all_with, write};
 use crate::render::{Failure, env::fnv};
+
+/// Whether a scene's pixels are part of a command.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PixelMode {
+    /// The scenes tagged `golden` (the default).
+    #[default]
+    Golden,
+    /// Every scene (`--pixels`).
+    All,
+    /// None: dumps only, no device (`--no-pixels`).
+    Off,
+}
+
+/// A scene whose render is kept as a PNG baseline.
+pub fn is_golden(s: &Scene) -> bool {
+    s.tags.iter().any(|t| t == "golden")
+}
+
+impl PixelMode {
+    pub fn wants(self, s: &Scene) -> bool {
+        match self {
+            PixelMode::Golden => is_golden(s),
+            PixelMode::All => true,
+            PixelMode::Off => false,
+        }
+    }
+}
 
 /// What `diff` and `bless` share on the command line.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -30,6 +68,10 @@ pub struct Opts {
     pub quiet: bool,
     /// The baselines folder instead of `<scene root>/baselines`.
     pub baselines: Option<PathBuf>,
+    /// `diff`: which scenes' pixels are compared.
+    pub pixels: PixelMode,
+    /// `bless`: also keep the PNG of scenes that are not golden.
+    pub png: bool,
 }
 
 /// Lines of one scene's diff the console shows; the whole diff is in `<id>.diff.txt`.
@@ -39,26 +81,26 @@ fn look_of(s: &Scene, opts: &Opts) -> PathBuf {
     opts.out.clone().unwrap_or_else(|| s.root.join(".look"))
 }
 
-fn headline(id: &str, verdict: &str, d: &Diff) -> String {
-    format!("{id}  {verdict}  {}", d.counts.summary())
+fn headline(id: &str, verdict: &str, summary: &str) -> String {
+    format!("{id}  {verdict}  {summary}")
 }
 
 /// The diff as the console prints it: capped.
-fn console_block(head: &str, d: &Diff, file: &Path) -> String {
+fn console_block(head: &str, lines: &[String], file: &Path) -> String {
     let mut out = format!("{head}\n");
-    for l in d.lines.iter().take(SHOWN) {
+    for l in lines.iter().take(SHOWN) {
         out.push_str(l);
         out.push('\n');
     }
-    if d.lines.len() > SHOWN {
-        out.push_str(&format!("  ... {} more lines in {}\n", d.lines.len() - SHOWN, file.display()));
+    if lines.len() > SHOWN {
+        out.push_str(&format!("  ... {} more lines in {}\n", lines.len() - SHOWN, file.display()));
     }
     out
 }
 
-fn diff_text(head: &str, d: &Diff) -> String {
+fn diff_text(head: &str, lines: &[String]) -> String {
     let mut out = format!("{head}\n");
-    d.lines.iter().for_each(|l| {
+    lines.iter().for_each(|l| {
         out.push_str(l);
         out.push('\n');
     });
@@ -70,7 +112,119 @@ fn orphans(store: &Store, fonts: &str, select: &Selection, found: &[Scene]) -> V
     store.ids(fonts).into_iter().filter(|id| !found.iter().any(|s| &s.id == id)).filter(|id| select.patterns.is_empty() || select.patterns.iter().any(|p| matches(p, id))).collect()
 }
 
-/// `scene diff`: each scene's dump against its baseline.
+/// `wayfinder-render.toml` of each scene root met, read once.
+#[derive(Default)]
+pub(super) struct Tol {
+    by_root: Vec<(PathBuf, Tolerances)>,
+}
+
+impl Tol {
+    pub(super) fn of(&mut self, root: &Path) -> Result<&Tolerances, String> {
+        if let Some(i) = self.by_root.iter().position(|(r, _)| r == root) {
+            return Ok(&self.by_root[i].1);
+        }
+        self.by_root.push((root.to_path_buf(), Tolerances::load(root)?));
+        Ok(&self.by_root.last().expect("pushed").1)
+    }
+}
+
+/// How a scene's render stands against its PNG baseline.
+pub(super) struct PixelCheck {
+    pub verdict: &'static str,
+    /// Counts as a finding (exit 1).
+    pub finding: bool,
+    pub detail: String,
+    /// The report: count, fingerprint, regions.
+    pub lines: Vec<String>,
+    /// `.new.png`, `.diff.png` and `.cmp.png`, by suffix.
+    pub images: Vec<(&'static str, RgbaImage)>,
+    /// The baseline picture, when the pixels were compared.
+    pub base: Option<RgbaImage>,
+}
+
+impl PixelCheck {
+    fn ok(detail: impl Into<String>) -> PixelCheck {
+        PixelCheck { verdict: "ok", finding: false, detail: detail.into(), lines: vec![], images: vec![], base: None }
+    }
+
+    /// Nothing was compared.
+    pub(super) fn none() -> PixelCheck {
+        PixelCheck::ok("")
+    }
+}
+
+/// Compares a drawn scene with its PNG baseline under the limits of `wayfinder-render.toml`.
+/// A golden scene with no baseline is `NEW` (a finding); another scene with none is fine, and
+/// its render is kept as `.new.png` so it can be looked at.
+pub(super) fn pixel_check(s: &Scene, res: &Outcome, store: &Store, fonts: &str, tol: &Tolerances, device: &mut Device) -> PixelCheck {
+    let Pixels::Drawn(drawn) = &res.pixels else { return PixelCheck::ok("") };
+    let new = &drawn.image;
+    let (base_img, record) = match store.read_png(fonts, &s.id) {
+        Ok(Some(b)) => b,
+        Ok(None) => {
+            let mut c = PixelCheck::ok("");
+            c.images.push(("new.png", new.clone()));
+            if is_golden(s) {
+                (c.verdict, c.finding) = ("NEW", true);
+                c.detail = format!("no PNG baseline (wayfinder scene bless {} --reason \"...\")", s.id);
+            }
+            return c;
+        }
+        Err(e) => return PixelCheck { verdict: "BASELINE", finding: true, detail: e, ..PixelCheck::ok("") },
+    };
+    let limits = tol.for_scene(&s.id);
+    let c = match pixel::compare(&base_img, new, limits.threshold) {
+        Pair::Size { base, new: n } => {
+            let line = format!("  pixels: the size changed, {}x{} -> {}x{}: no pixel compare", base.0, base.1, n.0, n.1);
+            return PixelCheck { verdict: "SIZE", finding: true, detail: format!("SIZE {}x{} -> {}x{}", base.0, base.1, n.0, n.1), lines: vec![line], images: vec![("new.png", new.clone())], base: Some(base_img) };
+        }
+        Pair::Same(c) => c,
+    };
+    if c.failing == 0 {
+        return PixelCheck::ok("");
+    }
+    let (new_fp, base_fp) = (Fingerprint::of(&res.sidecar), record.as_ref().and_then(Fingerprint::of));
+    let (same, fp_line) = match (&new_fp, &base_fp) {
+        (Some(n), Some(b)) if n.differs(b).is_empty() => (true, format!("same ({})", n.describe())),
+        (Some(n), Some(b)) => (false, format!("differs in {} (now {}; baseline {})", n.differs(b).join(", "), n.describe(), b.describe())),
+        _ => (false, "unknown: the baseline has no record of its render".to_string()),
+    };
+    let budget = limits.budget(same, c.total);
+    let (regions, more) = pixel::regions(&c);
+    let mut lines = pixel::report(&c, &regions, more, &res.dump.nodes, res.dump.header.scale, &fp_line, budget);
+    if c.failing <= budget {
+        return PixelCheck { verdict: "ok", finding: false, detail: format!("{} px differ, within the budget of {budget}", c.failing), lines, images: vec![], base: None };
+    }
+    if !same {
+        lines.insert(2, format!("  the looser budget of {} % of the pixels applies because the fingerprint differs", limits.failed_percent));
+    }
+    let diff = pixel::diff_image(new, &c, &regions);
+    let mut images = vec![("new.png", new.clone()), ("diff.png", diff.clone())];
+    let count = regions.len() + more;
+    let head = format!("{}   baseline | new | diff", s.id);
+    let tiles = vec![
+        Tile { title: "baseline".into(), badge: format!("{}x{}", base_img.width(), base_img.height()), tone: Tone::Ok, image: base_img.clone() },
+        Tile { title: "new".into(), badge: format!("{} px differ ({:.2} %)", c.failing, c.percent()), tone: Tone::Bad, image: new.clone() },
+        Tile { title: "diff".into(), badge: format!("{count} region{}", if count == 1 { "" } else { "s" }), tone: Tone::Note, image: diff },
+    ];
+    match device.with_gpu(|gpu| sheet::compose(gpu, &tiles, &head, Some(3), 0.0)) {
+        Ok(mut pages) if !pages.is_empty() => images.push(("cmp.png", pages.remove(0).image)),
+        Ok(_) => {}
+        Err(e) => eprintln!("wayfinder: {}: no cmp.png: {e}", s.id),
+    }
+    PixelCheck { verdict: "PIXELS", finding: true, detail: format!("{} px differ ({:.2} %), {count} region{}", c.failing, c.percent(), if count == 1 { "" } else { "s" }), lines, images, base: Some(base_img) }
+}
+
+/// A scene `diff` has something to show for.
+struct Shown {
+    verdict: &'static str,
+    head: String,
+    lines: Vec<String>,
+    file: PathBuf,
+}
+
+/// `scene diff`: each scene's dump against its baseline, and the golden scenes' pixels
+/// against theirs.
 pub(super) fn diff_cmd(select: &Selection, opts: &Opts, changed_only: bool) -> i32 {
     let o = Overrides::default();
     let found = find(select, &o);
@@ -79,12 +233,24 @@ pub(super) fn diff_cmd(select: &Selection, opts: &Opts, changed_only: bool) -> i
         eprintln!("wayfinder: nothing was run");
         return 2;
     }
-    let runs = run_all(&found.scenes, &o);
+    let mut tol = Tol::default();
+    for s in &found.scenes {
+        if let Err(e) = tol.of(&s.root) {
+            eprintln!("wayfinder: {e}");
+            eprintln!("wayfinder: nothing was run");
+            return 2;
+        }
+    }
+    let mode = opts.pixels;
+    let mut device = Device::new();
+    let runs = run_all_with(&found.scenes, &o, &|s| mode.wants(s), &mut device);
     let (mut rows, mut dump_hashes) = (Vec::new(), Vec::new());
     let (mut bad, mut infra, mut findings, mut hermetic) = (false, false, false, true);
     let mut fonts = String::new();
-    let mut shown: Vec<(String, &'static str, Diff, PathBuf)> = Vec::new();
+    let mut adapter: Option<String> = None;
+    let mut shown: Vec<Shown> = Vec::new();
     let mut files: Vec<(PathBuf, String)> = Vec::new();
+    let mut images: Vec<(PathBuf, RgbaImage)> = Vec::new();
     let mut stores: Vec<Store> = Vec::new();
     let mut other_fonts: Vec<String> = Vec::new();
     for (s, run) in found.scenes.iter().zip(runs) {
@@ -111,7 +277,8 @@ pub(super) fn diff_cmd(select: &Selection, opts: &Opts, changed_only: bool) -> i
                 let ag = against(&store, &fonts, &s.id, &text);
                 let base = look_of(s, opts).join(&s.id);
                 let with_judged = |what: String| if j.finding { format!("{}; {what}", j.detail) } else { what };
-                let (verdict, detail, finding, keep) = match &ag {
+                let mut dump_lines: Vec<String> = Vec::new();
+                let (mut verdict, mut detail, mut finding, mut keep) = match &ag {
                     Against::Same => (j.verdict, j.detail.clone(), j.finding, j.verdict != "ok"),
                     Against::Changed(d) => {
                         let v = if j.finding {
@@ -121,9 +288,7 @@ pub(super) fn diff_cmd(select: &Selection, opts: &Opts, changed_only: bool) -> i
                         } else {
                             "DUMP"
                         };
-                        let file = PathBuf::from(format!("{}.diff.txt", base.display()));
-                        files.push((file.clone(), diff_text(&headline(&s.id, v, d), d)));
-                        shown.push((s.id.clone(), v, Diff { counts: d.counts.clone(), lines: d.lines.clone() }, file));
+                        dump_lines = d.lines.clone();
                         (v, with_judged(d.counts.summary()), true, true)
                     }
                     Against::New => (if j.finding { j.verdict } else { "NEW" }, with_judged(format!("no baseline (wayfinder scene bless {} --reason \"...\")", s.id)), true, true),
@@ -134,6 +299,50 @@ pub(super) fn diff_cmd(select: &Selection, opts: &Opts, changed_only: bool) -> i
                     }
                     Against::Broken(e) => ("BASELINE", e.clone(), true, true),
                 };
+                // the pixel tier, where there are pixels and baselines made with these fonts
+                let mut pixel_lines: Vec<String> = Vec::new();
+                match &res.pixels {
+                    Pixels::Off => {}
+                    Pixels::Failed(e) => {
+                        eprintln!("wayfinder: {}: no pixels: {e}", s.id);
+                        infra = true;
+                    }
+                    Pixels::Drawn(d) => {
+                        adapter = Some(d.adapter.name.clone());
+                        if !matches!(ag, Against::Fonts(_)) {
+                            let t = tol.of(&s.root).expect("read above").clone();
+                            let px = pixel_check(s, &res, &store, &fonts, &t, &mut device);
+                            for (suffix, img) in px.images {
+                                images.push((PathBuf::from(format!("{}.{suffix}", base.display())), img));
+                            }
+                            pixel_lines = px.lines;
+                            if px.finding {
+                                finding = true;
+                                keep = true;
+                                if verdict == "ok" {
+                                    verdict = px.verdict;
+                                    detail = px.detail;
+                                } else {
+                                    detail = format!("{detail}; pixels: {}", px.detail);
+                                }
+                            } else if !px.detail.is_empty() && verdict == "ok" {
+                                detail = px.detail;
+                            }
+                        }
+                    }
+                }
+                if !dump_lines.is_empty() || !pixel_lines.is_empty() {
+                    let file = PathBuf::from(format!("{}.diff.txt", base.display()));
+                    let summary = match &ag {
+                        Against::Changed(d) => d.counts.summary(),
+                        _ => detail.clone(),
+                    };
+                    let head = headline(&s.id, verdict, &summary);
+                    let mut lines = dump_lines;
+                    lines.extend(pixel_lines);
+                    files.push((file.clone(), diff_text(&head, &lines)));
+                    shown.push(Shown { verdict, head, lines, file });
+                }
                 (row.verdict, row.detail) = (verdict, detail);
                 findings |= finding;
                 if keep {
@@ -160,17 +369,17 @@ pub(super) fn diff_cmd(select: &Selection, opts: &Opts, changed_only: bool) -> i
             eprintln!("note: baseline `{id}` in {} has no scene (renamed or removed?)", store.fonts_dir(&fonts).display());
         }
     }
-    let colour = shown.iter().filter(|(_, v, ..)| *v == "COLOUR").count();
+    let colour = shown.iter().filter(|s| s.verdict == "COLOUR").count();
     if !opts.quiet {
-        for (id, verdict, d, file) in &shown {
-            if colour > 1 && *verdict == "COLOUR" {
+        for s in &shown {
+            if colour > 1 && s.verdict == "COLOUR" {
                 continue;
             }
-            print!("{}", console_block(&headline(id, verdict, d), d, file));
+            print!("{}", console_block(&s.head, &s.lines, &s.file));
         }
     }
     let code = exit_of(bad, infra, findings);
-    let totals = Totals { rows, dump_hashes, hermetic, fonts, reason: None };
+    let totals = Totals { rows, dump_hashes, hermetic, fonts, reason: None, adapter };
     let (full, last) = totals.summaries(code, None, false);
     let (console, _) = totals.summaries(code, Some(if changed_only { 0 } else { 20 }), true);
     let dir = opts.out.clone().unwrap_or_else(|| found.scenes.first().map(|s| s.root.join(".look")).unwrap_or_default());
@@ -183,8 +392,22 @@ pub(super) fn diff_cmd(select: &Selection, opts: &Opts, changed_only: bool) -> i
             wrote = false;
         }
     }
+    for (path, img) in images {
+        if let Err(e) = write_png(&path, &img) {
+            eprintln!("wayfinder: cannot write the output: {e}");
+            wrote = false;
+        }
+    }
     print!("{}{console}", if opts.quiet || shown.is_empty() { "" } else { "\n" });
     if wrote { code } else { exit_of(bad, true, findings) }
+}
+
+/// Saves `img` as a PNG, making its folder.
+pub(super) fn write_png(path: &Path, img: &RgbaImage) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    img.save(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// What a bless will do with one scene.
@@ -197,6 +420,14 @@ enum Do {
     Keep,
 }
 
+/// The PNG baseline a bless will write, and why.
+struct PngPlan {
+    image: RgbaImage,
+    record: serde_json::Value,
+    /// "new", or "N px changed".
+    what: String,
+}
+
 struct Planned {
     id: String,
     store: Store,
@@ -204,6 +435,7 @@ struct Planned {
     faces: u64,
     text: String,
     what: Do,
+    png: Option<PngPlan>,
 }
 
 /// `scene bless`: re-run, refuse anything unsafe, write the baselines.
@@ -215,11 +447,22 @@ pub(super) fn bless_cmd(select: &Selection, opts: &Opts, reason: &str, new_only:
         eprintln!("wayfinder: nothing was run");
         return 2;
     }
+    let mut tol = Tol::default();
+    for s in &found.scenes {
+        if let Err(e) = tol.of(&s.root) {
+            eprintln!("wayfinder: {e}");
+            eprintln!("wayfinder: nothing was run");
+            return 2;
+        }
+    }
     let reason = reason.replace(['\r', '\n'], " ");
-    let runs = run_all(&found.scenes, &o);
+    let png = opts.png;
+    let mut device = Device::new();
+    let runs = run_all_with(&found.scenes, &o, &|s| is_golden(s) || png, &mut device);
     let (mut planned, mut refused): (Vec<Planned>, Vec<(String, String)>) = (Vec::new(), Vec::new());
-    let (mut bad, mut hermetic) = (false, true);
+    let (mut bad, mut hermetic, mut no_device) = (false, true, false);
     let mut fonts = String::new();
+    let mut adapter: Option<String> = None;
     let mut rows: Vec<Row> = Vec::new();
     let mut dump_hashes = Vec::new();
     for (s, run) in found.scenes.iter().zip(runs) {
@@ -259,7 +502,31 @@ pub(super) fn bless_cmd(select: &Selection, opts: &Opts, reason: &str, new_only:
                         Against::New | Against::Fonts(_) => Do::New,
                     };
                     let faces = res.sidecar["fonts"]["faces"].as_u64().unwrap_or(0);
-                    planned.push(Planned { id: s.id.clone(), store, fonts: fonts.clone(), faces, text, what });
+                    let mut png_plan = None;
+                    match &res.pixels {
+                        Pixels::Off => {}
+                        Pixels::Failed(e) => {
+                            eprintln!("wayfinder: {}: no pixels: {e}", s.id);
+                            no_device = true;
+                        }
+                        Pixels::Drawn(d) => {
+                            adapter = Some(d.adapter.name.clone());
+                            let limits = tol.of(&s.root).expect("read above").for_scene(&s.id);
+                            let what = match store.read_png(&fonts, &s.id) {
+                                Ok(None) => Some("new".to_string()),
+                                Ok(Some(_)) if new_only => None,
+                                Ok(Some((b, _))) => match pixel::compare(&b, &d.image, limits.threshold) {
+                                    Pair::Size { .. } => Some("size changed".to_string()),
+                                    Pair::Same(c) if c.failing == 0 && b == d.image => None,
+                                    Pair::Same(c) if c.failing == 0 => Some("changed below the threshold".to_string()),
+                                    Pair::Same(c) => Some(format!("{} px changed", c.failing)),
+                                },
+                                Err(_) => Some("replaced an unreadable baseline".to_string()),
+                            };
+                            png_plan = what.map(|what| PngPlan { image: d.image.clone(), record: res.sidecar.clone(), what });
+                        }
+                    }
+                    planned.push(Planned { id: s.id.clone(), store, fonts: fonts.clone(), faces, text, what, png: png_plan });
                 }
             }
         }
@@ -268,6 +535,10 @@ pub(super) fn bless_cmd(select: &Selection, opts: &Opts, reason: &str, new_only:
     if bad {
         eprintln!("wayfinder: nothing was blessed");
         return 2;
+    }
+    if no_device {
+        eprintln!("wayfinder: nothing was blessed: the software adapter is needed to render golden scenes (see the message above)");
+        return 3;
     }
     let dir = opts.out.clone().unwrap_or_else(|| found.scenes.first().map(|s| s.root.join(".look")).unwrap_or_default());
     if !refused.is_empty() {
@@ -278,7 +549,7 @@ pub(super) fn bless_cmd(select: &Selection, opts: &Opts, reason: &str, new_only:
         for r in rows.iter_mut().filter(|r| r.verdict == "ok") {
             r.detail = "not written: another scene was refused".into();
         }
-        let totals = Totals { rows, dump_hashes, hermetic, fonts, reason: Some(reason) };
+        let totals = Totals { rows, dump_hashes, hermetic, fonts, reason: Some(reason), adapter };
         let (summary, last) = totals.summaries(1, None, false);
         for (name, text) in [("summary.txt", summary), ("last.json", last)] {
             if let Err(e) = write(&dir.join(name), &text) {
@@ -288,11 +559,11 @@ pub(super) fn bless_cmd(select: &Selection, opts: &Opts, reason: &str, new_only:
         }
         return 1;
     }
-    let (mut new, mut changed, mut same, mut kept) = (0, 0, 0, 0);
+    let (mut new, mut changed, mut same, mut kept, mut pngs) = (0, 0, 0, 0, 0);
     let mut infra = false;
     let mut report = String::new();
     for p in &planned {
-        let (verdict, detail, log) = match &p.what {
+        let (verdict, mut detail, log) = match &p.what {
             Do::Same => {
                 same += 1;
                 ("ok", "unchanged".to_string(), None)
@@ -309,7 +580,7 @@ pub(super) fn bless_cmd(select: &Selection, opts: &Opts, reason: &str, new_only:
                 changed += 1;
                 let sum = if d.is_empty() { "replaced an unreadable baseline".to_string() } else { d.counts.summary() };
                 if !d.is_empty() {
-                    report.push_str(&console_block(&headline(&p.id, "BLESSED", d), d, &p.store.path(&p.fonts, &p.id)));
+                    report.push_str(&console_block(&headline(&p.id, "BLESSED", &d.counts.summary()), &d.lines, &p.store.path(&p.fonts, &p.id)));
                 }
                 ("ok", format!("blessed, {sum}"), Some(sum))
             }
@@ -321,14 +592,24 @@ pub(super) fn bless_cmd(select: &Selection, opts: &Opts, reason: &str, new_only:
                 infra = true;
             }
         }
+        if let Some(png) = &p.png {
+            pngs += 1;
+            let done = p.store.write_png(&p.fonts, &p.id, &png.image, &png.record).and_then(|()| p.store.log(&p.fonts, &format!("{}\t{reason}\tpng {}", p.id, png.what)));
+            if let Err(e) = done {
+                eprintln!("wayfinder: cannot write the PNG baseline: {e}");
+                infra = true;
+            }
+            report.push_str(&format!("{}  PNG  {}\n", p.id, png.what));
+            detail = format!("{detail}; png {}", png.what);
+        }
         if let Some(r) = rows.iter_mut().find(|r| r.id == p.id) {
             (r.verdict, r.detail) = (verdict, detail);
         }
     }
     let code = if infra { 3 } else { 0 };
     let store_dir = planned.first().map(|p| p.store.fonts_dir(&p.fonts)).unwrap_or_default();
-    let line = format!("blessed {} of {} scenes ({new} new, {changed} changed), {same} unchanged, {kept} kept. fonts {fonts}, baselines in {}. reason: {reason}", new + changed, planned.len(), store_dir.display());
-    let totals = Totals { rows, dump_hashes, hermetic, fonts, reason: Some(reason) };
+    let line = format!("blessed {} of {} scenes ({new} new, {changed} changed), {same} unchanged, {kept} kept; {pngs} PNG baseline{} written. fonts {fonts}, baselines in {}. reason: {reason}", new + changed, planned.len(), if pngs == 1 { "" } else { "s" }, store_dir.display());
+    let totals = Totals { rows, dump_hashes, hermetic, fonts, reason: Some(reason), adapter };
     let (summary, last) = totals.summaries(code, None, false);
     for (name, text) in [("summary.txt", summary), ("last.json", last)] {
         if let Err(e) = write(&dir.join(name), &text) {

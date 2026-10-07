@@ -11,7 +11,13 @@
 //!     baseline.json                        format, fonts, face count, engine version
 //!     bless.log                            one line per bless: scene, reason, what changed
 //!     <scene id>.dump.txt                  the full dump text, as `scene dump --view full` writes it
+//!     <scene id>.png                       golden scenes only: the render, over the backdrop
+//!     <scene id>.env.json                  golden scenes only: the record of the render (the
+//!                                          fingerprint a later render is compared under)
 //! ```
+//!
+//! PNG baselines are as per machine as the dumps (the glyphs are the machine's, and WARP ships
+//! with Windows), and untracked like them.
 //!
 //! A run looks only in the folder of its own font hash. A scene that has a baseline only under
 //! other hashes is not diffed at all (`Found::Elsewhere`): comparing across font sets would
@@ -122,6 +128,51 @@ impl Store {
         out
     }
 
+    pub fn png_path(&self, fonts: &str, id: &str) -> PathBuf {
+        self.fonts_dir(fonts).join(format!("{id}.png"))
+    }
+
+    /// The PNG baseline of scene `id` and the record it was made with, for this font set.
+    pub fn read_png(&self, fonts: &str, id: &str) -> Result<Option<(image::RgbaImage, Option<serde_json::Value>)>, String> {
+        let path = self.png_path(fonts, id);
+        if !path.is_file() {
+            return Ok(None);
+        }
+        let img = image::open(&path).map_err(|e| format!("{}: {e}", path.display()))?.to_rgba8();
+        let record = std::fs::read_to_string(self.fonts_dir(fonts).join(format!("{id}.env.json"))).ok().and_then(|t| serde_json::from_str(&t).ok());
+        Ok(Some((img, record)))
+    }
+
+    /// Writes the PNG baseline of a scene and the record of the render it came from.
+    pub fn write_png(&self, fonts: &str, id: &str, img: &image::RgbaImage, record: &serde_json::Value) -> Result<(), String> {
+        let path = self.png_path(fonts, id);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        img.save(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let rec = self.fonts_dir(fonts).join(format!("{id}.env.json"));
+        std::fs::write(&rec, serde_json::to_string_pretty(record).unwrap_or_default() + "\n").map_err(|e| format!("{}: {e}", rec.display()))
+    }
+
+    /// How many scenes have a PNG baseline under this font set.
+    pub fn png_count(&self, fonts: &str) -> usize {
+        let base = self.fonts_dir(fonts);
+        let mut n = 0;
+        let mut todo = vec![base];
+        while let Some(d) = todo.pop() {
+            let Ok(rd) = std::fs::read_dir(&d) else { continue };
+            for e in rd.filter_map(Result::ok) {
+                let p = e.path();
+                if p.is_dir() {
+                    todo.push(p);
+                } else if p.extension().is_some_and(|x| x == "png") {
+                    n += 1;
+                }
+            }
+        }
+        n
+    }
+
     /// Writes a baseline and records the font set it belongs to.
     pub fn write(&self, fonts: &str, faces: u64, id: &str, text: &str) -> Result<(), String> {
         let path = self.path(fonts, id);
@@ -216,6 +267,21 @@ mod tests {
         std::fs::create_dir_all(root.join("baselines/system-cccc3333")).unwrap();
         std::fs::write(root.join("baselines/system-cccc3333/x.dump.txt"), dump_with("system:dddd4444").replace('\n', "\r\n")).unwrap();
         assert_eq!(store.read("system:cccc3333", "x"), Found::Elsewhere(vec!["system:dddd4444".into()]));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_png_baseline_is_filed_beside_its_dump_with_the_record_of_its_render() {
+        let root = temp("png");
+        let store = Store::new(&root, None);
+        assert!(store.read_png("system:aaaa1111", "golden/clock").unwrap().is_none());
+        let img = image::RgbaImage::from_pixel(3, 2, image::Rgba([1, 2, 3, 255]));
+        store.write_png("system:aaaa1111", "golden/clock", &img, &serde_json::json!({ "format": 1 })).unwrap();
+        let (back, record) = store.read_png("system:aaaa1111", "golden/clock").unwrap().unwrap();
+        assert_eq!((back, record), (img, Some(serde_json::json!({ "format": 1 }))));
+        assert!(root.join("baselines/system-aaaa1111/golden/clock.png").is_file());
+        assert_eq!((store.png_count("system:aaaa1111"), store.png_count("system:bbbb2222")), (1, 0));
+        assert!(store.read_png("system:bbbb2222", "golden/clock").unwrap().is_none(), "another font set has none of its own");
         let _ = std::fs::remove_dir_all(root);
     }
 
