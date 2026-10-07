@@ -21,7 +21,8 @@ const LAYERS: &[(&str, u8)] = &[
     ("content", 8),
     ("plugins", 9),
     ("cli", 10), ("render", 10), ("scene", 10), ("settings", 10),
-    ("app", 11),
+    ("menu", 11),
+    ("app", 12),
 ];
 
 type Edges = BTreeMap<(String, String), Vec<String>>;

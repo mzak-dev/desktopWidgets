@@ -23,7 +23,6 @@ use std::time::{Duration, Instant};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 use global_hotkey::{GlobalHotKeyEvent, GlobalHotKeyManager, HotKeyState};
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{TrayIcon, TrayIconBuilder, TrayIconEvent};
 use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition};
@@ -46,6 +45,7 @@ use crate::draw::DrawList;
 use crate::edit::{self, Handle, Rect, Snap};
 use crate::gfx::{Gpu, Power, RenderError, Target};
 use crate::icons::ImageStore;
+use crate::menu::MenuWin;
 use crate::platform::win32::{self, ZMode};
 use crate::native::Prompt;
 use crate::plugins::{self, Plugin, PluginRow, PluginStore};
@@ -71,6 +71,8 @@ pub enum UserEvent {
     Menu(String),
     Hotkey,
     TrayClick,
+    /// A right-click on the tray icon, at this physical screen position.
+    TrayMenu(PhysicalPosition<f64>),
     FilesChanged,
     /// A folder a Data Source watches changed.
     WatchedChanged(Vec<PathBuf>),
@@ -254,6 +256,7 @@ pub struct App {
     images: ImageStore,
     wins: Vec<Instance>,
     settings: Option<SettingsWin>,
+    menu: Option<MenuWin>,
     edit: bool,
     /// The Instance whose Edit Mode remove button was clicked once and now asks "Remove?".
     remove_armed: Option<String>,
@@ -354,6 +357,7 @@ impl App {
             mods: ModifiersState::empty(),
             monitors: Vec::new(),
             tray: None,
+            menu: None,
             _hotkeys: None,
             watchers: Vec::new(),
             watched_paths: Vec::new(),
@@ -933,16 +937,14 @@ impl ApplicationHandler<UserEvent> for App {
                 }
                 other => {
                     let picked = other.strip_prefix("ws:").and_then(|i| i.parse::<usize>().ok()).and_then(|i| self.ws.workspaces.get(i)).map(|w| w.name.clone());
-                    match picked {
-                        Some(name) if name != self.ws.active => self.apply_workspace(el, WsCmd::Switch(name)),
-                        // a click on the ticked one unticks it in the menu: put the tick back
-                        Some(_) => self.refresh_tray(),
-                        None => {}
+                    if let Some(name) = picked.filter(|n| *n != self.ws.active) {
+                        self.apply_workspace(el, WsCmd::Switch(name));
                     }
                 }
             },
             UserEvent::Hotkey => self.set_edit(!self.edit),
             UserEvent::TrayClick => self.open_settings(el),
+            UserEvent::TrayMenu(at) => self.show_menu(el, at),
             UserEvent::FilesChanged => self.reload_at = Some(Instant::now() + Duration::from_millis(250)),
             UserEvent::WatchedChanged(paths) => {
                 for p in &paths {
@@ -982,6 +984,19 @@ impl ApplicationHandler<UserEvent> for App {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, ev: WindowEvent) {
+        if self.menu.as_ref().is_some_and(|m| m.window.id() == id) {
+            let App { menu: Some(menu), gpu, text, theme, .. } = self else { return };
+            let picked = menu.event(&ev);
+            if matches!(ev, WindowEvent::RedrawRequested) {
+                if let Some(g) = gpu.as_mut() {
+                    menu.render(g, text, theme);
+                }
+            }
+            if let Some(id) = picked {
+                self.user_event(el, UserEvent::Menu(id));
+            }
+            return;
+        }
         if self.settings.as_ref().is_some_and(|s| s.window.id() == id) {
             let gpu_info = self.gpu.as_ref().map(|g| g.info.clone()).unwrap_or_else(|| "no GPU yet".into());
             let setup: Vec<workspace::MonitorRef> = self.monitor_setup();
@@ -1118,6 +1133,13 @@ impl ApplicationHandler<UserEvent> for App {
         if let Some(s) = &self.settings {
             match s.next_frame(now) {
                 Some(t) if t <= now => s.window.request_redraw(),
+                Some(t) => soonest(t, &mut wake),
+                None => {}
+            }
+        }
+        if let Some(m) = &self.menu {
+            match m.next_frame(now) {
+                Some(t) if t <= now => m.window.request_redraw(),
                 Some(t) => soonest(t, &mut wake),
                 None => {}
             }

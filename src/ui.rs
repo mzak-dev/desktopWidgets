@@ -48,6 +48,8 @@ impl Default for Look {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Hover {
+    /// Magnifies descendant images without changing layout or click targets.
+    pub image_scale: Option<f32>,
     pub fill: Option<Color>,
     pub border_color: Option<Color>,
     pub opacity: Option<f32>,
@@ -56,7 +58,7 @@ pub struct Hover {
 
 impl Hover {
     pub fn any(&self) -> bool {
-        self.fill.is_some() || self.border_color.is_some() || self.opacity.is_some() || self.text_color.is_some()
+        self.image_scale.is_some() || self.fill.is_some() || self.border_color.is_some() || self.opacity.is_some() || self.text_color.is_some()
     }
 }
 
@@ -431,6 +433,7 @@ pub struct Env<'a> {
 }
 
 struct Ctx {
+    image_scale: f32,
     clip: [f32; 4],
     opacity: f32,
     layer: usize,
@@ -518,7 +521,7 @@ pub fn layout(root: &Node, size: (f32, f32), env: &mut Env) -> Frame {
 
     let mut frame = Frame::default();
     let mut next = 0usize;
-    let ctx = Ctx { clip: NO_CLIP, opacity: 1.0, layer: 0, depth: 0 };
+    let ctx = Ctx { image_scale: 1.0, clip: NO_CLIP, opacity: 1.0, layer: 0, depth: 0 };
     emit(root, &ids, &mut next, &tree, (0.0, 0.0), &ctx, env, &mut frame);
     let l = tree.layout(rid).expect("root");
     frame.content_size = (l.size.width, l.size.height);
@@ -574,6 +577,8 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
     });
     let border_color = Color(animate("bc", bc_t.0));
     let own_op = animate("op", [op_t, 0.0, 0.0, 0.0])[0];
+    let own_image_scale = n.hover.image_scale.map_or(1.0, |target| animate("image-scale", [if hov { target } else { 1.0 }, 0.0, 0.0, 0.0])[0]);
+    let image_scale = (ctx.image_scale * own_image_scale).clamp(1.0, 2.0);
     let op = ctx.opacity * own_op * enter_a;
 
     let s = env.scale;
@@ -652,11 +657,11 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                         shown.push(pic.id.clone());
                     }
                     let ((fw, fh), uv) = im.fit.place(pic.size, w, h);
-                    let (dw, dh) = (fw / 2.0 * s, fh / 2.0 * s);
+                    let (dw, dh) = (fw / 2.0 * s * image_scale, fh / 2.0 * s * image_scale);
                     list.images.push(ImgDraw {
                         tex: pic.id,
                         inst: ImgInst {
-                            center: [cx, cy],
+                            center: [cx, cy - fh * s * (image_scale - 1.0) / 2.0],
                             half: [dw, dh],
                             radius: r.min(dw).min(dh),
                             feather: im.feather * s,
@@ -682,7 +687,7 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
     }
     out.rects.push((key.to_string(), rect));
 
-    let mut child_ctx = Ctx { clip, opacity: op, layer, depth: ctx.depth + 1 };
+    let mut child_ctx = Ctx { image_scale, clip, opacity: op, layer, depth: ctx.depth + 1 };
     let mut child_origin = (x, y);
     if n.clip || n.scroll_offset.is_some() || n.scroll_offset_x.is_some() {
         child_ctx.clip = intersect(clip, [x * s, y * s, (x + w) * s, (y + h) * s]);
@@ -741,6 +746,25 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn dock_hover_magnifies_images_upward_without_moving_click_targets() {
+        let mut tile = Node::new("w/tile").wh(60.0, 60.0).center();
+        tile.action = Some("shortcuts.open app.exe".into());
+        tile.hover.image_scale = Some(1.5);
+        let mut image = Node::new("w/tile/image").wh(40.0, 40.0);
+        image.kind = Kind::Image(ImageSpec { id: "app".into(), w: 40.0, h: 40.0, ..Default::default() });
+        tile.children.push(image);
+        let root = Node::new("w").wh(100.0, 100.0).child(tile);
+        let (mut text, mut anim) = (TextEngine::new(), Anim::default());
+        let mut env = Env { text: &mut text, anim: &mut anim, hover: Some("w/tile"), now: Instant::now(), scale: 1.0, trace: false };
+        let frame = layout(&root, (100.0, 100.0), &mut env);
+        let image = &frame.list.layers[0].images[0].inst;
+        assert_eq!(image.half, [30.0, 30.0]);
+        assert_eq!(image.center, [30.0, 20.0]);
+        assert_eq!(frame.rect_of("w/tile"), Some([0.0, 0.0, 60.0, 60.0]));
+        assert_eq!(frame.hit_at(20.0, 20.0).unwrap().action.as_deref(), Some("shortcuts.open app.exe"));
+    }
 
     /// A window node, a card and a wrapping row of three 80 px "gauges".
     fn gauges(w: f32) -> Node {

@@ -411,17 +411,17 @@ const fn hex(c: u32) -> Color {
 }
 
 // The window's greys, whatever the palette; only the accent is the palette's.
-const BG: Color = hex(0x0A0C10);
+pub(crate) const BG: Color = hex(0x0A0C10);
 /// Behind a widget preview, under its dot grid.
 const STAGE: Color = hex(0x06080B);
 const DOTS: Color = hex(0x262C37);
-const SURFACE: Color = hex(0x12151B);
-const RAISED: Color = hex(0x1B1F27);
+pub(crate) const SURFACE: Color = hex(0x12151B);
+pub(crate) const RAISED: Color = hex(0x1B1F27);
 const RAISED2: Color = hex(0x272C36);
-const LINE: Color = hex(0x2A3039);
+pub(crate) const LINE: Color = hex(0x2A3039);
 const LINE_STRONG: Color = hex(0x3D4450);
-const FG: Color = hex(0xEEF1F4);
-const MUTED: Color = hex(0xA3A8AF);
+pub(crate) const FG: Color = hex(0xEEF1F4);
+pub(crate) const MUTED: Color = hex(0xA3A8AF);
 const SUBTLE: Color = hex(0x868C95);
 const SUCCESS: Color = hex(0x73D083);
 /// What works but not as it should.
@@ -432,16 +432,16 @@ const CLOSE_RED: Color = hex(0xC42B1C);
 /// `RAISED`, see-through: what a list row fades from, so a hover never flashes black.
 const CLEAR: Color = Color::rgba(0.106, 0.122, 0.153, 0.0);
 
-struct Kit<'a> {
+pub(crate) struct Kit<'a> {
     t: &'a Theme,
 }
 
 impl Kit<'_> {
-    fn new(t: &Theme) -> Kit<'_> {
+    pub(crate) fn new(t: &Theme) -> Kit<'_> {
         Kit { t }
     }
 
-    fn accent(&self) -> Color {
+    pub(crate) fn accent(&self) -> Color {
         self.t.color("accent").with_alpha(1.0)
     }
 
@@ -449,7 +449,7 @@ impl Kit<'_> {
         self.t.color("accent-text").with_alpha(1.0)
     }
 
-    fn txt(&self, key: String, s: &str, size: f32, col: Color) -> Node {
+    pub(crate) fn txt(&self, key: String, s: &str, size: f32, col: Color) -> Node {
         let fam = self.t.str("font-body");
         Node::text(key, s, size, col).with_text(|t| t.family = fam)
     }
@@ -467,7 +467,7 @@ impl Kit<'_> {
         Node::text(key, s, size, col).with_text(|t| t.family = fam)
     }
 
-    fn glyph(&self, key: String, name: &str, size: f32, col: Color) -> Node {
+    pub(crate) fn glyph(&self, key: String, name: &str, size: f32, col: Color) -> Node {
         let (fam, ch) = (self.t.str("font-glyph"), self.t.str(&format!("glyph-{name}")));
         Node::text(key, ch, size, col).with_text(|t| t.family = fam)
     }

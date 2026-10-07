@@ -895,11 +895,12 @@ impl<'a> TreeBuilder<'a> {
                 let ctx = format!("{path}.hover.{k}");
                 let v = self.eval_attr(a, &ctx)?;
                 match k.as_str() {
+                    "image_scale" => n.hover.image_scale = Some(v.as_f64().filter(|v| v.is_finite() && (1.0..=2.0).contains(v)).ok_or_else(|| format!("{ctx}: expected a number from 1 to 2"))? as f32),
                     "fill" => n.hover.fill = Some(self.color_of(&v, &ctx)),
                     "border_color" => n.hover.border_color = Some(self.color_of(&v, &ctx)),
                     "color" => n.hover.text_color = Some(self.color_of(&v, &ctx)),
                     "opacity" => n.hover.opacity = v.as_f64().map(|x| x as f32),
-                    _ => return Err(format!("{ctx}: unknown hover key `{k}` (fill, border_color, color, opacity)")),
+                    _ => return Err(format!("{ctx}: unknown hover key `{k}` (fill, border_color, color, opacity, image_scale)")),
                 }
             }
         }
@@ -1025,6 +1026,14 @@ mod tests {
             arrange: None,
         };
         build(&def, &inp, &theme(), &|_| None)
+    }
+
+    #[test]
+    fn dock_image_scale_is_bounded_and_validated() {
+        assert!(build_src("[root]\nhover = { image_scale = 1.4 }", &[]).is_ok());
+        for value in ["0", "3", "'invalid'"] {
+            assert!(build_src(&format!("[root]\nhover = {{ image_scale = {value} }}"), &[]).is_err());
+        }
     }
 
     fn image_ids(def: &WidgetDef) -> (BTreeSet<String>, Vec<String>) {

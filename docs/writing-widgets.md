@@ -94,6 +94,16 @@ Three things make it work:
 
 ## Data you can bind to
 
+**Dock extension (local 0.7.7 build).** `hover = { image_scale = 1.35 }` magnifies
+descendant images upward while keeping layout and click targets fixed. It accepts
+1–2 and uses `transition`; it does not resize neighbouring icons. Leave vertical
+room above icons so magnification is not clipped by the window.
+`on_click = "shortcuts.open {app.target}"` opens only an exact target from this
+instance's explicitly pinned `items`. This works even beside sandboxed weather
+data, without weakening `launch` rules. `shortcuts.recycle_bin` takes no arguments
+and opens the fixed Windows Recycle Bin; it never empties it. Neither action may
+launch a program from a plugin's folder.
+
 | Source | Fields |
 |---|---|
 | `clock.*` | hour, minute, second, `date`, angles for hands, and `clock.zones` for a `cities` param |

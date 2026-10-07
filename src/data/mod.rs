@@ -26,6 +26,7 @@ pub use gallery::Gallery;
 pub use media::Media;
 pub use crate::shortcut::{ID_SEP, Shortcut, file_stem, icon_id};
 pub use shortcuts::{Shortcuts, folder_items, shortcuts_value, starter_apps};
+pub(crate) use shortcuts::dock_target;
 pub use sys::Sys;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

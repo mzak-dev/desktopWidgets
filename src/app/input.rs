@@ -179,6 +179,12 @@ impl App {
 
     pub(super) fn run_action(&mut self, i: usize, action: &str) {
         let (verb, rest) = action.split_once(' ').unwrap_or((action, ""));
+        let dock_target = crate::data::dock_target(self.ws.instances[i].instance(), verb, rest);
+        if matches!(verb, "shortcuts.open" | "shortcuts.recycle_bin") && dock_target.is_none() {
+            self.log("refused dock action: target is not in this widget's pinned shortcuts");
+            return;
+        }
+        let (verb, rest) = dock_target.as_deref().map_or((verb, rest), |target| ("launch", target));
         if self.widget_action(i, verb, rest) {
             return;
         }
@@ -196,7 +202,7 @@ impl App {
             return;
         }
         match engine_action(&mut self.wins[i].state, verb, rest) {
-            VerbOutcome::Launch(target) if !crate::code::launch::allowed(&target, &self.code.launch_rules(&self.wins[i].deps), std::env::var_os("USERPROFILE").map(PathBuf::from).as_deref()) => {
+            VerbOutcome::Launch(target) if dock_target.is_none() && !crate::code::launch::allowed(&target, &self.code.launch_rules(&self.wins[i].deps), std::env::var_os("USERPROFILE").map(PathBuf::from).as_deref()) => {
                 self.log(format!("refused to open `{target}`: a widget showing plugin data may only open https:// links and what its plugin lists under [code] launch"));
             }
             VerbOutcome::Redraw => self.wins[i].redraw = true,
