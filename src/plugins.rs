@@ -354,7 +354,8 @@ pub fn describe(src: &Path) -> Result<(Manifest, Contents), String> {
 }
 
 /// Zips a plugin folder into a `.wfplugin` at `out`, `plugin.toml` at its top, by the same
-/// rules as installing: only content files, within the size limits, clutter left out.
+/// rules as installing: only content files, within the size limits, clutter and the author's
+/// `scenes/` and `.look/` left out.
 pub fn pack(dir: &Path, out: &Path) -> Result<Manifest, String> {
     use std::io::Write;
     let text = std::fs::read_to_string(dir.join(MANIFEST)).map_err(|_| format!("{}: no {MANIFEST}", dir.display()))?;
@@ -364,7 +365,9 @@ pub fn pack(dir: &Path, out: &Path) -> Result<Manifest, String> {
         return Err("put the .wfplugin outside the plugin's folder".into());
     }
     // copying first applies the install rules exactly
-    let staging = std::env::temp_dir().join(format!("wayfinder-pack-{}-{}", m.id, std::process::id()));
+    static PACKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = PACKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staging = std::env::temp_dir().join(format!("wayfinder-pack-{}-{}-{n}", m.id, std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
     let done = (|| {
         copy_folder(dir, &staging, &Limits::default(), &mut Budget::default())?;
@@ -516,6 +519,11 @@ fn allowed_file(name: &str) -> bool {
     }
 }
 
+/// The folder of an author's scenes and their baselines (`wayfinder scene ...`): tooling that
+/// stays in the plugin's folder, never packed or installed. Its output, `.look/`, is a
+/// dot-folder, so it is clutter already.
+const SCENES: &str = "scenes";
+
 /// Archive and OS clutter, skipped rather than refused.
 fn clutter(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
@@ -569,7 +577,7 @@ fn copy_folder(src: &Path, dest: &Path, limits: &Limits, budget: &mut Budget) ->
         for e in rd.filter_map(|e| e.ok()) {
             let name = e.file_name().to_string_lossy().into_owned();
             let Ok(meta) = std::fs::symlink_metadata(e.path()) else { continue };
-            if clutter(&name) || meta.file_type().is_symlink() {
+            if clutter(&name) || meta.file_type().is_symlink() || (dir == root && name.eq_ignore_ascii_case(SCENES)) {
                 continue;
             }
             let rel = e.path().strip_prefix(root).map(Path::to_path_buf).unwrap_or_default();
@@ -1375,6 +1383,38 @@ mod tests {
         assert!(pack(&src, &src.join("x.wfplugin")).unwrap_err().contains("outside"));
         put(&src, "tools/run.exe", "MZ");
         assert!(pack(&src, &out).unwrap_err().contains("run.exe"));
+        std::fs::remove_dir_all(data.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn pack_leaves_out_the_authors_scenes_and_look_folders() {
+        let (data, store) = install_area("pack-scenes");
+        let src = data.parent().unwrap().join("src").join("sunset");
+        put(&src, "plugin.toml", OK);
+        put(&src, "widgets/card.toml", "[root]
+type = 'box'");
+        // scenes, their baselines (a .json record is not an allowed type) and the output folder
+        put(&src, "scenes/card.scene.toml", "format = 1
+[widget]
+id = 'card'");
+        put(&src, "scenes/baselines/system-aaaa1111/card.dump.txt", "dump");
+        put(&src, "scenes/baselines/system-aaaa1111/card.env.json", "{}");
+        put(&src, "scenes/.look/summary.txt", "ok");
+        put(&src, ".look/last.json", "{}");
+        let out = data.parent().unwrap().join("sunset.wfplugin");
+        pack(&src, &out).unwrap();
+        let names: Vec<String> = zip::ZipArchive::new(std::fs::File::open(&out).unwrap()).unwrap().file_names().map(String::from).collect();
+        assert_eq!(names, ["plugin.toml", "widgets/card.toml"], "{names:?}");
+        store.install(&out).unwrap();
+        let installed = data.join("plugins").join("sunset");
+        assert!(installed.join("widgets").join("card.toml").is_file() && !installed.join("scenes").exists() && !installed.join(".look").exists());
+        // `plugin check` on the folder neither fails nor warns about them
+        let r = check(&src);
+        assert!(r.problems.is_empty() && r.warnings.is_empty(), "{:?} {:?}", r.problems, r.warnings);
+        assert_eq!(r.contents.widgets, ["card"]);
+        // only the plugin's own top-level `scenes/` is tooling: a `scenes` folder deeper in is content, and held to the rules
+        put(&src, "images/scenes/x.exe", "MZ");
+        assert!(pack(&src, &out).unwrap_err().contains("x.exe"));
         std::fs::remove_dir_all(data.parent().unwrap()).ok();
     }
 
