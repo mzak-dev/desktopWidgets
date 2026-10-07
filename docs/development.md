@@ -46,12 +46,16 @@ cargo test --lib                     # 329 unit tests, pure logic, no GPU
 cargo run --release -- --selftest --gpu software --data $env:TEMP\wf-test
 ```
 
-Offscreen renders, on the software adapter by default:
+Offscreen renders run on the software adapter (WARP) only:
 
 ```powershell
-cargo run --release --example render_widgets  -- docs\img\widgets.png
+cargo run --release -- scene sheet golden/readme --out docs\img\widgets.png  # contact sheet of the README cases
+cargo run --release -- scene render golden --sheet   # PNG + record per golden scene, under scenes\.look
+cargo run --release -- scene diff golden             # dump and pixel diff against this machine's baselines
 cargo run --release --example render_settings -- docs\img
 ```
+
+Golden scenes (`scenes/golden/`, tag `golden`) also keep a PNG baseline, per machine and untracked like the dump baselines (`scenes/baselines/<fonts hash>/`): record them with `scene bless golden --reason "..."`. Pixel tolerances are in `scenes/wayfinder-render.toml`.
 
 ## Extend it
 
