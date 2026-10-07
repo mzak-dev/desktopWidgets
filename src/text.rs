@@ -1,5 +1,5 @@
-//! Text over glyphon (decision 25): one buffer per node key, re-shaped only when
-//! its text, style or width changes.
+//! Text shaping over cosmic-text (decision 25): one buffer per node key, re-shaped only
+//! when its text, style or width changes. Drawing the buffers is `gfx`'s job.
 
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
@@ -7,60 +7,54 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use glyphon::cosmic_text::fontdb::{ID, Source};
-use glyphon::cosmic_text::{Align, Wrap};
-use glyphon::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
+use cosmic_text::fontdb::{Database, ID, Source};
+use cosmic_text::{Align, Attrs, Buffer, Family, FontSystem, Metrics, Shaping, SwashCache, Weight, Wrap};
 
+pub use crate::textspec::{TextAlign, TextSpec};
+
+/// The fonts a `TextEngine` shapes with: a font database and the locale used to pick
+/// fallback faces.
+pub struct FontSet {
+    db: Database,
+    locale: String,
+}
+
+impl FontSet {
+    /// The installed system fonts and the system locale, exactly what `FontSystem::new`
+    /// builds (the machine-dependent set the app uses).
+    pub fn system() -> Self {
+        let (locale, db) = FontSystem::new().into_locale_and_db();
+        Self { db, locale }
+    }
+
+    /// `system`, read once per process: a run of many scenes shares one scan of the fonts.
+    pub fn system_shared() -> Self {
+        static SYSTEM: std::sync::OnceLock<(String, Database)> = std::sync::OnceLock::new();
+        let (locale, db) = SYSTEM.get_or_init(|| {
+            let s = Self::system();
+            (s.locale, s.db)
+        });
+        Self { db: db.clone(), locale: locale.clone() }
+    }
+}
+
+/// What shaping made of one text node: the facts the UI trace records beside its rect.
 #[derive(Clone, Debug, PartialEq)]
-pub struct TextSpec {
-    pub text: String,
-    pub size: f32,
-    pub family: String,
-    pub weight: u16,
-    pub align: TextAlign,
-    pub wrap: bool,
-    pub line_height: f32,
-    pub color: crate::color::Color,
-    /// Caret byte offset, drawn by the UI layer for focused inputs.
-    pub caret: Option<usize>,
+pub struct RunInfo {
+    /// Shaped lines at the width the node was last prepared for.
+    pub lines: usize,
+    /// Content size with no width limit (what `measure(.., None)` says).
+    pub natural_w: f32,
+    pub natural_h: f32,
+    /// The first family name of each face the glyphs were shaped with, in order of first use:
+    /// more than one when the requested family lacked a glyph and a fallback face was taken.
+    pub faces: Vec<String>,
+    /// Glyphs no face had (drawn as the missing-glyph box).
+    pub missing: usize,
 }
 
-impl Default for TextSpec {
-    fn default() -> Self {
-        Self {
-            text: String::new(),
-            size: 14.0,
-            family: String::new(),
-            weight: 400,
-            align: TextAlign::Left,
-            wrap: false,
-            line_height: 1.25,
-            color: crate::color::Color([1.0; 4]),
-            caret: None,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
-pub enum TextAlign {
-    #[default]
-    Left,
-    Center,
-    Right,
-}
-
-impl TextAlign {
-    pub fn parse(s: &str) -> Self {
-        match s {
-            "center" => Self::Center,
-            "right" | "end" => Self::Right,
-            _ => Self::Left,
-        }
-    }
-}
-
-pub(crate) struct Slot {
-    pub(crate) buf: Buffer,
+struct Slot {
+    buf: Buffer,
     sig: u64,
     /// Width the buffer is currently shaped for.
     shaped_w: Option<u32>,
@@ -69,9 +63,9 @@ pub(crate) struct Slot {
 }
 
 pub struct TextEngine {
-    pub fs: FontSystem,
-    pub swash: SwashCache,
-    pub(crate) slots: HashMap<String, Slot>,
+    fs: FontSystem,
+    swash: SwashCache,
+    slots: HashMap<String, Slot>,
     frame: u64,
     /// Font files registered by `sync_fonts`, with the size and time they were read at.
     files: HashMap<PathBuf, (FileStamp, Vec<ID>)>,
@@ -98,7 +92,6 @@ fn family(name: &str) -> Family<'_> {
         n => Family::Name(n),
     }
 }
-
 
 fn slot<'a>(
     slots: &'a mut HashMap<String, Slot>,
@@ -134,9 +127,51 @@ fn slot<'a>(
     slot
 }
 
+/// The shaped buffers by node key, for the renderer to draw.
+pub struct Buffers<'a>(&'a HashMap<String, Slot>);
+
+impl Buffers<'_> {
+    pub fn get(&self, key: &str) -> Option<&Buffer> {
+        self.0.get(key).map(|s| &s.buf)
+    }
+}
+
 impl TextEngine {
     pub fn new() -> Self {
-        Self { fs: FontSystem::new(), swash: SwashCache::new(), slots: HashMap::new(), frame: 0, files: HashMap::new() }
+        Self::with_fonts(FontSet::system())
+    }
+
+    pub fn with_fonts(fonts: FontSet) -> Self {
+        let fs = FontSystem::new_with_locale_and_db(fonts.locale, fonts.db);
+        Self { fs, swash: SwashCache::new(), slots: HashMap::new(), frame: 0, files: HashMap::new() }
+    }
+
+    /// One line per font face this engine can shape with (names, style, weight, stretch and
+    /// where the face is stored), sorted: the fonts text is measured with, for a render to
+    /// record which font set its metrics belong to.
+    pub fn font_faces(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .fs
+            .db()
+            .faces()
+            .map(|f| {
+                let names: Vec<&str> = f.families.iter().map(|(n, _)| n.as_str()).collect();
+                let at = match &f.source {
+                    Source::Binary(d) => format!("memory:{}", (**d).as_ref().len()),
+                    Source::File(p) => format!("{}:{}", p.display(), std::fs::metadata(p).map_or(0, |m| m.len())),
+                    Source::SharedFile(p, d) => format!("{}:{}", p.display(), (**d).as_ref().len()),
+                };
+                format!("{}|{}|{:?}|{}|{:?}|{}|{at}", names.join(","), f.post_script_name, f.style, f.weight.0, f.stretch, f.index)
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// What the renderer draws text with: the font system, the glyph cache and the shaped
+    /// buffers (read after `prepare`).
+    pub fn render_parts(&mut self) -> (&mut FontSystem, &mut SwashCache, Buffers<'_>) {
+        (&mut self.fs, &mut self.swash, Buffers(&self.slots))
     }
 
     /// Makes the registered font files exactly `files`: new and changed ones are read in,
@@ -238,6 +273,34 @@ impl TextEngine {
         }
     }
 
+    /// The shaped buffer of `key` (after `prepare`) read back as text facts. `None` when the node
+    /// never reached the engine. The buffer is left shaped for the width it had, so calling this
+    /// between layout and drawing changes nothing the renderer sees.
+    pub fn describe(&mut self, key: &str, spec: &TextSpec) -> Option<RunInfo> {
+        let slot = self.slots.get(key)?;
+        let prev = slot.shaped_w;
+        let (mut lines, mut missing, mut faces) = (0, 0, Vec::<String>::new());
+        for run in slot.buf.layout_runs() {
+            lines += 1;
+            for g in run.glyphs {
+                missing += usize::from(g.glyph_id == 0);
+                let name = self.fs.db().face(g.font_id).and_then(|f| f.families.first()).map_or("?", |(n, _)| n.as_str());
+                if !faces.iter().any(|f| f == name) {
+                    faces.push(name.to_string());
+                }
+            }
+        }
+        let (natural_w, natural_h) = self.measure(key, spec, None);
+        // measuring may have re-shaped the buffer for no width limit: shape it back
+        let slot = self.slots.get_mut(key)?;
+        if let (Some(w), true) = (prev.filter(|w| *w < u32::MAX - 1), slot.shaped_w != prev) {
+            slot.buf.set_size(Some(w as f32), None);
+            slot.buf.shape_until_scroll(&mut self.fs, false);
+            slot.shaped_w = prev;
+        }
+        Some(RunInfo { lines, natural_w, natural_h, faces, missing })
+    }
+
     pub fn buffer(&self, key: &str) -> Option<&Buffer> {
         self.slots.get(key).map(|s| &s.buf)
     }
@@ -299,6 +362,43 @@ mod tests {
         let p = dir.join("Mine.ttf");
         std::fs::copy(src, &p).unwrap();
         p
+    }
+
+    #[test]
+    fn the_lockfile_holds_one_cosmic_text() {
+        // the renderer draws the buffers cosmic-text shapes: two versions would not unify.
+        let lock = include_str!("../Cargo.lock");
+        assert_eq!(lock.matches("name = \"cosmic-text\"").count(), 1, "cargo tree -d must list no second cosmic-text");
+    }
+
+    #[test]
+    fn describe_reads_back_lines_natural_size_and_faces_and_leaves_the_buffer_as_it_was() {
+        let mut t = TextEngine::new();
+        let spec = TextSpec { text: "A long sentence that has to wrap in a narrow box".into(), wrap: true, ..Default::default() };
+        t.begin_frame();
+        t.measure("k", &spec, Some(60.0));
+        t.prepare("k", &spec, 60.0);
+        let shape = |t: &TextEngine| t.buffer("k").unwrap().layout_runs().map(|r| r.glyphs.iter().map(|g| (g.start, g.x.to_bits(), g.font_id)).collect::<Vec<_>>()).collect::<Vec<_>>();
+        let before = shape(&t);
+        let info = t.describe("k", &spec).expect("it was shaped");
+        assert!(before.len() >= 2 && info.lines == before.len(), "{} lines shaped, described as {}", before.len(), info.lines);
+        assert_eq!(shape(&t), before, "the buffer is still shaped for 60 px, as the renderer will draw it");
+        assert_eq!((info.natural_w, info.natural_h), t.measure("k", &spec, None));
+        assert!(info.natural_w > 60.0 && info.natural_h < 2.0 * 14.0 * 1.25 * 1.5, "one unwrapped line: {info:?}");
+        assert!(!info.faces.is_empty() && info.faces.iter().all(|f| !f.is_empty()), "{:?}", info.faces);
+        assert_eq!(info.missing, 0, "every glyph of plain words has a face");
+        assert_eq!(t.describe("k", &spec), Some(info), "asking again gives the same answer");
+        assert_eq!(t.describe("never-shaped", &spec), None);
+    }
+
+    #[test]
+    fn describe_counts_the_glyphs_no_face_has() {
+        let mut t = TextEngine::new();
+        // a noncharacter: no installed font draws it, so the shaper falls back to a missing-glyph box
+        let spec = TextSpec { text: "a\u{10FFFF}\u{10FFFF}".into(), ..Default::default() };
+        t.begin_frame();
+        t.prepare("k", &spec, 100.0);
+        assert_eq!(t.describe("k", &spec).map(|i| i.missing), Some(2));
     }
 
     #[test]

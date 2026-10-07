@@ -1,0 +1,22 @@
+format = 1
+name = "gif_player at its smallest, default and largest size"
+tags = ["engine"]
+
+[widget]
+id = "gif_player"
+
+# the engine's own scene set: what every built-in Widget draws with its defaults and with
+# every switch on, at the smallest, the default and the largest size it allows
+# No file or folder is given (a path is the machine's, so the run would not be hermetic):
+# this is the empty state.
+
+[expect]
+flags = "error"
+
+[sweep]
+sizes = ["96x96", "280x280", "900x900"]
+
+[sweep.variants]
+defaults = {}
+all_on = { params = "bools:true" }
+

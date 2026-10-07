@@ -1,0 +1,24 @@
+format = 1
+name = "System monitor, large tier, with a Module put away"
+tags = ["engine"]
+
+[widget]
+id = "system_monitor"
+# the large tier has every Module
+tier = "large"
+
+[env.sys]
+cpu = 42
+
+[expect]
+flags = "error"
+allow = ["OVERFLOW-X", "OVERFLOW-Y"]
+
+# `hide = "each"` names a Module by its definition (`gauge`), but the layout holds instances
+# (`gauge:cpu`), so the instances are listed here
+[sweep.variants]
+no-footer = { hide = ["footer"] }
+no-gauge-cpu = { hide = ["gauge:cpu"] }
+no-gauge-ram = { hide = ["gauge:ram"] }
+no-graph-cpu = { hide = ["graph:cpu"] }
+no-graph-net = { hide = ["graph:net"] }

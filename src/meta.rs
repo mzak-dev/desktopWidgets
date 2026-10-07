@@ -1,0 +1,239 @@
+//! What a Widget, a Module or a style token declares about itself (params, tiers, slots): plain data
+//! and its TOML parse, below `theme` and `format` so both can import it.
+
+use std::collections::BTreeMap;
+
+use crate::value::Value;
+use crate::suggest::suggest;
+
+#[derive(Clone, Debug)]
+pub struct WidgetMeta {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    /// Groups it in Settings' Add a widget (`Time`, `Launchers`); empty = Other.
+    pub category: String,
+    /// A glyph token's name (`clock` = `glyph-clock`) that stands for it in Settings.
+    pub icon: String,
+    /// Logical px, like every size here.
+    pub default_card_size: (f32, f32),
+    pub min_card_size: (f32, f32),
+    /// Resizing stops here unless the Instance switches its size limit off.
+    pub max_card_size: Option<(f32, f32)>,
+    pub params: Vec<ParamDef>,
+    pub initial_state: BTreeMap<String, Value>,
+    /// Data sources it cannot work without (`needs = ["agents"]`), so a missing one is
+    /// named instead of the widget showing blank.
+    pub needs: Vec<String>,
+    /// Named card-size tiers, slots and Modules the user may arrange; all empty for a Widget that declares none.
+    pub tiers: Vec<TierMeta>,
+    pub slots: Vec<(String, String)>,
+    pub modules: Vec<ModuleMeta>,
+}
+
+#[derive(Clone, Debug)]
+pub struct TierMeta {
+    pub name: String,
+    pub label: String,
+    pub size: (f32, f32),
+    pub layout: BTreeMap<String, Vec<String>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ModuleMeta {
+    pub name: String,
+    pub label: String,
+    pub slots: Vec<String>,
+    pub legacy: BTreeMap<String, String>,
+}
+
+/// "needs the `agents` data source, which is missing…"
+pub fn needs_message(missing: &[&str]) -> String {
+    let names = missing.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(" and ");
+    let (what, is) = if missing.len() == 1 { ("data source", "is") } else { ("data sources", "are") };
+    format!("needs the {names} {what}, which {is} missing. Is the plugin that provides it installed and switched on?")
+}
+
+impl WidgetMeta {
+    /// Its needed data sources that `has` does not know.
+    pub fn unmet(&self, has: impl Fn(&str) -> bool) -> Vec<&str> {
+        self.needs.iter().map(String::as_str).filter(|n| !has(n)).collect()
+    }
+
+    pub fn effective_params(&self, saved: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
+        self.params.iter().map(|p| (p.name.clone(), saved.get(&p.name).cloned().unwrap_or_else(|| p.default.clone()))).collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParamType {
+    Color,
+    Font,
+    Number,
+    Enum,
+    Bool,
+    Str,
+    Path,
+    /// One file, picked with a file dialog (`folder` is the folder picker).
+    File,
+    Duration,
+    Shortcuts,
+}
+
+impl ParamType {
+    pub const ALL: [ParamType; 10] = [Self::Color, Self::Font, Self::Number, Self::Enum, Self::Bool, Self::Str, Self::Path, Self::File, Self::Duration, Self::Shortcuts];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Color => "color",
+            Self::Font => "font",
+            Self::Number => "number",
+            Self::Enum => "enum",
+            Self::Bool => "bool",
+            Self::Str => "string",
+            Self::Path => "path",
+            Self::File => "file",
+            Self::Duration => "duration",
+            Self::Shortcuts => "shortcuts",
+        }
+    }
+
+    /// `folder` names the folder picker too.
+    pub fn parse(s: &str) -> Option<Self> {
+        if s == "folder" {
+            return Some(Self::Path);
+        }
+        Self::ALL.into_iter().find(|t| t.id() == s)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ParamDef {
+    pub name: String,
+    pub ty: ParamType,
+    pub default: Value,
+    pub label: String,
+    pub help: String,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub step: Option<f64>,
+    pub choices: Vec<Choice>,
+    pub seed: Option<Seed>,
+    /// Settings shows params with one group under its own heading (`group = "Motion"`).
+    pub group: Option<String>,
+    /// The Module this option belongs to; none = an option of the whole Widget.
+    pub module: Option<String>,
+}
+
+/// One option of an `enum` param: the saved value, and what Settings shows.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    pub value: String,
+    pub label: String,
+}
+
+impl ParamDef {
+    /// The params in the order Settings shows them: ungrouped first, then each group in
+    /// the order it first appears.
+    pub fn grouped(params: &[ParamDef]) -> Vec<(Option<&str>, Vec<&ParamDef>)> {
+        let mut out: Vec<(Option<&str>, Vec<&ParamDef>)> = vec![(None, vec![])];
+        for p in params {
+            let g = p.group.as_deref();
+            match out.iter_mut().find(|(k, _)| *k == g) {
+                Some((_, v)) => v.push(p),
+                None => out.push((g, vec![p])),
+            }
+        }
+        out.retain(|(_, v)| !v.is_empty());
+        out
+    }
+}
+
+/// Unlike a default, a seed is written once and then saved like any edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Seed {
+    StarterApps,
+}
+
+impl Seed {
+    pub const ALL: [Seed; 1] = [Seed::StarterApps];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Seed::StarterApps => "starter-apps",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Seed> {
+        Seed::ALL.into_iter().find(|x| x.id() == s)
+    }
+
+    pub fn param_type(self) -> ParamType {
+        match self {
+            Seed::StarterApps => ParamType::Shortcuts,
+        }
+    }
+}
+
+/// The Instance layouts: tier -> slot -> Module names, in order.
+pub type Layout = BTreeMap<String, BTreeMap<String, Vec<String>>>;
+
+/// A `[params]` table, in file order. Also parses the style schema (`assets/style.toml`).
+/// `"fast"`, or `{ value = "fast", label = "Fast (30 fps)" }`.
+fn choice(param: &str, c: &toml::Value) -> Result<Choice, String> {
+    let bad = || format!("params.{param}.choices: each is a string or {{ value = \"...\", label = \"...\" }}");
+    match c {
+        toml::Value::String(s) => Ok(Choice { value: s.clone(), label: s.clone() }),
+        toml::Value::Table(t) => {
+            let value = t.get("value").and_then(|v| v.as_str()).ok_or_else(bad)?.to_string();
+            let label = t.get("label").and_then(|v| v.as_str()).map_or_else(|| value.clone(), String::from);
+            Ok(Choice { value, label })
+        }
+        _ => Err(bad()),
+    }
+}
+
+pub fn parse_params(pt: &toml::Table) -> Result<Vec<ParamDef>, String> {
+    let mut params = Vec::new();
+    for (name, v) in pt {
+        let p = v.as_table().ok_or_else(|| format!("params.{name}: expected a table"))?;
+        let ty = p.get("type").and_then(|v| v.as_str()).ok_or_else(|| format!("params.{name}: missing `type`"))?;
+        let ty = ParamType::parse(ty).ok_or_else(|| format!("params.{name}: unknown param type `{ty}`"))?;
+        let f = |k: &str| p.get(k).and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)));
+        let seed = match p.get("seed") {
+            None => None,
+            Some(v) => {
+                let s = v.as_str().ok_or_else(|| format!("params.{name}.seed: expected a string"))?;
+                let ids: Vec<&str> = Seed::ALL.iter().map(|x| x.id()).collect();
+                let seed = Seed::parse(s).ok_or_else(|| format!("params.{name}: unknown seed `{s}`{}", suggest(s, &[&ids])))?;
+                if seed.param_type() != ty {
+                    return Err(format!("params.{name}: seed `{s}` needs type = \"{}\"", seed.param_type().id()));
+                }
+                Some(seed)
+            }
+        };
+        params.push(ParamDef {
+            name: name.clone(),
+            ty,
+            default: p.get("default").map(Value::from).unwrap_or(match ty {
+                ParamType::Bool => Value::Bool(false),
+                ParamType::Number | ParamType::Duration => Value::Num(0.0),
+                ParamType::Shortcuts => Value::List(vec![]),
+                _ => Value::Str(String::new()),
+            }),
+            label: p.get("label").and_then(|v| v.as_str()).unwrap_or(name).to_string(),
+            help: p.get("help").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            min: f("min"),
+            max: f("max"),
+            step: f("step"),
+            choices: match p.get("choices") {
+                None => vec![],
+                Some(v) => v.as_array().ok_or_else(|| format!("params.{name}.choices: expected a list"))?.iter().map(|c| choice(name, c)).collect::<Result<_, _>>()?,
+            },
+            seed,
+            group: p.get("group").and_then(|v| v.as_str()).map(str::trim).filter(|g| !g.is_empty()).map(String::from),
+            module: p.get("module").and_then(|v| v.as_str()).map(String::from),
+        });
+    }
+    Ok(params)
+}

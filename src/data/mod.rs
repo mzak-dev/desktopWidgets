@@ -13,19 +13,19 @@ mod sys;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crate::code::{CodeSpec, Status, WasmSource};
+use crate::ambient::Ambient;
 use crate::value::Value;
-use crate::workspace::InstanceCfg;
 
 pub use agents::Agents;
 pub use audio::Audio;
-pub use calendar::{Calendar, calendar_value};
-pub use clock::{Clock, Tm, clock_value, now_local};
+pub use calendar::{Calendar, calendar_value, calendar_value_in};
+pub use clock::{Clock, Tm, clock_value};
 pub use gallery::Gallery;
 pub use media::Media;
-pub use shortcuts::{ID_SEP, Shortcut, Shortcuts, file_stem, folder_items, icon_id, shortcuts_value, starter_apps};
+pub use crate::shortcut::{ID_SEP, Shortcut, file_stem, icon_id};
+pub use shortcuts::{Shortcuts, folder_items, shortcuts_value, starter_apps};
 pub(crate) use shortcuts::dock_target;
 pub use sys::Sys;
 
@@ -52,12 +52,83 @@ impl Cadence {
     }
 }
 
+/// The Instance a source is asked for: its id and the params saved in the workspace (no
+/// Widget defaults filled in), which is all a source may read of the Instance.
+#[derive(Clone, Copy, Debug)]
+pub struct InstanceRef<'a> {
+    id: &'a str,
+    saved: &'a BTreeMap<String, serde_json::Value>,
+}
+
+impl<'a> InstanceRef<'a> {
+    pub fn new(id: &'a str, saved: &'a BTreeMap<String, serde_json::Value>) -> Self {
+        Self { id, saved }
+    }
+
+    pub fn id(&self) -> &'a str {
+        self.id
+    }
+
+    /// The params as saved, without the Widget's defaults.
+    pub fn saved(&self) -> &'a BTreeMap<String, serde_json::Value> {
+        self.saved
+    }
+
+    /// The Instance's mirrored shortcut folder, "" when it has none.
+    pub fn folder(&self) -> String {
+        self.saved.get("folder").and_then(|v| v.as_str()).unwrap_or("").to_string()
+    }
+
+    /// The Instance's explicit shortcut list.
+    pub fn items(&self) -> Vec<Shortcut> {
+        match self.saved.get("items") {
+            Some(serde_json::Value::Array(a)) => a.iter().filter_map(|v| Shortcut::from_value(&Value::from(v))).collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// What a source sees when it is read: the Instance, its effective params, the local time,
+/// its icon pack and a monotonic `now`. `now` is the real clock unless `with_now` injects
+/// one, so a source that reads it (not `Instant::now()`) can be driven deterministically.
 pub struct SourceCx<'a> {
-    pub cfg: &'a InstanceCfg,
+    instance: InstanceRef<'a>,
     /// The Instance's params with its Widget's defaults filled in.
-    pub params: &'a std::collections::BTreeMap<String, Value>,
-    pub tm: Tm,
-    pub icon_pack: &'a str,
+    params: &'a BTreeMap<String, Value>,
+    tm: Tm,
+    icon_pack: &'a str,
+    now: Instant,
+}
+
+impl<'a> SourceCx<'a> {
+    pub fn new(instance: InstanceRef<'a>, params: &'a BTreeMap<String, Value>, tm: Tm, icon_pack: &'a str) -> Self {
+        Self { instance, params, tm, icon_pack, now: Instant::now() }
+    }
+
+    pub fn with_now(mut self, now: Instant) -> Self {
+        self.now = now;
+        self
+    }
+
+    pub fn instance(&self) -> InstanceRef<'a> {
+        self.instance
+    }
+
+    pub fn params(&self) -> &'a BTreeMap<String, Value> {
+        self.params
+    }
+
+    pub fn tm(&self) -> &Tm {
+        &self.tm
+    }
+
+    pub fn icon_pack(&self) -> &'a str {
+        self.icon_pack
+    }
+
+    pub fn now(&self) -> Instant {
+        self.now
+    }
 }
 
 /// A named producer of values Widgets bind to. Built-in, registered by an app that links
@@ -157,28 +228,29 @@ impl Notifier {
 
 pub struct DataSources {
     list: Vec<Box<dyn DataSource>>,
-    /// Plugins' Code Sources, each with the key it was started from.
-    code: Vec<(String, WasmSource)>,
+    /// Plugins' sources, each with the key it was started from (`sync_plugins`).
+    plugins: Vec<(String, Arc<dyn DataSource>)>,
     board: Arc<Board>,
 }
 
 impl Default for DataSources {
     fn default() -> Self {
-        Self::builtin()
+        Self::fixed()
+    }
+}
+
+/// The built-in sources over `ambient`. The app builds them over `Ambient::windows`.
+impl From<&Ambient> for DataSources {
+    fn from(ambient: &Ambient) -> Self {
+        Self::new(vec![Box::new(Clock::new(ambient.calendar.clone())), Box::new(Sys::new(ambient.sys.clone())), Box::new(Shortcuts::default()), Box::new(Media::new(ambient.media.clone())), Box::new(Audio::new(ambient.capture.clone())), Box::new(Gallery::default()), Box::new(ambient.home.as_deref().map_or_else(Agents::default, Agents::at)), Box::new(Calendar::new(ambient.calendar.clone()))])
     }
 }
 
 impl DataSources {
-    /// The built-in sources, with their caches (album art) in the temp folder. The app uses
-    /// `builtin_in` with its data folder.
-    pub fn builtin() -> Self {
-        Self::builtin_in(&std::env::temp_dir().join("wayfinder"))
-    }
-
-    /// The built-in sources, caching under `<data>/.cache` (a dot-folder never reloads content).
-    pub fn builtin_in(data: &Path) -> Self {
-        let cache = data.join(".cache");
-        Self::new(vec![Box::new(Clock), Box::new(Sys::default()), Box::new(Shortcuts::default()), Box::new(Media::new(cache.join("media"))), Box::new(Audio::default()), Box::new(Gallery::default()), Box::new(Agents::default()), Box::new(Calendar)])
+    /// The built-in sources over `Ambient::fixed()`: a fixed instant with English names, the
+    /// demo desktop's readings and a paused track.
+    pub fn fixed() -> Self {
+        Self::from(&Ambient::fixed())
     }
 
     pub fn new(list: Vec<Box<dyn DataSource>>) -> Self {
@@ -186,7 +258,7 @@ impl DataSources {
         for s in &list {
             s.attach(Notifier { source: s.name().to_string(), board: board.clone() });
         }
-        Self { list, code: Vec::new(), board }
+        Self { list, plugins: Vec::new(), board }
     }
 
     /// Adds a source, as an app built on Wayfinder does for its own (`Options::extra_sources`).
@@ -211,33 +283,33 @@ impl DataSources {
     }
 
     pub fn names(&self) -> Vec<String> {
-        self.list.iter().map(|s| s.name().to_string()).chain(self.code.iter().map(|(_, c)| c.name().to_string())).collect()
+        self.list.iter().map(|s| s.name().to_string()).chain(self.plugins.iter().map(|(_, c)| c.name().to_string())).collect()
     }
 
-    /// Every source but plugin code: the built-ins and any registered by the app.
+    /// Every source but the plugins': the built-ins and any registered by the app.
     pub fn native_names(&self) -> BTreeSet<String> {
         self.list.iter().map(|s| s.name().to_string()).collect()
     }
 
     pub fn get(&self, name: &str) -> Option<&dyn DataSource> {
-        self.list.iter().find(|s| s.name() == name).map(|s| s.as_ref()).or_else(|| self.code(name).map(|c| c as &dyn DataSource))
+        self.list.iter().find(|s| s.name() == name).map(|s| s.as_ref()).or_else(|| self.plugins.iter().find(|(_, s)| s.name() == name).map(|(_, s)| s.as_ref()))
     }
 
-    fn code(&self, name: &str) -> Option<&WasmSource> {
-        self.code.iter().find(|(_, c)| c.name() == name).map(|(_, c)| c)
-    }
-
-    /// Makes the running Code Sources exactly `wanted` (key, spec). One whose key is unchanged
-    /// keeps running, with its values; the built-ins are never touched.
-    pub fn sync_code(&mut self, wanted: Vec<(String, CodeSpec)>, mut start: impl FnMut(CodeSpec) -> WasmSource) {
-        let mut old = std::mem::take(&mut self.code);
-        for (key, spec) in wanted {
+    /// Makes the plugins' sources exactly `keys`. One whose key is unchanged stays, with its
+    /// values; `make` builds each new one; the built-ins are never touched. A dropped source's
+    /// last `Arc` goes with it: whoever else holds it (`code::CodeSources`) lets go too, and
+    /// a Code Source's thread ends after its current call.
+    pub fn sync_plugins(&mut self, keys: Vec<String>, mut make: impl FnMut(&str) -> Arc<dyn DataSource>) {
+        let mut old = std::mem::take(&mut self.plugins);
+        for key in keys {
             match old.iter().position(|(k, _)| *k == key) {
-                Some(i) => self.code.push(old.swap_remove(i)),
-                None => self.code.push((key, start(spec))),
+                Some(i) => self.plugins.push(old.swap_remove(i)),
+                None => {
+                    let source = make(&key);
+                    self.plugins.push((key, source)); // no Notifier: plugin code never posts news to the board
+                }
             }
         }
-        // dropped: their channels close and their threads end after the current call
     }
 
     /// Sends `verb` to the source `source`; false if none handled it.
@@ -245,33 +317,15 @@ impl DataSources {
         self.get(source).is_some_and(|s| s.act(verb, arg, cx))
     }
 
-    /// Per source name, what changed since last asked.
+    /// Per native source name, what changed since last asked (a Code Source's news is asked of
+    /// `code::CodeSources`).
     pub fn take_news(&self) -> Vec<(String, News)> {
-        let mut out: Vec<(String, News)> = std::mem::take(&mut *self.board.pending.lock().unwrap()).into_iter().collect();
-        out.extend(self.code.iter().map(|(_, c)| (c.name().to_string(), c.take_news())).filter(|(_, n)| *n != News::default()));
-        out
+        std::mem::take(&mut *self.board.pending.lock().unwrap()).into_iter().collect()
     }
 
     pub fn retain(&self, live: &BTreeSet<String>) {
         self.list.iter().for_each(|s| s.retain(live));
-        self.code.iter().for_each(|(_, c)| c.retain(live));
-    }
-
-    /// Per Code Source name, how it is doing.
-    pub fn code_status(&self) -> Vec<(String, Status)> {
-        self.code.iter().map(|(_, c)| (c.name().to_string(), c.status())).collect()
-    }
-
-    /// Whether any of `deps` reads a Code Source.
-    /// Every param that grants some plugin's code a folder (`fs_read_params`).
-    pub fn file_params(&self) -> BTreeSet<String> {
-        self.code.iter().flat_map(|(_, c)| c.file_params().iter().cloned()).collect()
-    }
-
-    /// The launch rules of each Code Source `deps` reads (see `code::launch::allowed`).
-    pub fn launch_rules(&self, deps: &BTreeSet<String>) -> Vec<&[crate::code::launch::LaunchRule]> {
-        let names: BTreeSet<&str> = deps.iter().map(|d| d.split('.').next().unwrap_or(d)).collect();
-        names.into_iter().filter_map(|n| self.code(n)).map(|s| s.launch_rules()).collect()
+        self.plugins.iter().for_each(|(_, s)| s.retain(live));
     }
 
     pub fn value(&self, name: &str, cx: &SourceCx) -> Option<Value> {
@@ -286,7 +340,7 @@ impl DataSources {
     /// How soon an Instance reading `deps` must redraw, asked after each of its redraws.
     pub fn next_wake(&self, deps: &BTreeSet<String>, cx: &SourceCx) -> Option<Duration> {
         let fastest = deps.iter().filter_map(|d| self.cadence_of(d, cx)).min_by_key(|c| c.period())?;
-        let tm = &cx.tm;
+        let tm = cx.tm();
         let into_sec = tm.ms as u64;
         let ms = match fastest {
             Cadence::Frame => 8,
@@ -336,8 +390,8 @@ mod tests {
     }
 
     fn wake(src: &DataSources, d: &BTreeSet<String>, t: Tm) -> Option<Duration> {
-        let (cfg, params) = (InstanceCfg::default(), BTreeMap::new());
-        src.next_wake(d, &SourceCx { cfg: &cfg, params: &params, tm: t, icon_pack: "Default" })
+        let (saved, params) = (BTreeMap::new(), BTreeMap::new());
+        src.next_wake(d, &SourceCx::new(InstanceRef::new("", &saved), &params, t, "Default"))
     }
 
     fn every_frame(src: &DataSources, d: &BTreeSet<String>) -> bool {
@@ -346,7 +400,7 @@ mod tests {
 
     #[test]
     fn wakes_exactly_when_a_bound_value_can_change() {
-        let src = DataSources::builtin();
+        let src = DataSources::fixed();
         // no clock dependency: never wakes on time
         assert_eq!(wake(&src, &deps(&["param.x", "shortcuts.items"]), tm(1, 2, 3, 0)), None);
         // minute-level: next minute boundary (+2ms guard), not next second
@@ -374,7 +428,7 @@ mod tests {
                 Some(Cadence::Millis(83))
             }
         }
-        let mut src = DataSources::builtin();
+        let mut src = DataSources::fixed();
         src.register(Box::new(Gif)).unwrap();
         assert_eq!(wake(&src, &deps(&["gif.frame", "clock.minute"]), tm(1, 2, 3, 0)), Some(Duration::from_millis(83)), "12 fps, not every display frame");
         assert!(!every_frame(&src, &deps(&["gif.frame"])));
@@ -397,7 +451,7 @@ mod tests {
                 Value::Nil
             }
             fn cadence(&self, field: &str, cx: &SourceCx) -> Option<Cadence> {
-                let ticking = field == "position" && self.playing.load(Ordering::Relaxed) && cx.params.get("progress").is_none_or(Value::truthy);
+                let ticking = field == "position" && self.playing.load(Ordering::Relaxed) && cx.params().get("progress").is_none_or(Value::truthy);
                 ticking.then_some(Cadence::Second)
             }
         }
@@ -414,19 +468,19 @@ mod tests {
                 self.0.cadence(f, cx)
             }
         }
-        let mut src = DataSources::builtin();
+        let mut src = DataSources::fixed();
         src.register(Box::new(Shared(player.clone()))).unwrap();
         let bar = deps(&["player.position"]);
         assert_eq!(wake(&src, &bar, tm(1, 2, 3, 0)), None, "paused: the bar sleeps");
         player.playing.store(true, Ordering::Relaxed);
         assert_eq!(wake(&src, &bar, tm(1, 2, 3, 0)), Some(Duration::from_millis(1002)), "playing: once a second");
-        let (cfg, off) = (InstanceCfg::default(), BTreeMap::from([("progress".to_string(), Value::Bool(false))]));
-        assert_eq!(src.next_wake(&bar, &SourceCx { cfg: &cfg, params: &off, tm: tm(1, 2, 3, 0), icon_pack: "Default" }), None, "an Instance that hides the bar never ticks");
+        let (saved, off) = (BTreeMap::new(), BTreeMap::from([("progress".to_string(), Value::Bool(false))]));
+        assert_eq!(src.next_wake(&bar, &SourceCx::new(InstanceRef::new("", &saved), &off, tm(1, 2, 3, 0), "Default")), None, "an Instance that hides the bar never ticks");
     }
 
     #[test]
     fn cadence_is_asked_of_the_source_named_by_the_path() {
-        let src = DataSources::builtin();
+        let src = DataSources::fixed();
         assert_eq!(with_cx(|cx| src.cadence_of("sys.gauges", cx)), Some(Cadence::Second));
         assert_eq!(with_cx(|cx| src.cadence_of("clock", cx)), Some(Cadence::Frame), "a whole source changes as often as its fastest field");
         assert_eq!(with_cx(|cx| src.cadence_of("shortcuts.items", cx)), None);
@@ -434,30 +488,42 @@ mod tests {
     }
 
     #[test]
-    fn sync_keeps_an_unchanged_source_alive() {
-        use crate::code::runtime::{Limits, tests::returning};
-        use crate::code::tests::start;
-        let mut src = DataSources::builtin();
-        let spec = |n: &str| CodeSpec { plugin: n.into(), source: n.into(), module: "nope.wasm".into(), hosts: vec![], fs_read: vec![], fs_read_params: vec![], launch: vec![], initial: Value::Nil };
-        let started = std::cell::RefCell::new(Vec::new());
-        let launch = |s: CodeSpec| {
-            started.borrow_mut().push(s.source.clone());
-            start(&format!("sync-{}", s.source), &returning(r#"{"value":{}}"#), Limits::default(), None).0
+    fn sync_keeps_an_unchanged_plugin_source_alive() {
+        struct Plugin(&'static str);
+        impl DataSource for Plugin {
+            fn name(&self) -> &str {
+                self.0
+            }
+            fn value(&self, _: &SourceCx) -> Value {
+                Value::Nil
+            }
+            fn cadence(&self, _: &str, _: &SourceCx) -> Option<Cadence> {
+                None
+            }
+        }
+        let mut src = DataSources::fixed();
+        let made = std::cell::RefCell::new(Vec::new());
+        let sync = |src: &mut DataSources, keys: &[&str]| {
+            src.sync_plugins(keys.iter().map(|k| k.to_string()).collect(), |k| {
+                made.borrow_mut().push(k.to_string());
+                Arc::new(Plugin(if k.starts_with('a') { "a" } else { "b" }))
+            })
         };
-        src.sync_code(vec![("a#1".into(), spec("a")), ("b#1".into(), spec("b"))], launch);
-        src.sync_code(vec![("a#1".into(), spec("a")), ("b#2".into(), spec("b"))], launch);
-        assert_eq!(*started.borrow(), ["a", "b", "b"], "a kept running; b's changed key restarted it");
-        src.sync_code(vec![], launch);
-        assert!(src.code.is_empty());
+        sync(&mut src, &["a#1", "b#1"]);
+        sync(&mut src, &["a#1", "b#2"]);
+        assert_eq!(*made.borrow(), ["a#1", "b#1", "b#2"], "a kept running; b's changed key rebuilt it");
+        assert!(src.names().ends_with(&["a".to_string(), "b".to_string()]) && src.get("a").is_some());
+        assert!(!src.native_names().contains("a"), "a plugin source is not native");
+        sync(&mut src, &[]);
+        assert!(src.get("a").is_none() && src.plugins.is_empty());
     }
 
     #[test]
     fn builtin_state_survives_sync() {
-        let mut src = DataSources::builtin();
+        let mut src = DataSources::fixed();
         let before = src.get("sys").unwrap() as *const dyn DataSource as *const u8;
-        src.sync_code(vec![], |_| unreachable!());
+        src.sync_plugins(vec![], |_| unreachable!());
         assert!(std::ptr::eq(before, src.get("sys").unwrap() as *const dyn DataSource as *const u8), "Sys keeps its history");
-        assert!(src.launch_rules(&deps(&["sys.gauges", "clock.minute"])).is_empty(), "no Code Source read");
     }
 
     /// A native source like an app built on Wayfinder would add.
@@ -479,7 +545,7 @@ mod tests {
             None
         }
         fn act(&self, verb: &str, arg: &str, cx: &SourceCx) -> bool {
-            self.acts.lock().unwrap().push(format!("{verb} {arg} {}", cx.cfg.id));
+            self.acts.lock().unwrap().push(format!("{verb} {arg} {}", cx.instance().id()));
             verb == "play_pause"
         }
         fn retain(&self, live: &BTreeSet<String>) {
@@ -491,14 +557,14 @@ mod tests {
     }
 
     fn with_cx<R>(f: impl FnOnce(&SourceCx) -> R) -> R {
-        let cfg = InstanceCfg { id: "player-1".into(), ..Default::default() };
-        let params = cfg.params_map();
-        f(&SourceCx { cfg: &cfg, params: &params, tm: tm(1, 2, 3, 0), icon_pack: "Default" })
+        let saved = BTreeMap::new();
+        let params = BTreeMap::new();
+        f(&SourceCx::new(InstanceRef::new("player-1", &saved), &params, tm(1, 2, 3, 0), "Default"))
     }
 
     #[test]
     fn a_registered_source_is_read_acted_on_and_retained() {
-        let mut src = DataSources::builtin();
+        let mut src = DataSources::fixed();
         src.register(Box::new(Media::default())).unwrap();
         assert!(with_cx(|cx| src.value("player", cx)).is_some_and(|v| v.get("title").is_some()));
         assert!(with_cx(|cx| src.act("player", "play_pause", "", cx)), "on_click = \"player.play_pause\"");
@@ -525,7 +591,7 @@ mod tests {
 
     #[test]
     fn a_native_source_says_it_changed_from_another_thread() {
-        let mut src = DataSources::builtin();
+        let mut src = DataSources::fixed();
         let (tx, rx) = std::sync::mpsc::channel();
         let tx = Mutex::new(tx);
         src.set_waker(Arc::new(move || {
@@ -581,10 +647,37 @@ mod tests {
             }
         }
         let src = DataSources::new(vec![Box::new(Weather)]);
-        let cfg = InstanceCfg::default();
-        let params = cfg.params_map();
-        let cx = SourceCx { cfg: &cfg, params: &params, tm: tm(1, 2, 3, 0), icon_pack: "Default" };
+        let (saved, params) = (BTreeMap::new(), BTreeMap::new());
+        let cx = SourceCx::new(InstanceRef::new("", &saved), &params, tm(1, 2, 3, 0), "Default");
         assert_eq!(src.value("weather", &cx).and_then(|v| v.get("temp").cloned()), Some(Value::Num(21.0)));
         assert_eq!(wake(&src, &deps(&["weather.temp"]), tm(12, 0, 0, 0)), Some(Duration::from_millis(60_002)));
+    }
+    /// The built-in sources over `fixed_with(pins)`, read by one cx at one instant.
+    fn read_pinned(pins: &crate::ambient::Pins, at: Instant) -> (Tm, Vec<Option<Value>>) {
+        let ambient = Ambient::fixed_with(pins);
+        let (src, saved, params) = (DataSources::from(&ambient), BTreeMap::new(), BTreeMap::new());
+        let now = ambient.calendar.now();
+        let cx = SourceCx::new(InstanceRef::new("w-1", &saved), &params, now, "Default").with_now(at);
+        (now, ["clock", "sys", "media", "audio"].iter().map(|n| src.value(n, &cx)).collect())
+    }
+
+    #[test]
+    fn two_sources_over_equal_pins_read_equal_values_and_the_overrides_show() {
+        let mut pins = crate::ambient::Pins::default();
+        for (k, v) in [("now", "2026-03-08T15:42:10"), ("zone", "Eastern Standard Time"), ("sys.cpu", "42"), ("sys.ram", "71"), ("media.title", "Blue in Green"), ("media.position", "100"), ("audio", "silence")] {
+            pins.set(k, &serde_json::from_str(v).unwrap_or_else(|_| serde_json::Value::String(v.into()))).unwrap();
+        }
+        let at = Instant::now();
+        let (now, a) = read_pinned(&pins, at);
+        let (_, b) = read_pinned(&pins, at);
+        assert_eq!(a, b, "every value, the same in two separate sources");
+        assert_eq!((now.month, now.day, now.hour, now.minute), (3, 8, 15, 42));
+        let [Some(clock), Some(sys), Some(media), Some(audio)] = &a[..] else { panic!("a source is missing") };
+        assert_eq!((clock.get("hour"), clock.get("minute")), (Some(&Value::Num(15.0)), Some(&Value::Num(42.0))));
+        assert_eq!((sys.get("cpu"), sys.get("ram")), (Some(&Value::Num(42.0)), Some(&Value::Num(71.0))));
+        assert_eq!((media.get("title"), media.get("clock")), (Some(&Value::Str("Blue in Green".into())), Some(&Value::Str("1:40".into()))));
+        assert!(matches!(audio.get("bands"), Some(Value::List(bars)) if bars.iter().all(|b| b.as_f64() == Some(0.0))), "silence draws flat bars: {audio:?}");
+        // the defaults differ from the overrides, so the test could fail
+        assert_ne!(read_pinned(&crate::ambient::Pins::default(), at).1, a);
     }
 }

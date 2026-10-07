@@ -1,0 +1,20 @@
+format = 1
+name = "clock at its smallest, default and largest size"
+tags = ["engine"]
+
+[widget]
+id = "clock"
+
+# the engine's own scene set: what every built-in Widget draws with its defaults and with
+# every switch on, at the smallest, the default and the largest size it allows
+
+[expect]
+flags = "error"
+
+[sweep]
+sizes = ["96x96", "220x220", "760x560"]
+
+[sweep.variants]
+defaults = {}
+all_on = { params = "bools:true" }
+

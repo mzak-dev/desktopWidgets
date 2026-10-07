@@ -1,0 +1,21 @@
+format = 1
+name = "calendar at its smallest, default and largest size"
+tags = ["engine"]
+
+[widget]
+id = "calendar"
+
+# the engine's own scene set: what every built-in Widget draws with its defaults and with
+# every switch on, at the smallest, the default and the largest size it allows
+# The month is the pinned 2026-01-15 in en-US: the demo Ambient's calendar, not the machine's locale.
+
+[expect]
+flags = "error"
+
+[sweep]
+sizes = ["150x56", "340x160", "720x640"]
+
+[sweep.variants]
+defaults = {}
+all_on = { params = "bools:true" }
+

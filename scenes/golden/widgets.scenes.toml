@@ -1,0 +1,91 @@
+format = 1
+# One golden scene for every other built-in widget, as the pinned world shows it: the demo
+# desktop's readings, the example track, the empty states of the widgets that need a file.
+
+[defaults]
+tags = ["golden"]
+
+[defaults.look]
+scale = 1.25
+palette = "Midnight"
+
+[defaults.env]
+now = 2026-09-21T15:42:18
+
+[defaults.widget]
+items = "demo"
+
+[defaults.expect]
+flags = "error"
+
+[[scene]]
+name = "system-monitor"
+[scene.widget]
+id = "system_monitor"
+size = "340x190"
+[scene.env.sys]
+cpu = 42
+
+[[scene]]
+name = "system-monitor-compact"
+[scene.widget]
+id = "system_monitor"
+tier = "compact"
+[scene.env.sys]
+cpu = 42
+
+[[scene]]
+name = "system-monitor-large"
+[scene.widget]
+id = "system_monitor"
+tier = "large"
+[scene.env.sys]
+cpu = 42
+# modules reach a pixel or two past their slot (fractional layout): see scenes/fits
+[scene.expect]
+allow = ["OVERFLOW-X"]
+
+[[scene]]
+name = "calendar"
+[scene.widget]
+id = "calendar"
+
+[[scene]]
+name = "agent-status"
+[scene.widget]
+id = "agent_status"
+
+[[scene]]
+name = "media-controller"
+[scene.widget]
+id = "media_controller"
+[scene.env.media]
+playing = true
+# the widget clips its rows: see scenes/fits
+[scene.expect]
+allow = ["OVERFLOW-Y"]
+
+[[scene]]
+name = "audio-visualizer"
+[scene.widget]
+id = "audio_visualizer"
+
+[[scene]]
+name = "drawer"
+[scene.widget]
+id = "drawer"
+
+[[scene]]
+name = "gif-player-empty"
+[scene.widget]
+id = "gif_player"
+
+[[scene]]
+name = "photo-frame-empty"
+[scene.widget]
+id = "photo_frame"
+
+[[scene]]
+name = "photo-gallery-empty"
+[scene.widget]
+id = "photo_gallery"

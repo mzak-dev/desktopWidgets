@@ -1,5 +1,6 @@
 //! Wayfinder: a desktop widget engine. See CONTEXT.md and docs/adr/.
 
+pub mod ambient;
 pub mod anim;
 pub mod app;
 pub mod card;
@@ -18,18 +19,28 @@ pub mod gfx;
 pub mod icons;
 pub mod images;
 pub mod menu;
-pub mod modules;
+pub mod meta;
+pub mod monitor;
+pub mod native;
 pub mod net;
 pub mod platform;
 pub mod plugins;
+pub mod render;
+pub mod scene;
 pub mod settings;
+pub mod shortcut;
+pub mod suggest;
 pub mod text;
+pub mod textspec;
 pub mod theme;
 pub mod thumbs;
 pub mod ui;
 pub mod value;
 pub mod widgets;
 pub mod workspace;
+
+#[cfg(test)]
+mod module_graph;
 
 pub use app::{Options, run};
 pub use data::{DataSource, Notifier, SourceCx};

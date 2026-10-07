@@ -392,7 +392,7 @@ impl MenuWin {
         let rows = rows(&self.data, self.st.expanded);
         self.st.track(&rows);
         let root = build(theme, &rows, &self.st, self.bottom, self.closing, size);
-        let mut env = Env { text, anim: &mut self.anim, hover: None, now, scale: s };
+        let mut env = Env { text, anim: &mut self.anim, hover: None, now, scale: s, trace: false };
         let frame = ui::layout(&root, size, &mut env);
         match gpu.render(&mut self.target, &frame.list, text) {
             Ok(()) => {}

@@ -22,13 +22,31 @@ pub enum Power {
 }
 
 impl Power {
-    /// Low unless asked: High can pin a core (ADR-005).
-    pub fn parse(s: &str) -> Power {
-        match s.to_ascii_lowercase().as_str() {
-            "high" => Power::High,
-            "software" | "warp" | "cpu" => Power::Software,
-            _ => Power::Low,
+    /// `high`, `low` or `software` (`warp` and `cpu` too). Anything else is an error, never a
+    /// guess: a typo must not pick a hardware adapter, which has crashed drivers before.
+    pub fn parse(s: &str) -> Result<Power, String> {
+        let lower = s.to_ascii_lowercase();
+        match lower.as_str() {
+            "high" => Ok(Power::High),
+            "low" => Ok(Power::Low),
+            "software" | "warp" | "cpu" => Ok(Power::Software),
+            "" => Err("the gpu mode is empty; use software, low or high".into()),
+            _ => Err(format!("unknown gpu mode `{s}`{}; use software, low or high", crate::suggest::suggest(&lower, &[&["software", "warp", "cpu", "low", "high"]]))),
         }
+    }
+
+    /// `s` (from `source`, for the message), or the software adapter with a warning when it is
+    /// not a gpu mode: the one choice that cannot reach a vendor driver.
+    pub fn parse_or_software(s: &str, source: &str) -> Power {
+        Power::parse(s).unwrap_or_else(|e| {
+            eprintln!("wayfinder: {source}: {e}; using software");
+            Power::Software
+        })
+    }
+
+    /// `WAYFINDER_GPU` for tools and examples: software when unset, and when it is not a mode.
+    pub fn from_env() -> Power {
+        std::env::var("WAYFINDER_GPU").map_or(Power::Software, |v| Power::parse_or_software(&v, "WAYFINDER_GPU"))
     }
     fn wgpu(self) -> wgpu::PowerPreference {
         match self {
@@ -41,14 +59,23 @@ impl Power {
     }
 }
 
+/// The adapter a `Gpu` runs on, for a render's record of its environment.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdapterReport {
+    pub name: String,
+    pub driver: String,
+    pub driver_info: String,
+    pub backend: String,
+    pub device_type: String,
+    pub vendor: u32,
+    pub device: u32,
+    /// A CPU rasteriser (WARP on Windows): the only adapter a hermetic render may use.
+    pub software: bool,
+}
+
 struct GpuImage {
     bind: wgpu::BindGroup,
-    /// Its layout size: one frame's, for an animation.
-    w: u32,
-    h: u32,
     frames: Option<crate::images::Frames>,
-    /// Its texture's size in memory.
-    bytes: u64,
 }
 
 struct Buf {
@@ -195,6 +222,11 @@ impl Gpu {
         }))
         .map_err(|e| format!("no adapter: {e}"))?;
         Self::build(instance, adapter, wgpu::TextureFormat::Bgra8Unorm, wgpu::CompositeAlphaMode::Auto, wgpu::PresentMode::Fifo)
+    }
+
+    pub fn adapter_report(&self) -> AdapterReport {
+        let i = self.adapter.get_info();
+        AdapterReport { name: i.name, driver: i.driver, driver_info: i.driver_info, backend: format!("{:?}", i.backend), device_type: format!("{:?}", i.device_type), vendor: i.vendor, device: i.device, software: i.device_type == wgpu::DeviceType::Cpu }
     }
 
     fn build(
@@ -450,26 +482,18 @@ impl Gpu {
     }
 
 
-    pub fn has_image(&self, id: &str) -> bool {
-        self.images.contains_key(id)
-    }
-
-    pub fn image_size(&self, id: &str) -> Option<(u32, u32)> {
-        self.images.get(id).map(|i| (i.w, i.h))
-    }
-
-    pub fn image_bytes(&self, id: &str) -> Option<u64> {
-        self.images.get(id).map(|i| i.bytes)
-    }
-
-    /// Upload straight-alpha RGBA8.
-    pub fn upload_image(&mut self, id: &str, rgba: &[u8], w: u32, h: u32) {
-        self.upload(id, rgba, w, h, None);
-    }
-
-    /// A decoded file: a still, or an animation's packed frames.
-    pub fn upload_decoded(&mut self, id: &str, d: &crate::images::Decoded) {
-        self.upload(id, &d.px, d.w, d.h, d.frames.clone());
+    /// Applies the image store's queue, in order. Called once before each render, so what the
+    /// render draws is what the store decided; nothing else uploads or drops a texture.
+    pub fn apply(&mut self, ops: Vec<crate::images::ImageOp>) {
+        use crate::images::ImageOp;
+        for op in ops {
+            match op {
+                ImageOp::Upload(id, d) => self.upload(&id, &d.px, d.w, d.h, d.frames),
+                ImageOp::Drop(id) => {
+                    self.images.remove(&id);
+                }
+            }
+        }
     }
 
     /// How soon a playing animation in `list` shows its next frame.
@@ -504,29 +528,23 @@ impl Gpu {
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
             ],
         });
-        let bytes = w as u64 * h as u64 * 4;
-        let (w, h) = frames.as_ref().map_or((w, h), |f| (f.frame_w, f.frame_h));
-        self.images.insert(id.to_string(), GpuImage { bind, w, h, frames, bytes });
-    }
-
-    pub fn drop_image(&mut self, id: &str) {
-        self.images.remove(id);
+        self.images.insert(id.to_string(), GpuImage { bind, frames });
     }
 
 
-    fn encode(&mut self, t: &mut Target, list: &DrawList, text: &mut TextEngine, view: &wgpu::TextureView) -> Result<wgpu::CommandBuffer, String> {
+    fn encode(&mut self, t: &mut Target, list: &DrawList, text: &mut TextEngine, view: &wgpu::TextureView, at: std::time::Duration) -> Result<wgpu::CommandBuffer, String> {
         let (w, h) = (t.cfg.width, t.cfg.height);
         self.queue.write_buffer(&t.globals, 0, bytemuck::cast_slice(&[w as f32, h as f32, 0.0, 0.0]));
         t.viewport.update(&self.queue, Resolution { width: w, height: h });
 
-        let TextEngine { fs, swash, slots, .. } = text;
+        let (fs, swash, buffers) = text.render_parts();
         for i in 0..2 {
             let layer = &list.layers[i];
             let areas: Vec<TextArea> = layer
                 .texts
                 .iter()
                 .filter_map(|it| {
-                    let buffer = &slots.get(&it.key)?.buf;
+                    let buffer = buffers.get(&it.key)?;
                     let c = it.color;
                     Some(TextArea {
                         buffer,
@@ -543,7 +561,7 @@ impl Gpu {
                 .prepare(&self.device, &self.queue, fs, &mut self.atlas, &t.viewport, areas, swash)
                 .map_err(|e| format!("text prepare: {e}"))?;
             t.shapes[i].write(&self.device, &self.queue, bytemuck::cast_slice(&layer.shapes));
-            let elapsed = self.epoch.elapsed().as_millis() as u64;
+            let elapsed = at.as_millis() as u64;
             let imgs: Vec<ImgInst> = layer
                 .images
                 .iter()
@@ -632,14 +650,15 @@ impl Gpu {
             }
         };
         let view = frame.texture.create_view(&Default::default());
-        let cmd = self.encode(t, list, text, &view).map_err(RenderError::Skip)?;
+        let cmd = self.encode(t, list, text, &view, self.epoch.elapsed()).map_err(RenderError::Skip)?;
         self.queue.submit([cmd]);
         self.queue.present(frame);
         self.atlas.trim();
         Ok(())
     }
 
-    pub fn render_offscreen(&mut self, w: u32, h: u32, list: &DrawList, text: &mut TextEngine) -> Result<Vec<u8>, String> {
+    /// `at` is how long the animations have played: it picks each GIF's frame.
+    pub fn render_offscreen(&mut self, w: u32, h: u32, list: &DrawList, text: &mut TextEngine, at: std::time::Duration) -> Result<Vec<u8>, String> {
         let mut t = self.target_inner(None, None, w, h);
         let tex = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("offscreen"),
@@ -652,7 +671,7 @@ impl Gpu {
             view_formats: &[],
         });
         let view = tex.create_view(&Default::default());
-        let cmd = self.encode(&mut t, list, text, &view)?;
+        let cmd = self.encode(&mut t, list, text, &view, at)?;
         let row = (w * 4).div_ceil(256) * 256;
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
@@ -684,5 +703,39 @@ impl Gpu {
             }
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gpu_modes_parse_and_anything_else_is_an_error_not_a_hardware_adapter() {
+        for (s, p) in [("software", Power::Software), ("WARP", Power::Software), ("cpu", Power::Software), ("low", Power::Low), ("Low", Power::Low), ("high", Power::High), ("HIGH", Power::High)] {
+            assert_eq!(Power::parse(s), Ok(p), "{s}");
+        }
+        for bad in ["bogus", "", " low", "lo w", "medium", "hardware"] {
+            let e = Power::parse(bad).unwrap_err();
+            assert!(e.contains("software, low or high"), "{bad:?}: {e}");
+        }
+        assert!(Power::parse("").unwrap_err().contains("empty"));
+        assert!(Power::parse("bogus").unwrap_err().contains("`bogus`"));
+    }
+
+    #[test]
+    fn a_near_miss_names_the_mode_it_was_close_to() {
+        assert!(Power::parse("sofware").unwrap_err().contains("did you mean `software`?"));
+        assert!(Power::parse("hihg").unwrap_err().contains("did you mean `high`?"));
+        assert!(Power::parse("lwo").unwrap_err().contains("did you mean `low`?"));
+        assert!(!Power::parse("bogus").unwrap_err().contains("did you mean"));
+    }
+
+    #[test]
+    fn unknown_modes_from_the_environment_or_settings_fall_back_to_software() {
+        assert_eq!(Power::parse_or_software("bogus", "test"), Power::Software);
+        assert_eq!(Power::parse_or_software("", "test"), Power::Software);
+        assert_eq!(Power::parse_or_software("high", "test"), Power::High);
+        assert_eq!(Power::parse_or_software("low", "test"), Power::Low);
     }
 }

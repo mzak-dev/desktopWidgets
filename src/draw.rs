@@ -78,6 +78,32 @@ pub struct DrawList {
 }
 
 impl DrawList {
+    /// Every field of every item as bytes, for tests that compare two lists exactly.
+    #[cfg(test)]
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for l in &self.layers {
+            out.extend_from_slice(&(l.shapes.len() as u64).to_le_bytes());
+            out.extend_from_slice(bytemuck::cast_slice(&l.shapes));
+            out.extend_from_slice(&(l.images.len() as u64).to_le_bytes());
+            for i in &l.images {
+                out.extend_from_slice(i.tex.as_bytes());
+                out.extend_from_slice(bytemuck::bytes_of(&i.inst));
+                out.extend_from_slice(&[i.play as u8]);
+                out.extend_from_slice(&i.frame.map_or(u64::MAX, u64::from).to_le_bytes());
+            }
+            out.extend_from_slice(&(l.texts.len() as u64).to_le_bytes());
+            for t in &l.texts {
+                out.extend_from_slice(t.key.as_bytes());
+                for v in [t.x, t.y, t.scale].into_iter().chain(t.clip) {
+                    out.extend_from_slice(&v.to_bits().to_le_bytes());
+                }
+                out.extend_from_slice(&t.color);
+            }
+        }
+        out
+    }
+
     /// The images this list draws.
     pub fn image_ids(&self) -> impl Iterator<Item = &str> {
         self.layers.iter().flat_map(|l| &l.images).map(|d| d.tex.as_str())

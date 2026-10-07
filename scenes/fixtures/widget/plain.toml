@@ -1,0 +1,43 @@
+name = "Plain"
+description = "Boxes and shapes and no text: a fixture whose layout does not depend on the machine's fonts."
+category = "Fixtures"
+icon = "box"
+size = [180, 100]
+min_size = [48, 48]
+max_size = [400, 300]
+
+[root]
+direction = "row"
+gap = 8
+padding = 10
+fill = "#203040"
+radius = 12
+border = 1
+shadow = { blur = 12, dy = 4 }
+
+  [[root.children]]
+  width = 40
+  radius = 6
+  fill = "#ff8800"
+  hover = { fill = "#ffaa33" }
+  on_click = "toggle picked"
+
+  [[root.children]]
+  grow = 1
+  direction = "column"
+  gap = 4
+
+    [[root.children.children]]
+    height = 14
+    radius = 4
+    fill = "#ffffff30"
+
+    [[root.children.children]]
+    grow = 1
+    type = "ticks"
+    count = 12
+    major_every = 3
+    tick_length = 4
+    major_length = 8
+    tick_width = 1
+    major_width = 2

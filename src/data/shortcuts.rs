@@ -1,47 +1,19 @@
 //! An Instance's `items` param, or the live contents of its `folder` param.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 
 use super::{Cadence, DataSource, SourceCx};
+use crate::shortcut::{Shortcut, file_stem, icon_id};
 use crate::value::Value;
-use crate::workspace::InstanceCfg;
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Shortcut {
-    pub name: String,
-    pub target: String,
-    /// Overrides the target's own icon when not empty.
-    pub icon: String,
-}
-
-impl Shortcut {
-    pub fn from_value(v: &Value) -> Option<Shortcut> {
-        let s = |k: &str| v.get(k).map(|x| x.to_string()).unwrap_or_default();
-        let target = s("target");
-        if target.is_empty() {
-            return None;
-        }
-        let name = if s("name").is_empty() { file_stem(&target) } else { s("name") };
-        Some(Shortcut { name, target, icon: s("icon") })
-    }
-
-    pub fn to_value(&self) -> Value {
-        Value::obj([("name", self.name.as_str().into()), ("target", self.target.as_str().into()), ("icon", self.icon.as_str().into())])
-    }
-}
-
-pub fn file_stem(target: &str) -> String {
-    let t = target.trim_end_matches(['\\', '/']);
-    Path::new(t).file_stem().and_then(|s| s.to_str()).unwrap_or(t).to_string()
-}
+use super::InstanceRef;
 
 /// Dock actions never accept a target invented by a network/plugin source.
 /// Only an exact member of this instance's explicit, user-pinned list is trusted.
-pub fn dock_target(cfg: &InstanceCfg, verb: &str, arg: &str) -> Option<String> {
+pub fn dock_target(inst: InstanceRef, verb: &str, arg: &str) -> Option<String> {
     match verb {
-        "shortcuts.open" => cfg.items().into_iter().find(|s| s.target == arg && !arg.is_empty()).map(|s| s.target),
+        "shortcuts.open" => inst.items().into_iter().find(|s| s.target == arg && !arg.is_empty()).map(|s| s.target),
         "shortcuts.recycle_bin" if arg.is_empty() => Some("shell:RecycleBinFolder".into()),
         _ => None,
     }
@@ -70,13 +42,6 @@ pub fn starter_apps() -> Vec<Shortcut> {
         .collect()
 }
 
-/// Not a legal path character.
-pub const ID_SEP: char = '\u{1f}';
-
-pub fn icon_id(pack: &str, s: &Shortcut) -> String {
-    format!("icon:{pack}{ID_SEP}{}{ID_SEP}{}", s.target, s.icon)
-}
-
 pub fn shortcuts_value(items: &[Shortcut], pack: &str) -> Value {
     let list = items
         .iter()
@@ -97,10 +62,10 @@ pub struct Shortcuts {
 }
 
 impl Shortcuts {
-    pub fn items_of(&self, cfg: &InstanceCfg) -> Vec<Shortcut> {
-        let folder = cfg.folder();
+    pub fn items_of(&self, inst: InstanceRef) -> Vec<Shortcut> {
+        let folder = inst.folder();
         if folder.is_empty() {
-            return cfg.items();
+            return inst.items();
         }
         let mut cache = self.folder_listings.lock().unwrap_or_else(|e| e.into_inner());
         cache.entry(folder).or_insert_with_key(|f| folder_items(f, MAX_FOLDER_ENTRIES)).clone()
@@ -113,7 +78,7 @@ impl DataSource for Shortcuts {
     }
 
     fn value(&self, cx: &SourceCx) -> Value {
-        shortcuts_value(&self.items_of(cx.cfg), cx.icon_pack)
+        shortcuts_value(&self.items_of(cx.instance()), cx.icon_pack())
     }
 
     fn cadence(&self, _field: &str, _cx: &SourceCx) -> Option<Cadence> {
@@ -121,7 +86,7 @@ impl DataSource for Shortcuts {
     }
 
     fn watched_paths(&self, cx: &super::SourceCx) -> Vec<PathBuf> {
-        let folder = cx.cfg.folder();
+        let folder = cx.instance().folder();
         if folder.is_empty() { vec![] } else { vec![PathBuf::from(folder)] }
     }
 
@@ -133,18 +98,19 @@ impl DataSource for Shortcuts {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace::InstanceCfg;
 
     #[test]
     fn dock_actions_only_open_explicit_pins_or_the_fixed_recycle_bin() {
         let mut cfg = InstanceCfg::default();
         cfg.set_items(&[Shortcut { name: "Editor".into(), target: "C:\\Apps\\Editor.exe".into(), icon: "".into() }]);
-        assert_eq!(dock_target(&cfg, "shortcuts.open", "C:\\Apps\\Editor.exe"), Some("C:\\Apps\\Editor.exe".into()));
+        assert_eq!(dock_target(cfg.instance(), "shortcuts.open", "C:\\Apps\\Editor.exe"), Some("C:\\Apps\\Editor.exe".into()));
         for arg in ["", "C:\\Apps\\Other.exe", "C:\\Apps\\Editor.exe --flag", "shell:AppsFolder", "https://untrusted.example"] {
-            assert_eq!(dock_target(&cfg, "shortcuts.open", arg), None);
+            assert_eq!(dock_target(cfg.instance(), "shortcuts.open", arg), None);
         }
-        assert_eq!(dock_target(&cfg, "shortcuts.recycle_bin", ""), Some("shell:RecycleBinFolder".into()));
-        assert_eq!(dock_target(&cfg, "shortcuts.recycle_bin", "anything"), None);
-        assert_eq!(dock_target(&cfg, "shortcuts.empty_bin", ""), None);
+        assert_eq!(dock_target(cfg.instance(), "shortcuts.recycle_bin", ""), Some("shell:RecycleBinFolder".into()));
+        assert_eq!(dock_target(cfg.instance(), "shortcuts.recycle_bin", "anything"), None);
+        assert_eq!(dock_target(cfg.instance(), "shortcuts.empty_bin", ""), None);
     }
 
     #[test]
@@ -161,22 +127,23 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("b.txt"), "").unwrap();
         let src = Shortcuts::default();
-        let mut cfg = InstanceCfg::default();
-        cfg.set_items(&starter_apps());
-        assert_eq!(src.items_of(&cfg).len(), 4, "no folder: the explicit list");
-        let watched = |cfg: &InstanceCfg| {
-            let params = cfg.params_map();
-            src.watched_paths(&SourceCx { cfg, params: &params, tm: crate::data::Tm { year: 2026, month: 1, day: 1, dow: 4, hour: 0, minute: 0, second: 0, ms: 0 }, icon_pack: "Default" })
+        let mut saved = std::collections::BTreeMap::new();
+        saved.insert("items".to_string(), serde_json::Value::Array(starter_apps().iter().map(|s| serde_json::Value::from(&s.to_value())).collect()));
+        let items = |saved: &std::collections::BTreeMap<String, serde_json::Value>| src.items_of(InstanceRef::new("", saved));
+        assert_eq!(items(&saved).len(), 4, "no folder: the explicit list");
+        let watched = |saved: &std::collections::BTreeMap<String, serde_json::Value>| {
+            let params = std::collections::BTreeMap::new();
+            src.watched_paths(&SourceCx::new(InstanceRef::new("", saved), &params, crate::data::Tm::new(2026, 1, 1, 4, 0, 0, 0, 0), "Default"))
         };
-        assert!(watched(&cfg).is_empty());
+        assert!(watched(&saved).is_empty());
 
-        cfg.params.insert("folder".into(), serde_json::Value::String(dir.to_string_lossy().into_owned()));
-        assert_eq!(src.items_of(&cfg).iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["b"]);
-        assert_eq!(watched(&cfg), vec![dir.clone()]);
+        saved.insert("folder".into(), serde_json::Value::String(dir.to_string_lossy().into_owned()));
+        assert_eq!(items(&saved).iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["b"]);
+        assert_eq!(watched(&saved), vec![dir.clone()]);
         std::fs::write(dir.join("a.txt"), "").unwrap();
-        assert_eq!(src.items_of(&cfg).len(), 1, "cached until the watcher says otherwise");
+        assert_eq!(items(&saved).len(), 1, "cached until the watcher says otherwise");
         src.invalidate();
-        assert_eq!(src.items_of(&cfg).iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(items(&saved).iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["a", "b"]);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

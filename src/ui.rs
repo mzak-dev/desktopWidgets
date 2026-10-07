@@ -1,7 +1,6 @@
 //! Node tree -> taffy layout -> draw list + hit regions, shared by widgets and
 //! the settings window (decision 9).
 
-use std::sync::Arc;
 use std::time::Instant;
 
 use taffy::prelude::*;
@@ -9,79 +8,18 @@ use taffy::prelude::*;
 use crate::anim::{Anim, Ease, Pic};
 use crate::color::Color;
 use crate::draw::*;
-use crate::elements::{Shape, ShapeCx, rgba_with_opacity};
-use crate::text::{TextEngine, TextSpec};
+use crate::elements::{ShapeCx, rgba_with_opacity};
+use crate::text::{RunInfo, TextEngine};
+use crate::textspec::TextSpec;
 
-pub use crate::elements::{ArcSpec, HandSpec, TicksSpec};
+pub use crate::elements::{ArcSpec, Fit, HandSpec, ImageSpec, Kind, TicksSpec};
 
-#[derive(Clone, Debug)]
-pub enum Kind {
-    Box,
-    Text(TextSpec),
-    Image(ImageSpec),
-    Shape(Arc<dyn Shape>),
-}
-
-impl Kind {
-    pub fn shape(s: impl Shape + 'static) -> Kind {
-        Kind::Shape(Arc::new(s))
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct ImageSpec {
-    pub id: String,
-    /// Intrinsic size, used when the style sets none.
-    pub w: f32,
-    pub h: f32,
-    pub tint: Option<Color>,
-    /// An animation plays (`anim = false` freezes it on its first frame).
-    pub play: bool,
-    /// Shows this frame of an animation instead of playing it.
-    pub frame: Option<u32>,
-    pub fit: Fit,
-    /// Logical px over which the edge fades to transparent, inside the rounded shape.
-    pub feather: f32,
-    /// Ms over which a new `id` fades in over the old one; 0 swaps at once.
-    pub fade: u32,
-    /// The picture has loaded; until then a fade keeps showing the old one.
-    pub ready: bool,
-}
-
-/// How an image fills a box of another shape.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Fit {
-    /// All of it shows, letter-boxed.
-    #[default]
-    Contain,
-    /// It fills the box, cropped around its centre.
-    Cover,
-}
-
-impl Fit {
-    pub fn parse(s: &str) -> Option<Fit> {
-        match s {
-            "contain" => Some(Fit::Contain),
-            "cover" => Some(Fit::Cover),
-            _ => None,
-        }
-    }
-
-    /// The drawn size in the box `w` x `h`, and the part of the image shown, `[u0, v0, u1, v1]`.
-    pub fn place(self, img: (f32, f32), w: f32, h: f32) -> ((f32, f32), [f32; 4]) {
-        let (iw, ih) = (img.0.max(1.0), img.1.max(1.0));
-        match self {
-            Fit::Contain => {
-                let k = (w / iw).min(h / ih);
-                ((iw * k, ih * k), [0.0, 0.0, 1.0, 1.0])
-            }
-            Fit::Cover => {
-                let k = (w / iw).max(h / ih);
-                let (fx, fy) = ((w / (iw * k)).min(1.0), (h / (ih * k)).min(1.0));
-                ((w, h), [0.5 - fx / 2.0, 0.5 - fy / 2.0, 0.5 + fx / 2.0, 0.5 + fy / 2.0])
-            }
-        }
-    }
+/// In card units from a Widget, window units after `Card::expand_in_window_units`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExpandInfo {
+    pub active: bool,
+    pub width: Option<f32>,
+    pub height: Option<f32>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -391,6 +329,69 @@ pub struct ScrollInfo {
     pub horizontal: bool,
 }
 
+/// One scroll axis of a container, in logical px.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollAxis {
+    pub offset: f32,
+    pub view: f32,
+    pub content: f32,
+}
+
+/// The kind-specific part of a `Placed`.
+#[derive(Clone, Debug)]
+pub enum PlacedKind {
+    Box,
+    Text {
+        spec: TextSpec,
+        /// What the text is drawn in: `spec.color` after hover and its transition, before opacity.
+        color: Color,
+        /// Shaping facts; `None` when the node never reached the text engine.
+        run: Option<RunInfo>,
+    },
+    Image {
+        spec: ImageSpec,
+        /// The picture ids drawn this frame: the old one then the new one during a fade.
+        shown: Vec<String>,
+    },
+    Shape {
+        name: &'static str,
+        attrs: Vec<(&'static str, String)>,
+    },
+}
+
+/// What `emit` knew about one node, recorded when `Env.trace` is on (pre-order, beside
+/// `Frame.rects`): the facts a scene dump prints.
+#[derive(Clone, Debug)]
+pub struct Placed {
+    pub key: String,
+    /// 0 = the window node, 1 = the card.
+    pub depth: u32,
+    pub kind: PlacedKind,
+    /// Logical px in the window.
+    pub rect: [f32; 4],
+    /// The clip this node is drawn under, `[x0, y0, x1, y1]` logical px (`Hit.clip`'s form;
+    /// effectively unbounded when nothing above clips).
+    pub clip: [f32; 4],
+    /// The clip this node imposes on its children, when it clips or scrolls.
+    pub imposes: Option<[f32; 4]>,
+    /// Effective opacity: ancestors, the node's own (hover, transition) and its enter fade.
+    pub opacity: f32,
+    pub layer: usize,
+    /// As drawn: the animated fill and border colour, `opacity` being the node's own.
+    pub look: Look,
+    pub hover: Hover,
+    pub enter: Option<Enter>,
+    pub action: Option<String>,
+    pub on_drop: Option<String>,
+    pub on_slide: Option<String>,
+    /// It is in `Frame.hits`.
+    pub hit: bool,
+    pub scroll_y: Option<ScrollAxis>,
+    pub scroll_x: Option<ScrollAxis>,
+    /// `emit` drew it: it has area and is not transparent.
+    pub drawn: bool,
+}
+
 #[derive(Default)]
 pub struct Frame {
     pub list: DrawList,
@@ -400,6 +401,8 @@ pub struct Frame {
     pub scrolls: Vec<ScrollInfo>,
     /// (x, y, w, h) in logical px, per key.
     pub rects: Vec<(String, [f32; 4])>,
+    /// Every node in pre-order; empty unless `Env.trace` was on.
+    pub nodes: Vec<Placed>,
     pub animating: bool,
     pub content_size: (f32, f32),
 }
@@ -425,6 +428,8 @@ pub struct Env<'a> {
     pub hover: Option<&'a str>,
     pub now: Instant,
     pub scale: f32,
+    /// Also record a `Placed` per node in `Frame.nodes`. Off for the app; the draw list is the same either way.
+    pub trace: bool,
 }
 
 struct Ctx {
@@ -581,8 +586,11 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
     let clip = ctx.clip;
     let list = &mut out.list.layers[layer];
     let rect = [x, y, w, h];
+    let drawn = w > 0.0 && h > 0.0 && op > 0.001;
+    let mut traced_color = None;
+    let mut shown = Vec::new();
 
-    if w > 0.0 && h > 0.0 && op > 0.001 {
+    if drawn {
         let (cx, cy, hw, hh) = ((x + w / 2.0) * s, (y + h / 2.0) * s, w / 2.0 * s, h / 2.0 * s);
         let r = (n.look.radius * s).min(hw).min(hh);
         if let Some(sh) = n.look.shadow {
@@ -617,6 +625,7 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                 env.text.prepare(key, spec, w);
                 let mut color = if hov { n.hover.text_color.unwrap_or(spec.color) } else { spec.color };
                 color = Color(env.anim.value(key, "tc", color.0, tr.ms, tr.ease, 0, None, now));
+                traced_color = Some(color);
                 list.texts.push(TextItem {
                     key: key.to_string(),
                     x: x * s,
@@ -644,6 +653,9 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
                 let (under, over) = if im.fade > 0 { env.anim.crossfade(key, target, im.ready, im.fade, now) } else { (target, None) };
                 // the old picture underneath at full opacity, the new one over it; each fits by its own size
                 for (pic, alpha) in std::iter::once((under, op)).chain(over.map(|(p, t)| (p, op * t))) {
+                    if env.trace {
+                        shown.push(pic.id.clone());
+                    }
                     let ((fw, fh), uv) = im.fit.place(pic.size, w, h);
                     let (dw, dh) = (fw / 2.0 * s * image_scale, fh / 2.0 * s * image_scale);
                     list.images.push(ImgDraw {
@@ -668,7 +680,8 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
         }
     }
 
-    if n.hit_testable || n.action.is_some() || n.on_drop.is_some() || n.on_slide.is_some() || n.hover.any() {
+    let has_hit = n.hit_testable || n.action.is_some() || n.on_drop.is_some() || n.on_slide.is_some() || n.hover.any();
+    if has_hit {
         let h = Hit { rect, clip: [clip[0] / s, clip[1] / s, clip[2] / s, clip[3] / s], key: key.to_string(), action: n.action.clone(), on_drop: n.on_drop.clone(), on_slide: n.on_slide.clone() };
         if layer == 1 { out.overlay_hits.push(h) } else { out.hits.push(h) }
     }
@@ -686,6 +699,43 @@ fn emit(n: &Node, ids: &[NodeId], next: &mut usize, tree: &TaffyTree<usize>, ori
     if let Some(off) = n.scroll_offset_x {
         child_origin.0 -= off;
         out.scrolls.push(ScrollInfo { key: key.to_string(), view: w, content: l.scrollable_overflow_rect.right.max(w), horizontal: true });
+    }
+    if env.trace {
+        let axis = |horizontal: bool| out.scrolls.iter().rev().find(|s| s.key == key && s.horizontal == horizontal);
+        let (scroll_y, scroll_x) = (
+            n.scroll_offset.and_then(|offset| axis(false).map(|s| ScrollAxis { offset, view: s.view, content: s.content })),
+            n.scroll_offset_x.and_then(|offset| axis(true).map(|s| ScrollAxis { offset, view: s.view, content: s.content })),
+        );
+        let kind = match &n.kind {
+            Kind::Box => PlacedKind::Box,
+            Kind::Text(spec) => PlacedKind::Text { spec: spec.clone(), color: traced_color.unwrap_or(spec.color), run: env.text.describe(key, spec) },
+            Kind::Image(im) => PlacedKind::Image { spec: im.clone(), shown },
+            Kind::Shape(shape) => {
+                let (name, attrs) = shape.describe();
+                PlacedKind::Shape { name, attrs }
+            }
+        };
+        let logical = |c: [f32; 4]| [c[0] / s, c[1] / s, c[2] / s, c[3] / s];
+        out.nodes.push(Placed {
+            key: key.to_string(),
+            depth: ctx.depth,
+            kind,
+            rect,
+            clip: logical(clip),
+            imposes: (n.clip || n.scroll_offset.is_some() || n.scroll_offset_x.is_some()).then(|| logical(child_ctx.clip)),
+            opacity: op,
+            layer,
+            look: Look { fill, gradient_bottom: fill2, border: n.look.border, border_color, radius: n.look.radius, opacity: own_op, shadow: n.look.shadow },
+            hover: n.hover,
+            enter: n.enter,
+            action: n.action.clone(),
+            on_drop: n.on_drop.clone(),
+            on_slide: n.on_slide.clone(),
+            hit: has_hit,
+            scroll_y,
+            scroll_x,
+            drawn,
+        });
     }
     for c in &n.children {
         emit(c, ids, next, tree, child_origin, &child_ctx, env, out);
@@ -707,7 +757,7 @@ mod tests {
         tile.children.push(image);
         let root = Node::new("w").wh(100.0, 100.0).child(tile);
         let (mut text, mut anim) = (TextEngine::new(), Anim::default());
-        let mut env = Env { text: &mut text, anim: &mut anim, hover: Some("w/tile"), now: Instant::now(), scale: 1.0 };
+        let mut env = Env { text: &mut text, anim: &mut anim, hover: Some("w/tile"), now: Instant::now(), scale: 1.0, trace: false };
         let frame = layout(&root, (100.0, 100.0), &mut env);
         let image = &frame.list.layers[0].images[0].inst;
         assert_eq!(image.half, [30.0, 30.0]);
@@ -738,7 +788,7 @@ mod tests {
         strip.scroll_offset_x = Some(70.0);
         strip.children[1].on_drop = Some("gallery.add".into());
         let root = Node::new("w").wh(100.0, 40.0).child(strip);
-        let mut env = Env { text: &mut TextEngine::new(), anim: &mut Anim::default(), hover: None, now: Instant::now(), scale: 1.0 };
+        let mut env = Env { text: &mut TextEngine::new(), anim: &mut Anim::default(), hover: None, now: Instant::now(), scale: 1.0, trace: false };
         let f = layout(&root, (100.0, 40.0), &mut env);
         let s = f.scrolls.iter().find(|s| s.key == "w/s").unwrap();
         assert_eq!((s.horizontal, s.view, s.content), (true, 100.0, 300.0), "five 60 px cards in 100 px");
@@ -747,12 +797,155 @@ mod tests {
         assert_eq!(f.drop_at(60.0, 20.0), None, "the next card takes no files");
     }
 
+    /// A window, a clipping card and, inside it, one of each thing the trace has to say something about.
+    fn fixture() -> Node {
+        let ticks = Node { kind: Kind::shape(TicksSpec { count: 12, major_every: 3, len: 4.0, major_len: 8.0, width: 1.0, major_width: 2.0, color: Color([1.0, 0.0, 0.0, 1.0]), major_color: Color([0.0, 1.0, 0.0, 0.5]), inset: 6.5 }), ..Node::new("w/c/ticks").wh(40.0, 40.0) };
+        let pic = Node { kind: Kind::Image(ImageSpec { id: "pic.png".into(), w: 48.0, h: 24.0, ready: true, ..Default::default() }), ..Node::new("w/c/pic").w(40.0) };
+        let list = Node::new("w/c/list").col().wh(100.0, 50.0).scroll(10.0).kids((0..4).map(|i| Node::new(format!("w/c/list/{i}")).h(30.0)));
+        let mut strip = Node::new("w/c/strip").row().wh(100.0, 20.0).kids((0..4).map(|i| Node::new(format!("w/c/strip/{i}")).w(60.0)));
+        strip.scroll_offset_x = Some(5.0);
+        let mut drop = Node::new("w/c/drop").wh(20.0, 10.0);
+        (drop.on_drop, drop.on_slide) = (Some("files.add".into()), Some("vol.set".into()));
+        let card = Node::new("w/c")
+            .grow(1.0)
+            .col()
+            .clip()
+            .radius(12.0)
+            .fill(Color([0.1, 0.2, 0.3, 1.0]))
+            .border(1.0, Color([1.0; 4]))
+            .shadow(8.0, 2.0, Color([0.0, 0.0, 0.0, 0.5]))
+            .child(Node::text("w/c/title", "Hello", 14.0, Color([1.0; 4])))
+            .child(Node::text("w/c/body", "A long sentence that has to wrap in a narrow box", 12.0, Color([1.0; 4])).w(60.0).with_text(|t| t.wrap = true))
+            .child(Node::new("w/c/btn").wh(40.0, 20.0).on("tog:x").hover_fill(Color([1.0; 4])).enter(300, 8.0, 0))
+            .child(list)
+            .child(strip)
+            .child(drop)
+            .child(ticks)
+            .child(pic)
+            .child(Node::new("w/c/pop").overlay().abs(Some(0.0), Some(0.0), None, None).wh(10.0, 10.0).fill(Color([1.0; 4])));
+        Node::new("w").wh(200.0, 300.0).opacity(0.5).child(card)
+    }
+
+    fn traced(root: &Node, size: (f32, f32), scale: f32, trace: bool, text: &mut TextEngine) -> Frame {
+        layout(root, size, &mut Env { text, anim: &mut Anim::default(), hover: None, now: Instant::now(), scale, trace })
+    }
+
+    fn node<'a>(f: &'a Frame, key: &str) -> &'a Placed {
+        f.nodes.iter().find(|p| p.key == key).unwrap_or_else(|| panic!("no `{key}` in the trace"))
+    }
+
+    #[test]
+    fn tracing_off_records_nothing_and_on_records_every_node_beside_rects() {
+        let (root, mut text) = (fixture(), TextEngine::new());
+        assert!(traced(&root, (200.0, 300.0), 1.0, false, &mut text).nodes.is_empty(), "the flag is opt-in");
+        let f = traced(&root, (200.0, 300.0), 1.0, true, &mut text);
+        assert_eq!(f.nodes.len(), f.rects.len());
+        assert!(f.nodes.iter().zip(&f.rects).all(|(p, (k, r))| p.key == *k && p.rect == *r), "pre-order, the same keys and rects");
+        let depths: Vec<(&str, u32)> = ["w", "w/c", "w/c/title", "w/c/list/3"].iter().map(|k| (*k, node(&f, k).depth)).collect();
+        assert_eq!(depths, [("w", 0), ("w/c", 1), ("w/c/title", 2), ("w/c/list/3", 3)]);
+    }
+
+    #[test]
+    fn the_draw_list_is_the_same_with_the_trace_on_or_off() {
+        let (root, mut text) = (fixture(), TextEngine::new());
+        for scale in [1.0, 1.25, 2.0] {
+            let off = traced(&root, (200.0, 300.0), scale, false, &mut text);
+            let on = traced(&root, (200.0, 300.0), scale, true, &mut text);
+            assert!(!off.list.to_bytes().is_empty());
+            assert!(off.list.to_bytes() == on.list.to_bytes(), "draw list differs at scale {scale}");
+            assert_eq!((&off.rects, off.content_size, off.animating), (&on.rects, on.content_size, on.animating));
+            let hits = |f: &Frame| f.hits.iter().map(|h| (h.key.clone(), h.rect, h.clip, h.action.clone())).collect::<Vec<_>>();
+            assert_eq!(hits(&off), hits(&on));
+            assert_eq!(off.scrolls.len(), on.scrolls.len());
+        }
+    }
+
+    #[test]
+    fn the_trace_says_how_each_node_is_drawn() {
+        let (root, mut text) = (fixture(), TextEngine::new());
+        let f = traced(&root, (200.0, 300.0), 2.0, true, &mut text);
+        let (w, card) = (node(&f, "w"), node(&f, "w/c"));
+        assert!((w.opacity - 0.5).abs() < 1e-6 && (card.opacity - 0.5).abs() < 1e-6, "a child inherits its parent's opacity");
+        assert!((card.look.opacity - 1.0).abs() < 1e-6, "look.opacity is the node's own");
+        assert_eq!((card.look.fill, card.look.border, card.look.radius), (Color([0.1, 0.2, 0.3, 1.0]), 1.0, 12.0));
+        assert_eq!(card.look.shadow.map(|s| (s.blur, s.dy)), Some((8.0, 2.0)));
+        assert!(card.drawn && !card.hit && card.layer == 0);
+        // clips are logical px whatever the scale: the card imposes its own rect on its children
+        let [x, y, cw, ch] = card.rect;
+        assert_eq!(card.imposes, Some([x, y, x + cw, y + ch]));
+        assert_eq!(node(&f, "w/c/title").clip, [x, y, x + cw, y + ch]);
+        assert_eq!(w.imposes, None);
+        assert!(w.clip[0] < -1e3 && w.clip[2] > 1e3, "nothing above the window clips");
+
+        let btn = node(&f, "w/c/btn");
+        assert_eq!((btn.hit, btn.action.as_deref(), btn.enter.map(|e| (e.ms, e.dy))), (true, Some("tog:x"), Some((300, 8.0))));
+        assert_eq!(btn.hover.fill, Some(Color([1.0; 4])));
+        let drop = node(&f, "w/c/drop");
+        assert_eq!((drop.hit, drop.on_drop.as_deref(), drop.on_slide.as_deref()), (true, Some("files.add"), Some("vol.set")));
+
+        let list = node(&f, "w/c/list");
+        assert_eq!(list.scroll_y, Some(ScrollAxis { offset: 10.0, view: 50.0, content: 120.0 }));
+        assert_eq!((list.scroll_x, list.imposes.is_some()), (None, true));
+        assert_eq!(node(&f, "w/c/list/0").rect[1], list.rect[1] - 10.0, "scrolled content sits above the top by the offset");
+        let strip = node(&f, "w/c/strip");
+        assert_eq!(strip.scroll_x, Some(ScrollAxis { offset: 5.0, view: 100.0, content: 240.0 }));
+
+        let pop = node(&f, "w/c/pop");
+        assert_eq!((pop.layer, pop.rect), (1, [0.0, 0.0, 10.0, 10.0]));
+    }
+
+    #[test]
+    fn the_trace_carries_shape_and_image_facts() {
+        let (root, mut text) = (fixture(), TextEngine::new());
+        let f = traced(&root, (200.0, 300.0), 1.0, true, &mut text);
+        let PlacedKind::Shape { name, attrs } = &node(&f, "w/c/ticks").kind else { panic!("a shape") };
+        let attrs: Vec<String> = attrs.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        assert_eq!(*name, "ticks");
+        assert_eq!(attrs.join(" "), "count=12 major_every=3 len=4 major_len=8 width=1 major_width=2 color=#ff0000 major_color=#00ff0080 inset=6.5");
+        let PlacedKind::Image { spec, shown } = &node(&f, "w/c/pic").kind else { panic!("an image") };
+        assert_eq!((spec.id.as_str(), spec.ready, shown.as_slice()), ("pic.png", true, &["pic.png".to_string()][..]));
+        assert!(matches!(node(&f, "w/c").kind, PlacedKind::Box));
+    }
+
+    #[test]
+    fn the_trace_carries_text_facts_from_the_engine() {
+        let (root, mut text) = (fixture(), TextEngine::new());
+        let f = traced(&root, (200.0, 300.0), 1.0, true, &mut text);
+        let PlacedKind::Text { spec, color, run } = &node(&f, "w/c/title").kind else { panic!("text") };
+        let run = run.as_ref().expect("the engine shaped it");
+        assert_eq!((spec.text.as_str(), *color, run.lines), ("Hello", Color([1.0; 4]), 1));
+        assert_eq!((run.natural_w, run.natural_h), text.measure("w/c/title", spec, None), "natural size is the unlimited measure");
+        assert!(!run.faces.is_empty() && run.faces.iter().all(|n| !n.is_empty()), "some face shaped it: {:?}", run.faces);
+        let PlacedKind::Text { run: body, .. } = &node(&f, "w/c/body").kind else { panic!("text") };
+        let body = body.as_ref().unwrap();
+        assert!(body.lines >= 2, "wrapped in 60 px: {} lines", body.lines);
+        assert!(body.natural_w > 60.0, "its natural width is more than the box: {}", body.natural_w);
+    }
+
+    #[test]
+    fn a_hovered_text_reports_the_colour_it_is_drawn_in() {
+        let mut n = Node::text("w/t", "Hi", 14.0, Color([1.0, 0.0, 0.0, 1.0]));
+        n.hover.text_color = Some(Color([0.0, 0.0, 1.0, 1.0]));
+        let root = Node::new("w").wh(100.0, 40.0).child(n);
+        let mut env = Env { text: &mut TextEngine::new(), anim: &mut Anim::default(), hover: Some("w/t"), now: Instant::now(), scale: 1.0, trace: true };
+        let f = layout(&root, (100.0, 40.0), &mut env);
+        let PlacedKind::Text { color, .. } = &node(&f, "w/t").kind else { panic!("text") };
+        assert_eq!(*color, Color([0.0, 0.0, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn a_node_that_is_not_drawn_is_still_in_the_trace() {
+        let root = Node::new("w").wh(100.0, 40.0).child(Node::new("w/zero").wh(0.0, 10.0).fill(Color([1.0; 4]))).child(Node::new("w/ghost").wh(10.0, 10.0).opacity(0.0));
+        let f = traced(&root, (100.0, 40.0), 1.0, true, &mut TextEngine::new());
+        assert_eq!((node(&f, "w/zero").drawn, node(&f, "w/ghost").drawn, node(&f, "w").drawn), (false, false, true));
+    }
+
     #[test]
     fn a_gauge_that_wraps_to_a_new_row_glides_there() {
         let (mut text, mut anim) = (TextEngine::new(), Anim::default());
         let t0 = Instant::now();
         let mut at = |w: f32, now: Instant| {
-            let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now, scale: 1.0 };
+            let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now, scale: 1.0, trace: false };
             let f = layout(&gauges(w), (w, 300.0), &mut env);
             (f.rect_of("w/c/row/2").unwrap(), f.animating)
         };
@@ -762,7 +955,7 @@ mod tests {
         assert!(animating && mid[1] < 90.0, "the third gauge is on its way down, not already there: {mid:?}");
         let (end, animating) = at(200.0, t0 + Duration::from_millis(400));
         let mut fresh = Anim::default();
-        let mut env = Env { text: &mut TextEngine::new(), anim: &mut fresh, hover: None, now: t0, scale: 1.0 };
+        let mut env = Env { text: &mut TextEngine::new(), anim: &mut fresh, hover: None, now: t0, scale: 1.0, trace: false };
         let settled = layout(&gauges(200.0), (200.0, 300.0), &mut env).rect_of("w/c/row/2").unwrap();
         assert!(settled[1] > 80.0, "sanity: 200 px wraps it onto a second row");
         assert_eq!((end, animating), (settled, false), "and lands where a fresh layout puts it");

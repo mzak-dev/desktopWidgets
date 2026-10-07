@@ -41,6 +41,22 @@ impl Decoded {
     }
 }
 
+/// What the store asks the renderer to do to its image textures; applied in order,
+/// once before each render (`Gpu::apply`).
+pub enum ImageOp {
+    /// Make (or replace) the texture for this id.
+    Upload(String, Decoded),
+    Drop(String),
+}
+
+/// A still picture read with the `image` crate as it is, no orientation and no animation:
+/// an explicit icon file, an Icon Pack entry.
+pub fn load_image(p: &Path) -> Option<Decoded> {
+    let img = image::open(p).ok()?.to_rgba8();
+    let (w, h) = img.dimensions();
+    Some(Decoded { px: img.into_raw(), w, h, frames: None })
+}
+
 pub fn decode_file(p: &Path) -> Option<Decoded> {
     decode_bytes(&std::fs::read(p).ok()?)
 }

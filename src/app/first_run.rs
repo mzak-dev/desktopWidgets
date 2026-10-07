@@ -7,6 +7,8 @@ const GUIDES: &[(&[&str], &str)] = &[
     (&["PLUGINS.md"], include_str!("../../assets/guides/PLUGINS.md")),
     (&[".claude", "skills", "wayfinder-plugin", "SKILL.md"], include_str!("../../assets/guides/wayfinder-plugin/SKILL.md")),
     (&["WIDGETS.md"], include_str!("../../assets/guides/WIDGETS.md")),
+    // the visual loop: also printed by `wayfinder scene guide`, so one copy is embedded
+    (&["LOOK.md"], crate::scene::GUIDE),
 ];
 
 /// Written only when missing, so the user's own edits survive every start.
@@ -66,6 +68,17 @@ mod tests {
         std::fs::write(dir.join("THEMES.md"), "mine").unwrap();
         assert!(write_missing_guides(&dir).is_empty());
         assert_eq!(std::fs::read_to_string(dir.join("THEMES.md")).unwrap(), "mine");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_look_guide_is_written_with_the_others_and_the_plugin_skill_points_at_it() {
+        let dir = std::env::temp_dir().join(format!("wf-look-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(write_missing_guides(&dir).is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join("LOOK.md")).unwrap(), crate::scene::GUIDE);
+        let skill = std::fs::read_to_string(dir.join(".claude").join("skills").join("wayfinder-plugin").join("SKILL.md")).unwrap();
+        assert!(skill.contains("LOOK.md") && skill.contains("wayfinder scene check"), "the plugin skill sends the author to the visual loop");
         std::fs::remove_dir_all(&dir).ok();
     }
 

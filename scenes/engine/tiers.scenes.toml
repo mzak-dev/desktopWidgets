@@ -1,0 +1,108 @@
+format = 1
+# The sizes where a widget's content changes (what examples/render_widgets.rs drew with `tiers`),
+# and the one built-in at its largest size the other engine scenes do not reach. Dumps only:
+# `wayfinder scene sheet engine/tiers` draws them on one sheet.
+
+[defaults]
+tags = ["engine"]
+
+[defaults.widget]
+items = "demo"
+
+[defaults.env.sys]
+cpu = 42
+
+[defaults.expect]
+flags = "error"
+# some modules reach a pixel past their slot at some sizes (fractional layout): see scenes/fits
+allow = ["OVERFLOW-X", "OVERFLOW-Y", "OUTSIDE"]
+
+[[scene]]
+name = "clock-180"
+[scene.widget]
+id = "clock"
+size = "180x180"
+
+[[scene]]
+name = "clock-330x400"
+[scene.widget]
+id = "clock"
+size = "330x400"
+
+[[scene]]
+name = "clock-560x240"
+[scene.widget]
+id = "clock"
+size = "560x240"
+
+[[scene]]
+name = "digital-clock-300x132"
+[scene.widget]
+id = "digital_clock"
+size = "300x132"
+
+[[scene]]
+name = "digital-clock-460x230"
+[scene.widget]
+id = "digital_clock"
+size = "460x230"
+
+[[scene]]
+name = "system-monitor-200x96"
+[scene.widget]
+id = "system_monitor"
+size = "200x96"
+
+[[scene]]
+name = "system-monitor-340x190"
+[scene.widget]
+id = "system_monitor"
+size = "340x190"
+
+[[scene]]
+name = "system-monitor-640x400"
+[scene.widget]
+id = "system_monitor"
+size = "640x400"
+
+[[scene]]
+name = "system-monitor-max"
+[scene.widget]
+id = "system_monitor"
+size = "760x520"
+
+[[scene]]
+name = "icon-list-150x260"
+[scene.widget]
+id = "icon_list"
+size = "150x260"
+
+[[scene]]
+name = "icon-list-420x300"
+[scene.widget]
+id = "icon_list"
+size = "420x300"
+
+[[scene]]
+name = "icon-folder-92x112"
+[scene.widget]
+id = "icon_folder"
+size = "92x112"
+
+[[scene]]
+name = "icon-folder-180x220"
+[scene.widget]
+id = "icon_folder"
+size = "180x220"
+
+[[scene]]
+name = "drawer-180x220"
+[scene.widget]
+id = "drawer"
+size = "180x220"
+
+[[scene]]
+name = "drawer-420x260"
+[scene.widget]
+id = "drawer"
+size = "420x260"

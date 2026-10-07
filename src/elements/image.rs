@@ -1,6 +1,4 @@
-use super::ElementKind;
-use crate::format::Attrs;
-use crate::ui::{Fit, ImageSpec, Kind};
+use super::{Attrs, ElementKind, Fit, ImageSpec, Kind};
 
 pub const KIND: ElementKind = ElementKind { name: "image", own_attrs: &["src", "tint", "anim", "frame", "fit", "max", "feather", "fade"], fills_parent_when_unsized: false, build };
 

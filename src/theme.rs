@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::color::{Color, MAGENTA};
 use crate::value::Value;
-use crate::widgets::ParamDef;
+use crate::meta::ParamDef;
 
 /// The Style tokens, declared in `assets/style.toml`: set globally, overridable per Instance.
 pub fn style_schema() -> &'static [ParamDef] {
@@ -17,7 +17,7 @@ pub fn style_schema() -> &'static [ParamDef] {
     SCHEMA.get_or_init(|| {
         let t: toml::Table = include_str!("../assets/style.toml").parse().expect("style.toml is valid TOML");
         let params = t.get("params").and_then(|v| v.as_table()).expect("style.toml has [params]");
-        crate::format::parse_params(params).expect("built-in style schema is valid")
+        crate::meta::parse_params(params).expect("built-in style schema is valid")
     })
 }
 

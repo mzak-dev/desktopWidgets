@@ -5,9 +5,9 @@
 use std::collections::BTreeMap;
 
 use crate::expr::Template;
-use crate::format::Elem;
+use super::Elem;
 use crate::value::Value;
-use crate::workspace::Layout;
+use crate::meta::Layout;
 
 #[derive(Clone, Debug)]
 pub struct TierDef {

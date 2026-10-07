@@ -46,12 +46,20 @@ cargo test --lib                     # 329 unit tests, pure logic, no GPU
 cargo run --release -- --selftest --gpu software --data $env:TEMP\wf-test
 ```
 
-Offscreen renders, on the software adapter by default:
+Offscreen renders run on the software adapter (WARP) only:
 
 ```powershell
-cargo run --release --example render_widgets  -- docs\img\widgets.png
+cargo run --release -- scene sheet golden/readme --out docs\img\widgets.png  # contact sheet of the README cases
+cargo run --release -- scene render golden --sheet   # PNG + record per golden scene, under scenes\.look
+cargo run --release -- scene diff golden             # dump and pixel diff against this machine's baselines
 cargo run --release --example render_settings -- docs\img
 ```
+
+Golden scenes (`scenes/golden/`, tag `golden`) also keep a PNG baseline, per machine and untracked like the dump baselines (`scenes/baselines/<fonts hash>/`): record them with `scene bless golden --reason "..."`. Pixel tolerances are in `scenes/wayfinder-render.toml`.
+
+**Is the render deterministic here?** `wayfinder scene selfcheck [<scenes>] [--runs N] [--gap 61s] [--perturb] [--controls]` renders the scenes (default: `golden` and `selfcheck`) in fresh child processes of the exe, software adapter only, and compares each run with the first: dump text, PNG bytes (with the pixel count and largest colour distance when they differ) and the `.env.json` record, plus sidecar assertions (hermetic, WARP, `en-US`, one font hash, no error card or timed-out code source). `--gap 61s` is the leaked-wall-clock check, `--perturb` adds a run on one CPU and one at below-normal priority (a child sets its own affinity and priority from `WAYFINDER_SCENE_AFFINITY` / `WAYFINDER_SCENE_PRIORITY`; no other process is touched), `--controls` adds runs that must differ (`now`, `sys.cpu`, the machine's clock, scale): a control that changes nothing fails the check. The report is `scenes\.look\selfcheck\summary.txt` and `last.json`; exit 0 deterministic, 1 something differed or a control or assertion failed, 3 a child could not run. Path independence (render from another checkout) and the cross-machine comparison are manual.
+
+Measured on this machine (2026-10-07, debug build, `scene selfcheck golden selfcheck engine --gap 61s --perturb --controls`, adapter Microsoft Basic Render Driver, Windows 11, fonts `system:297b4419`): 135 scenes in 4 fresh processes (61.0 s gap, one CPU, below-normal priority), 405 scene comparisons, every dump, PNG byte stream and record identical, so 0 differing pixels and a largest colour distance of 0. A run takes 71 to 75 s (94 s on one CPU). All four controls differed (`now` changed 36 PNGs, `sys.cpu` 19, the clock 1 of 1, scale 134 of 135) and every assertion held. **PNG baselines are therefore exact on a matching fingerprint on this machine** (`failed_pixels = 0` is measured); a baseline made under another fingerprint (Windows build, driver, engine crates) is compared with the `failed_percent` budget, which one machine cannot measure and so stays a placeholder (0.02 %). Fonts are the machine's, so none of this says anything about another machine's PNGs: dumps and PNGs are per machine and font set.
 
 ## Extend it
 
@@ -61,7 +69,7 @@ Each kind of extension is one file plus one line of registration:
 |---|---|---|
 | a built-in TOML widget | `assets/widgets/<id>.toml` | nothing: `build.rs` finds it |
 | a Rust widget | `src/widgets/<id>.rs` implementing `Widget` (the Drawer is the example) | `registry.rs` |
-| a data source | `src/data/<name>.rs` implementing `DataSource`, with the cadence of each field | `DataSources::builtin` |
+| a data source | `src/data/<name>.rs` implementing `DataSource`, with the cadence of each field | `DataSources::from` |
 | a data source in your own build | a `DataSource` in a crate that depends on `wayfinder` | `Options.extra_sources` before `wayfinder::run` |
 | an element kind | `src/elements/<name>.rs` with a `KIND` and, if it draws, a `Shape` | `elements::KINDS` |
 | a Workspace-wide style switch | a `Flag` variant and its `Workspace` field | a `flag_row` in Settings |
@@ -81,12 +89,43 @@ fn main() {
 **Command line for authors.** These print to the console and exit. Wayfinder is a Windows app, so pipe its output (`| Out-Host`) for the shell to wait for it and set `$LASTEXITCODE`:
 
 ```powershell
-wayfinder --render-widget sunset_weather --png out.png --size 300x200 --param city=Oslo --time 15:42   # also a path to a .toml
+wayfinder --render-widget clock --png out.png --size 300x200 --now 2026-03-08T15:42 --env sys.cpu=90   # also a path to a .toml
 wayfinder plugin pack plugins\sunset            # sunset.wfplugin next to the folder, checked
 wayfinder plugin check sunset.wfplugin          # 0 when it installs and loads cleanly, 1 with problems
 ```
 
-`--render-widget` renders through the real pipeline on the software adapter, with plugin code running (`--wait` seconds for its first answer), so CI can check widgets without a desktop. `wayfinder::plugins::{describe, check, pack}` do the same from Rust; `describe` is a stable API.
+`--render-widget` renders through the real pipeline on the software adapter, so CI can check widgets without a desktop. `wayfinder::plugins::{describe, check, pack}` do the same from Rust; `describe` is a stable API.
+
+A render is **hermetic by default**: a fixed date and time (Thursday 2026-01-15 10:10:30 UTC), example system readings, an example paused track, a steady tone, tile icons instead of the shell's, no network, an empty temporary data folder, only the built-in widgets (plus the folder of a `.toml` you name), the theme's `anim-speed`, and the software adapter (WARP; pass `--gpu software` in scripts, and the `scene` commands take no `--gpu` at all). It waits for plugin code and pictures to settle (`--wait` seconds per code source; a timeout is an error, never a half-loaded PNG), and the frame is drawn 2 s after the first, so an animation has finished. Change the environment with `--now <ISO>`, `--time HH:MM` (the time of day on the pinned date) and `--env key=value` (repeatable, for example `sys.cpu=90`, `media.playing=true`, `zone="Tokyo Standard Time"`, `anim=off`, `settle=500ms`, `fetch.responses=[{...}]`; an unknown key suggests the nearest). `--real clock,sys,media,audio,icons,fetch` takes a seam from your machine instead. Every render writes `out.png.env.json` beside the PNG: the pins, what was read from the machine, the content and font set, the adapter and whether the run was `hermetic`. Two hermetic renders on one machine are byte-identical; text is measured with the machine's own fonts, so a render is exact on the same machine and font set, not across machines. The pins, the record and these flags are tooling, not a frozen interface.
+
+> [!NOTE]
+> This changes what `--render-widget` did before. It no longer reads your installed plugins, your own widgets or the real `--data` folder: add `--installed` (with `--data <dir>` for a folder other than the default) to look a widget up by id among them, as before. It no longer uses today's date and your machine's readings, media, sound and icons: `--time` now sets the time of day on the pinned date, and `--real` brings the machine back. Plugin code gets no network unless you ask (`--env fetch=real`, or canned answers with `--env fetch.responses=[...]`). `--palette`, `--scale` and `--transparent` are the pins of the same names, and the theme's `anim-speed` now applies to a render as it does on the desktop. A render that reads the machine or installed content says so on its last line and in the `.env.json`.
+
+`--content-root <plugin folder>` loads a plugin folder where it stands, its widgets and its code, without installing it; the folder is hashed into the record and the run stays hermetic. Pass the widget's id (`wayfinder --render-widget sunset --content-root D:\dev\sunset --png out.png`).
+
+**Scenes** name a widget and the world it is shown in, and `wayfinder scene dump` describes the settled frame as text, with no GPU: one line per element with its rectangle, colours, text, the font the shaper used, hit actions and clips, then the hit regions, the draw counts and the layout flags. A scene is a `*.scene.toml` file under a `scenes/` folder (`format = 1`, a `[widget]` table, optional `[look]`, `[env]` with the same keys as `--env`, `[expect]` and `[sweep]`: `sizes = "tiers"` makes one scene per Tier, `"grid:4x4"`, `"max"` or a list of sizes the other fits):
+
+```powershell
+wayfinder scene list [set|glob] [--sets]                     # ids, from ./scenes or --root
+wayfinder scene dump fixtures/clock --view full               # outline (default, 200 lines) | full | texts | hits | flags
+wayfinder scene dump fixtures/monitor-tiers* --find CPU --format json
+wayfinder scene dump --widget clock --under clock-1/0 --depth 2   # one widget, one subtree
+wayfinder scene check fits                                    # layout flags and [expect] for a set: exit 1 on findings
+wayfinder scene diff engine --no-pixels                       # each scene against its baseline: what moved, by node key
+wayfinder scene bless engine --reason "wider card padding"    # replace baselines on purpose
+```
+
+`scene check` runs the scenes and reads only the **layout flags**: `TRUNCATED` (one-line text wider than its box), `CLIPPED`, `OUTSIDE` (past the card), `SQUASHED`, `OVERFLOW-X`/`-Y`, `ZERO`, `EMPTY-TEXT-BOX`, `NO-IMAGE` and `TOFU` (a glyph no installed font has), computed outside scroll containers and printed at the end of a node's line and in the `--- flags` trailer of every dump. A scene's `[expect] flags` is `error` (a finding, exit 1), `warn` (the default: shown, exit 0) or `ignore`, and `allow = ["OVERFLOW-Y"]` names flags the scene is known to have. The built-in widgets are checked at their default size and a 4x4 grid from their smallest to their largest, with and without every switch on, by the `fits` set (`scenes/fits/`), which `cargo test` runs too.
+
+Each run writes `<scenes folder>\.look\summary.txt`, `last.json` and, per scene, `<id>.dump.txt` and `<id>.env.json`, so the result survives a lost console. Exit codes: 0 clean, 1 findings (an error card, a failed `[expect]`, an error-level flag, a code source that never answered), 2 bad arguments or scene file (an unknown key suggests the nearest), 3 the output could not be written. The scene file, the dump and these commands are tooling (`format = 1`), not a frozen interface. Text is measured with the machine's fonts, so a dump is exact on the same machine and font set; its header carries a hash of the font set to say which.
+
+**Baselines** keep the blessed dump of each scene. `scene diff <set>` runs the scenes again and compares each dump with its baseline, naming every change by node key and class: `geometry` (rect, clip, scroll), `text` (string, size, weight, face), `colour`, `hit` (what a click does), `flag` (a layout flag that came or went), `structure` (a node added or removed) and `env` (the pins in the header). When a sibling inserted early renumbers a subtree, it is shown as one line diff instead of a wall of keys. `N scenes changed only in colour` stands for the scenes a palette tweak repaints. Exit 0 means every scene matches; a changed scene, a scene with no baseline and a flagged one exit 1. `--no-pixels` skips the pixel tier of the `golden` scenes (it also needs no graphics device).
+
+`scene bless <set> --reason "..."` re-runs the scenes and writes their baselines. The reason is required and goes to `bless.log` beside them. It refuses, and writes nothing, when any selected run is not hermetic (it read the machine), shows an error card, fails an `[expect]` or has an error-level flag; there is no environment variable that updates baselines and no way to override a scene's environment while blessing. `--new-only` writes only the scenes that have no baseline.
+
+There are no bundled fonts, so a dump's text metrics are exact only on the machine and font set that made it. Baselines are therefore per machine: `scenes/baselines/<fonts>/...`, named for the font hash in the dump header, and ignored by git. `scene diff` looks only in the folder of its own font set; baselines made with other fonts are not compared (exit 3 and a message), because they would report text metrics as geometry changes. `scene bless` on a new machine records baselines for its fonts beside the others. A team whose machines share a font set can commit the folder of that hash: remove `scenes/baselines/` from `.gitignore` and commit `scenes/baselines/system-<hash>/`; a machine with other fonts then finds nothing under its own hash and says so. The set `scenes/engine/` holds the built-in widgets (86 scenes, about 0.5 MB of baselines): each widget at its smallest, default and largest size with defaults and with every switch on, `items = "demo"` where it lists shortcuts, the System Monitor at each Tier and with each Module put away. The widgets that read a file or a folder (`gif_player`, `photo_frame`, `photo_gallery`) are scenes of their empty state: a path is the machine's, so a run with one is not hermetic and cannot be blessed.
+
+**The loop, for agents and plugin authors.** [`assets/guides/LOOK.md`](../assets/guides/LOOK.md) is the short guide to all of this: read the dump (`dump --find`, `--view flags`), `scene check`, `scene diff --no-pixels`, one `scene sheet --diff` to look at, `bless` only when the change is meant, `selfcheck` when the pixels disagree with the code. Wayfinder writes it into the data folder beside `PLUGINS.md`, `wayfinder scene guide` prints it, `wayfinder scene --help` repeats the loop in six lines, and `CLAUDE.md` carries the same rules for agents working on the engine. A plugin keeps its scenes in its own `scenes/` folder (the plugin is implied, `.look/` and `baselines/` live inside it); `wayfinder plugin pack` leaves `scenes/` and `.look/` out of the `.wfplugin` and `wayfinder plugin check` does not warn about them. Everything that draws uses the software adapter (WARP): the scene commands take no `--gpu`, and nothing here runs the app, `--selftest` or a hardware adapter. The scene files, the dumps and the commands are tooling (`format = 1`), not a frozen interface, and baselines are per machine because the fonts are the machine's.
 
 ## Commit messages
 

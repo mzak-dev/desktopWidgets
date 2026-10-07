@@ -1,0 +1,41 @@
+format = 1
+# The same widgets in other palettes, so a theme change shows in pixels as well as in colours.
+
+[defaults]
+tags = ["golden"]
+
+[defaults.env]
+now = 2026-09-21T15:42:18
+
+[defaults.widget]
+items = "demo"
+
+[defaults.expect]
+flags = "error"
+
+[[scene]]
+name = "clock-daylight"
+[scene.widget]
+id = "clock"
+size = "260x260"
+[scene.look]
+scale = 1.25
+palette = "Daylight"
+
+[[scene]]
+name = "digital-clock-aurora"
+[scene.widget]
+id = "digital_clock"
+size = "340x172"
+[scene.look]
+scale = 1.25
+palette = "Aurora"
+
+[[scene]]
+name = "icon-list-paper"
+[scene.widget]
+id = "icon_list"
+size = "260x360"
+[scene.look]
+scale = 1
+palette = "Paper"

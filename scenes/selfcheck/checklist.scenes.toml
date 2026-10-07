@@ -1,0 +1,89 @@
+format = 1
+# What `scene selfcheck` renders besides the golden set: the cases of the determinism checklist
+# (research/18 section 7) that the golden scenes do not cover. Not golden: no baselines, so
+# `scene diff selfcheck` says NEW for each; the set exists to be rendered repeatedly.
+
+[defaults.look]
+scale = 1.25
+palette = "Midnight"
+
+[defaults.widget]
+items = "demo"
+
+[defaults.expect]
+flags = "error"
+
+# a DST date: the clocks of New York, London and Tokyo on the day the US clocks go forward
+[[scene]]
+name = "clock-dst"
+[scene.env]
+now = 2026-03-08T07:30:00
+zone = "Eastern Standard Time"
+[scene.widget]
+id = "clock"
+size = "260x260"
+
+[[scene]]
+name = "digital-clock-dst"
+[scene.env]
+now = 2026-03-08T07:30:00
+zone = "Eastern Standard Time"
+[scene.widget]
+id = "digital_clock"
+size = "340x172"
+
+# pins nothing of its own: the `real clock` control of `scene selfcheck` runs this one on the
+# machine's clock, and it must come out different
+[[scene]]
+name = "clock-live"
+[scene.widget]
+id = "digital_clock"
+size = "340x172"
+
+# a media widget paused (the playing one is a golden scene)
+[[scene]]
+name = "media-paused"
+[scene.widget]
+id = "media_controller"
+[scene.expect]
+allow = ["OVERFLOW-Y"]
+
+# enter animations caught half-way, and with no animation at all
+[[scene]]
+name = "clock-entering"
+[scene.env]
+anim = "relaxed"
+settle = "120ms"
+[scene.widget]
+id = "digital_clock"
+size = "340x172"
+
+[[scene]]
+name = "calendar-entering"
+[scene.env]
+anim = "relaxed"
+settle = "150ms"
+[scene.widget]
+id = "calendar"
+
+# a transparent render beside an opaque one of the same widget
+[[scene]]
+name = "icon-list-transparent"
+[scene.look]
+transparent = true
+[scene.widget]
+id = "icon_list"
+
+[[scene]]
+name = "icon-list-opaque"
+[scene.widget]
+id = "icon_list"
+
+# text that wraps and ellipsises: the system monitor at its narrowest
+[[scene]]
+name = "system-monitor-narrow"
+[scene.env.sys]
+cpu = 42
+[scene.widget]
+id = "system_monitor"
+tier = "compact"

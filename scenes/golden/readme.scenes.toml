@@ -1,0 +1,76 @@
+format = 1
+# The README cases of the old examples/render_widgets.rs, as scenes: the same widgets, sizes and
+# params, in its time (Monday 21 September 2026, 15:42:18) at its 1.25 scale and Midnight palette.
+# Golden: each also keeps a PNG baseline (per machine, untracked: see src/scene/baseline.rs).
+
+[defaults]
+tags = ["golden"]
+
+[defaults.look]
+scale = 1.25
+palette = "Midnight"
+
+[defaults.env]
+now = 2026-09-21T15:42:18
+
+[defaults.widget]
+items = "demo"
+
+[defaults.expect]
+flags = "error"
+
+[[scene]]
+name = "clock"
+[scene.widget]
+id = "clock"
+size = "260x260"
+
+[[scene]]
+name = "clock-smooth"
+[scene.widget]
+id = "clock"
+size = "150x150"
+params = { smooth_seconds = true }
+
+[[scene]]
+name = "digital-clock"
+[scene.widget]
+id = "digital_clock"
+size = "340x172"
+
+[[scene]]
+name = "digital-clock-12h"
+[scene.widget]
+id = "digital_clock"
+size = "250x100"
+params = { hour24 = false, show_seconds = true }
+
+[[scene]]
+name = "icon-list"
+[scene.widget]
+id = "icon_list"
+size = "260x360"
+params = { title = "Quick launch" }
+
+[[scene]]
+name = "icon-list-small"
+[scene.widget]
+id = "icon_list"
+size = "200x180"
+params = { icon_size = 24, title = "" }
+
+[[scene]]
+name = "icon-folder"
+[scene.widget]
+id = "icon_folder"
+size = "132x152"
+params = { title = "Tools" }
+
+# the folder open: the window it grows to is the one its [expand] table asks for
+[[scene]]
+name = "icon-folder-open"
+[scene.widget]
+id = "icon_folder"
+size = "300x258"
+params = { title = "Tools" }
+state = { expanded = true }

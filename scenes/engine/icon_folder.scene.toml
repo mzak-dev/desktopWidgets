@@ -1,0 +1,21 @@
+format = 1
+name = "icon_folder at its smallest, default and largest size"
+tags = ["engine"]
+
+[widget]
+id = "icon_folder"
+items = "demo"
+# the engine's own scene set: what every built-in Widget draws with its defaults and with
+# every switch on, at the smallest, the default and the largest size it allows
+
+[expect]
+flags = "error"
+# the tile is a few px taller than the smallest card (padding only, the card clips it): see scenes/fits
+allow = ["OVERFLOW-X", "OVERFLOW-Y"]
+
+[sweep]
+sizes = ["72x88", "92x112", "200x240"]
+
+[sweep.variants]
+defaults = {}
+all_on = { params = "bools:true" }

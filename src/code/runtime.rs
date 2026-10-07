@@ -7,6 +7,8 @@ use std::time::{Duration, Instant};
 
 use wasmi::{Caller, CompilationMode, Config, EnforcedLimits, Engine, Extern, Instance, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder, TrapCode, TypedFunc};
 
+use crate::ambient::Calendar;
+
 use super::fs::Fs;
 use super::store::KvStore;
 
@@ -49,12 +51,13 @@ pub struct Env {
     input_cap: usize,
     log_line: usize,
     log_window: (Instant, usize, usize),
+    calendar: Arc<dyn Calendar>,
 }
 
 impl Env {
-    pub fn new(http: Option<HttpFn>, store: Option<Arc<KvStore>>, l: &Limits) -> Env {
+    pub fn new(http: Option<HttpFn>, store: Option<Arc<KvStore>>, l: &Limits, calendar: Arc<dyn Calendar>) -> Env {
         let limits = StoreLimitsBuilder::new().memory_size(l.memory).instances(1).tables(1).memories(1).trap_on_grow_failure(false).build();
-        Env { http, store, fs: None, logs: Vec::new(), used_net: false, parked: Vec::new(), limits, input_cap: l.input, log_line: l.log_line, log_window: (Instant::now(), 0, l.logs_per_minute) }
+        Env { http, store, fs: None, logs: Vec::new(), used_net: false, parked: Vec::new(), limits, input_cap: l.input, log_line: l.log_line, log_window: (Instant::now(), 0, l.logs_per_minute), calendar }
     }
 
     fn log(&mut self, line: String) {
@@ -164,7 +167,7 @@ fn linker(engine: &Engine) -> Linker<Env> {
         Ok(())
     })
     .expect("log");
-    l.func_wrap("wf", "now_ms", || -> i64 { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64) }).expect("now_ms");
+    l.func_wrap("wf", "now_ms", |caller: Caller<'_, Env>| -> i64 { caller.data().calendar.unix_ms() }).expect("now_ms");
     l.func_wrap("wf", "http", |mut caller: Caller<'_, Env>, ptr: i32, len: i32| -> Result<i32, wasmi::Error> {
         let req = read_guest(&caller, ptr, len, caller.data().input_cap)?;
         let resp = match caller.data().http.clone() {
@@ -317,7 +320,7 @@ pub(crate) mod tests {
     }
 
     fn env() -> Env {
-        Env::new(None, None, &Limits::default())
+        Env::new(None, None, &Limits::default(), crate::ambient::Ambient::fixed().calendar)
     }
 
     #[test]
@@ -388,7 +391,7 @@ pub(crate) mod tests {
             i64.const 512 i64.const 32 i64.shl local.get $n i64.extend_i32_u i64.or"#;
         let dir = std::env::temp_dir().join(format!("wf-rt-store-{}", std::process::id()));
         let store = Arc::new(KvStore::open(&dir.join("p.json")));
-        let out = run(&module(imports, "kv", body, ABI), Env::new(None, Some(store.clone()), &Limits::default()), &Limits::default()).unwrap();
+        let out = run(&module(imports, "kv", body, ABI), Env::new(None, Some(store.clone()), &Limits::default(), crate::ambient::Ambient::fixed().calendar), &Limits::default()).unwrap();
         assert_eq!(out.output, b"v");
         assert_eq!(store.get("k").as_deref(), Some("v"));
         let missing = r#"(local $n i32) (local.set $n (call $get (i32.const 16) (i32.const 1))) (if (i32.ne (local.get $n) (i32.const -1)) (then unreachable)) (call $out)"#;
@@ -405,7 +408,7 @@ pub(crate) mod tests {
             (call $take (i32.const 512))
             i64.const 512 i64.const 32 i64.shl local.get $n i64.extend_i32_u i64.or"#;
         let http: HttpFn = Arc::new(|req: &[u8]| format!(r#"{{"status":200,"echo":"{}"}}"#, String::from_utf8_lossy(req)).into_bytes());
-        let out = run(&module(imports, "{}", body, ABI), Env::new(Some(http), None, &Limits::default()), &Limits::default()).unwrap();
+        let out = run(&module(imports, "{}", body, ABI), Env::new(Some(http), None, &Limits::default(), crate::ambient::Ambient::fixed().calendar), &Limits::default()).unwrap();
         assert_eq!(out.output, br#"{"status":200,"echo":"{}"}"#);
         assert!(out.used_net);
         let refused = run(&module(imports, "{}", body, ABI), env(), &Limits::default()).unwrap();

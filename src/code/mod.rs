@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::data::{Cadence, DataSource, News, SourceCx};
+use crate::ambient::Calendar;
+use crate::data::{Cadence, DataSource, DataSources, News, SourceCx};
 use crate::net::{Fetch, HostPattern, Net};
 use crate::value::Value;
 
@@ -49,6 +50,8 @@ pub struct Deps {
     pub notify: Arc<dyn Fn() + Send + Sync>,
     pub limits: Limits,
     pub places: fs::Places,
+    /// The time `wf.now_ms` and each call's `local` report.
+    pub calendar: Arc<dyn Calendar>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -138,7 +141,7 @@ impl WasmSource {
     /// The folders the user picked for this Instance in the params the plugin may read.
     /// Only the Instance's own settings count, never a widget's defaults.
     fn picked(&self, cx: &SourceCx) -> Vec<PathBuf> {
-        self.fs_read_params.iter().filter_map(|p| cx.cfg.params.get(p)?.as_str()).map(PathBuf::from).filter(|p| p.is_absolute()).collect()
+        self.fs_read_params.iter().filter_map(|p| cx.instance().saved().get(p)?.as_str()).map(PathBuf::from).filter(|p| p.is_absolute()).collect()
     }
 
     pub fn take_news(&self) -> News {
@@ -166,14 +169,14 @@ impl DataSource for WasmSource {
         if let Status::Broken(e) = &*self.shared.status.lock().unwrap() {
             return with_state(&self.initial, false, &format!("the plugin's code cannot run: {e}"));
         }
-        let params = params_json(cx.params);
+        let params = params_json(cx.params());
         let mut slots = self.shared.slots.lock().unwrap();
-        if let Some(s) = slots.get(&cx.cfg.id).filter(|s| s.params == params) {
+        if let Some(s) = slots.get(cx.instance().id()).filter(|s| s.params == params) {
             return s.value.clone();
         }
-        let shown = slots.get(&cx.cfg.id).map_or_else(|| self.initial.clone(), |s| with_state(&s.value, true, ""));
-        slots.insert(cx.cfg.id.clone(), Slot { params: params.clone(), value: shown.clone() });
-        let _ = self.tx.send(Msg::Need { instance: cx.cfg.id.clone(), params, picked: self.picked(cx) });
+        let shown = slots.get(cx.instance().id()).map_or_else(|| self.initial.clone(), |s| with_state(&s.value, true, ""));
+        slots.insert(cx.instance().id().to_string(), Slot { params: params.clone(), value: shown.clone() });
+        let _ = self.tx.send(Msg::Need { instance: cx.instance().id().to_string(), params, picked: self.picked(cx) });
         shown
     }
 
@@ -183,7 +186,7 @@ impl DataSource for WasmSource {
     }
 
     fn act(&self, verb: &str, arg: &str, cx: &SourceCx) -> bool {
-        let _ = self.tx.send(Msg::Act { instance: cx.cfg.id.clone(), params: params_json(cx.params), picked: self.picked(cx), verb: verb.into(), arg: arg.into() });
+        let _ = self.tx.send(Msg::Act { instance: cx.instance().id().to_string(), params: params_json(cx.params()), picked: self.picked(cx), verb: verb.into(), arg: arg.into() });
         true
     }
 
@@ -191,6 +194,59 @@ impl DataSource for WasmSource {
     fn retain(&self, live: &BTreeSet<String>) {
         self.shared.slots.lock().unwrap().retain(|id, _| live.contains(id));
         let _ = self.tx.send(Msg::Retain(live.clone()));
+    }
+}
+
+/// The running Code Sources of the enabled Plugins, kept beside `DataSources` (which holds
+/// the same sources as `Arc<dyn DataSource>` to read and act on): the app asks this for what
+/// only Code Sources have (status, launch rules, file params, news).
+#[derive(Default)]
+pub struct CodeSources {
+    list: Vec<(String, Arc<WasmSource>)>,
+}
+
+impl CodeSources {
+    /// Makes the running Code Sources exactly `wanted` (key, spec), in `data` too. One whose
+    /// key is unchanged keeps running, with its values; the built-ins are never touched. A
+    /// dropped one's channel closes when its last `Arc` goes, and its thread ends after its
+    /// current call.
+    pub fn sync(&mut self, data: &mut DataSources, wanted: Vec<(String, CodeSpec)>, mut start: impl FnMut(CodeSpec) -> WasmSource) {
+        let mut old = std::mem::take(&mut self.list);
+        let keys = wanted.iter().map(|(k, _)| k.clone()).collect();
+        for (key, spec) in wanted {
+            match old.iter().position(|(k, _)| *k == key) {
+                Some(i) => self.list.push(old.swap_remove(i)),
+                None => self.list.push((key, Arc::new(start(spec)))),
+            }
+        }
+        drop(old);
+        let list = &self.list;
+        data.sync_plugins(keys, |key| list.iter().find(|(k, _)| k == key).map(|(_, s)| s.clone() as Arc<dyn DataSource>).expect("a wanted key is in the list"));
+    }
+
+    fn get(&self, name: &str) -> Option<&WasmSource> {
+        self.list.iter().find(|(_, c)| c.name() == name).map(|(_, c)| c.as_ref())
+    }
+
+    /// Per Code Source name, what changed since last asked.
+    pub fn take_news(&self) -> Vec<(String, News)> {
+        self.list.iter().map(|(_, c)| (c.name().to_string(), c.take_news())).filter(|(_, n)| *n != News::default()).collect()
+    }
+
+    /// Per Code Source name, how it is doing.
+    pub fn status(&self) -> Vec<(String, Status)> {
+        self.list.iter().map(|(_, c)| (c.name().to_string(), c.status())).collect()
+    }
+
+    /// Every param that grants some plugin's code a folder (`fs_read_params`).
+    pub fn file_params(&self) -> BTreeSet<String> {
+        self.list.iter().flat_map(|(_, c)| c.file_params().iter().cloned()).collect()
+    }
+
+    /// The launch rules of each Code Source `deps` reads (see `launch::allowed`).
+    pub fn launch_rules(&self, deps: &BTreeSet<String>) -> Vec<&[launch::LaunchRule]> {
+        let names: BTreeSet<&str> = deps.iter().map(|d| d.split('.').next().unwrap_or(d)).collect();
+        names.into_iter().filter_map(|n| self.get(n)).map(|s| s.launch_rules()).collect()
     }
 }
 
@@ -294,8 +350,8 @@ impl Worker {
 
     fn input(&self, instance: &str, extra: serde_json::Value) -> Vec<u8> {
         let params: serde_json::Value = self.schedule.params(instance).and_then(|p| serde_json::from_str(p).ok()).unwrap_or_default();
-        let t = crate::data::now_local();
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64);
+        let t = self.deps.calendar.now();
+        let now_ms = self.deps.calendar.unix_ms();
         let mut v = serde_json::json!({
             "abi": ABI,
             "instance": instance,
@@ -312,7 +368,7 @@ impl Worker {
     /// Calls the module for `instance`, building a fresh module instance if the last one faulted.
     fn call(&mut self, instance: &str, entry: Entry, input: &[u8]) -> Result<Called, Fault> {
         if self.runtime.is_none() {
-            let env = Env::new(self.http.clone(), self.deps.store.clone(), &self.deps.limits);
+            let env = Env::new(self.http.clone(), self.deps.store.clone(), &self.deps.limits, self.deps.calendar.clone());
             let compiled = self.compiled.as_ref().expect("compiled before any job");
             match Runtime::new(compiled, env, &self.deps.limits) {
                 Ok(rt) => self.runtime = Some(rt),
@@ -445,7 +501,7 @@ pub(crate) mod tests {
         std::fs::write(&path, wat).unwrap();
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
-        let deps = Deps { fetch: None, store, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits, places: Default::default() };
+        let deps = Deps { fetch: None, store, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits, places: Default::default(), calendar: crate::ambient::Ambient::fixed().calendar };
         let initial = Value::obj([("temp", 0.into())]);
         let mut spec = CodeSpec { plugin: "p".into(), source: "weather".into(), module: path, hosts: vec![], fs_read: vec![], fs_read_params: vec![], launch: vec![], initial };
         edit(&mut spec);
@@ -457,7 +513,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn read(src: &WasmSource, c: &InstanceCfg, params: &BTreeMap<String, Value>) -> Value {
-        src.value(&SourceCx { cfg: c, params, tm: crate::data::Tm { year: 2026, month: 9, day: 24, dow: 4, hour: 12, minute: 0, second: 0, ms: 0 }, icon_pack: "Default" })
+        src.value(&SourceCx::new(c.instance(), params, crate::data::Tm::new(2026, 9, 24, 4, 12, 0, 0, 0), "Default"))
     }
 
     /// Waits for news about `instance`.
@@ -551,7 +607,7 @@ pub(crate) mod tests {
         read(&src, &c, &p);
         wait_for(&src, &rx, "w-1");
         assert_eq!(num(&read(&src, &c, &p), "n"), 1.0);
-        src.act("refresh", "", &SourceCx { cfg: &c, params: &p, tm: crate::data::Tm { year: 2026, month: 9, day: 24, dow: 4, hour: 12, minute: 0, second: 0, ms: 0 }, icon_pack: "Default" });
+        src.act("refresh", "", &SourceCx::new(c.instance(), &p, crate::data::Tm::new(2026, 9, 24, 4, 12, 0, 0, 0), "Default"));
         wait_for(&src, &rx, "w-1");
         assert_eq!(num(&read(&src, &c, &p), "n"), 2.0, "the act resampled it");
     }
@@ -603,6 +659,57 @@ pub(crate) mod tests {
         }
     }
 
+    fn spec(n: &str) -> CodeSpec {
+        CodeSpec { plugin: n.into(), source: n.into(), module: "nope.wasm".into(), hosts: vec![], fs_read: vec![], fs_read_params: vec![], launch: vec![], initial: Value::Nil }
+    }
+
+    #[test]
+    fn sync_keeps_an_unchanged_source_alive() {
+        let (mut data, mut code) = (DataSources::fixed(), CodeSources::default());
+        let started = std::cell::RefCell::new(Vec::new());
+        let launch = |s: CodeSpec| {
+            started.borrow_mut().push(s.source.clone());
+            start(&format!("sync-{}", s.source), &returning(r#"{"value":{}}"#), Limits::default(), None).0
+        };
+        code.sync(&mut data, vec![("a#1".into(), spec("a")), ("b#1".into(), spec("b"))], launch);
+        code.sync(&mut data, vec![("a#1".into(), spec("a")), ("b#2".into(), spec("b"))], launch);
+        assert_eq!(*started.borrow(), ["a", "b", "b"], "a kept running; b's changed key restarted it");
+        assert!(data.get("weather").is_some(), "DataSources serves them too");
+        assert!(!data.native_names().contains("weather"));
+        code.sync(&mut data, vec![], launch);
+        assert!(code.list.is_empty() && data.get("weather").is_none());
+    }
+
+    #[test]
+    fn dropping_a_plugin_source_stops_its_worker() {
+        let (mut data, mut code) = (DataSources::fixed(), CodeSources::default());
+        let mut src = Some(start("sync-drop", &returning(r#"{"value":{}}"#), Limits::default(), None).0);
+        code.sync(&mut data, vec![("weather#1".into(), spec("weather"))], |_| src.take().unwrap());
+        let held = code.list[0].1.clone();
+        code.sync(&mut data, vec![], |_| unreachable!());
+        assert!(data.get("weather").is_none(), "gone from both registries");
+        let worker = Arc::try_unwrap(held).ok().expect("CodeSources and DataSources let go of it").stop();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !worker.is_finished() {
+            assert!(Instant::now() < deadline, "the worker outlived its source");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn code_sources_answer_status_file_params_and_launch_rules() {
+        let (mut data, mut code) = (DataSources::fixed(), CodeSources::default());
+        let deps = |p: &[&str]| p.iter().map(|s| s.to_string()).collect::<BTreeSet<String>>();
+        assert!(code.launch_rules(&deps(&["weather.temp"])).is_empty(), "no Code Source yet");
+        let mut src = Some(start_with("sync-answers", &returning(r#"{"value":{}}"#), Limits::default(), None, |s| s.fs_read_params = vec!["folder".into()]).0);
+        code.sync(&mut data, vec![("weather#1".into(), spec("weather"))], |_| src.take().unwrap());
+        assert_eq!(code.file_params(), deps(&["folder"]));
+        assert_eq!(code.launch_rules(&deps(&["weather.temp", "clock.minute"])).len(), 1, "one Code Source read");
+        assert!(code.launch_rules(&deps(&["sys.gauges", "clock.minute"])).is_empty(), "no Code Source read");
+        assert_eq!(code.status().into_iter().map(|(n, _)| n).collect::<Vec<_>>(), ["weather"]);
+        assert!(code.take_news().len() <= 1);
+    }
+
     /// The SDK's weather example, built: `WF_EXAMPLE_WASM=<path to weather.wasm>`
     /// (`cargo build --release --target wasm32-unknown-unknown` in `sdk/examples/weather`).
     /// Skipped without it.
@@ -621,7 +728,7 @@ pub(crate) mod tests {
         }));
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
-        let deps = Deps { fetch: Some(Arc::new(fake)), store: None, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits: Limits::default(), places: Default::default() };
+        let deps = Deps { fetch: Some(Arc::new(fake)), store: None, notify: Arc::new(move || { let _ = tx.lock().unwrap().send(()); }), limits: Limits::default(), places: Default::default(), calendar: crate::ambient::Ambient::fixed().calendar };
         let plugin = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/examples/weather/plugin");
         let manifest = crate::plugins::Manifest::parse(&std::fs::read_to_string(plugin.join("plugin.toml")).unwrap()).unwrap();
         let code = manifest.code.into_iter().next().expect("the example has code");
@@ -632,7 +739,7 @@ pub(crate) mod tests {
         wait_for(&src, &rx, "weather-1");
         let v = read(&src, &c, &params);
         assert_eq!((num(&v, "temp"), v.get("sky").map(|s| s.to_string())), (13.0, Some("Cloudy".into())), "{v:?}; {:?}", src.status());
-        let cx = SourceCx { cfg: &c, params: &params, tm: crate::data::Tm { year: 2026, month: 9, day: 24, dow: 4, hour: 12, minute: 0, second: 0, ms: 0 }, icon_pack: "Default" };
+        let cx = SourceCx::new(c.instance(), &params, crate::data::Tm::new(2026, 9, 24, 4, 12, 0, 0, 0), "Default");
         src.act("refresh", "", &cx);
         wait_for(&src, &rx, "weather-1");
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2, "the click fetched again");

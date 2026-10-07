@@ -1,0 +1,22 @@
+format = 1
+name = "System monitor at each tier"
+tags = ["engine"]
+
+[widget]
+id = "system_monitor"
+
+# the demo desktop's readings, the CPU at 42 percent
+[env.sys]
+cpu = 42
+
+[expect]
+flags = "error"
+# some gauge and graph modules reach a pixel past their slot (fractional layout): see scenes/fits
+allow = ["OVERFLOW-X", "OVERFLOW-Y"]
+
+[sweep]
+sizes = "tiers"
+
+[sweep.variants]
+defaults = {}
+all_on = { params = "bools:true" }

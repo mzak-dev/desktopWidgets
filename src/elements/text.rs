@@ -1,7 +1,5 @@
-use super::ElementKind;
-use crate::format::Attrs;
-use crate::text::{TextAlign, TextSpec};
-use crate::ui::Kind;
+use super::{Attrs, ElementKind, Kind};
+use crate::textspec::{TextAlign, TextSpec};
 use crate::value::Value;
 
 pub const KIND: ElementKind = ElementKind { name: "text", own_attrs: &["text", "size", "color", "font", "weight", "text_align", "text_wrap", "line_height"], fills_parent_when_unsized: false, build };

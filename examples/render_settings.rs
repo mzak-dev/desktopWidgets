@@ -11,7 +11,7 @@ use wayfinder::anim::Anim;
 use wayfinder::content::Contents;
 use wayfinder::data::Shortcut;
 use wayfinder::gfx::{Gpu, Power};
-use wayfinder::icons::IconService;
+use wayfinder::icons::ImageStore;
 use wayfinder::plugins::{CodeRow, PluginRow};
 use wayfinder::settings::{Ctx, Level, LogLine, UiState};
 use wayfinder::text::TextEngine;
@@ -22,11 +22,11 @@ use wayfinder::workspace::{InstanceCfg, MonitorRef, Workspace};
 
 fn main() {
     let out = std::env::args().nth(1).unwrap_or_else(|| ".".into());
-    let power = Power::parse(&std::env::var("WAYFINDER_GPU").unwrap_or_else(|_| "software".into()));
+    let power = Power::from_env();
     let mut gpu = Gpu::new_headless(power).expect("gpu");
     println!("gpu: {}", gpu.info);
     let mut text = TextEngine::new();
-    let mut icons = IconService::default();
+    let mut images = ImageStore::default();
     let lib = Library::load(Path::new("nope"));
     let reg = Registry::load(Path::new("nope"));
     let families = text.family_names();
@@ -81,7 +81,7 @@ fn main() {
         line("01:29:59", Level::Error, "plugins", "could not install broken.wfplugin: no plugin.toml at the top of the plugin"),
         line("01:30:02", Level::Warning, "core", r"hotkey Ctrl+Shift+E unavailable (HotKey already registered: HotKey { mods: Modifiers(CONTROL | SHIFT), key: KeyE, id: 34078743 }); use the tray menu for Edit Mode, or C:\Users\someone\AppData\Local\Wayfinder\current\wayfinder.exe"),
     ];
-    let sources = wayfinder::data::DataSources::builtin();
+    let sources = wayfinder::data::DataSources::fixed();
     let names = sources.names();
     let mut fresh = ws.clone();
     fresh.onboarded = false;
@@ -131,10 +131,10 @@ fn main() {
         let (desks, desk, setup): (&[wayfinder::platform::vdesk::Desktop], Option<&str>, &[MonitorRef]) = if name.starts_with("workspaces") { (&desktops, Some(desktops[1].id.as_str()), &dock) } else { (&[], None, std::slice::from_ref(&mon)) };
         let plugins: &[PluginRow] = if name == "plugins_empty" { &[] } else { &plugins };
         let theme = ws.global_theme(&lib);
-        let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources, desktops: desks, desktop: desk, setup, update_releases: &[], update_note: "" };
+        let ctx = Ctx { ws, reg: &reg, lib: &lib, theme: &theme, log: &log, gpu_info: "Microsoft Basic Render Driver / Dx12 / Cpu / alpha PreMultiplied / present Mailbox", fonts: &families, edit: false, hidden: &[], plugins: &plugins, plugin_note: "", sources: &names, plugin_files: &wayfinder::platform::win32::FileOwner::Me, data: &sources, calendar: &wayfinder::ambient::FixedCalendar::default(), desktops: desks, desktop: desk, setup, update_releases: &[], update_note: "" };
         let mut ui = UiState::default();
         for a in acts {
-            let _ = ui.act(a, &ctx, None);
+            let _ = ui.act(a, &ctx, &mut wayfinder::native::Headless);
         }
         let mut anim = Anim::default();
         let base = Instant::now();
@@ -142,16 +142,17 @@ fn main() {
         // pass 0 seeds enter animations and popup anchors, pass 1 is the settled frame
         for pass in 0..2 {
             let now = base + Duration::from_millis(if pass == 0 { 0 } else { 2500 });
-            let (root, images) = ui.build(&ctx, size);
-            for id in &images {
-                icons.ensure(&mut gpu, id);
+            let (root, wanted) = ui.build(&ctx, size);
+            for id in &wanted {
+                images.ensure(id);
             }
-            let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now, scale: 1.0 };
+            let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now, scale: 1.0, trace: false };
             let frame = ui::layout(&root, size, &mut env);
             ui.record_anchors(&frame);
             ui.record_preview(&frame);
             if pass == 1 {
-                png = Some(gpu.render_offscreen(size.0 as u32, size.1 as u32, &frame.list, &mut text).expect("render"));
+                gpu.apply(images.drain());
+                png = Some(gpu.render_offscreen(size.0 as u32, size.1 as u32, &frame.list, &mut text, now - base).expect("render"));
             }
         }
         let px = png.unwrap();
@@ -177,10 +178,10 @@ fn main() {
         let mut png = None;
         for pass in 0..2 {
             let now = base + Duration::from_millis(if pass == 0 { 0 } else { 2500 });
-            let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now, scale: 1.0 };
+            let mut env = Env { text: &mut text, anim: &mut anim, hover: None, now, scale: 1.0, trace: false };
             let frame = ui::layout(&root, size, &mut env);
             if pass == 1 {
-                png = Some(gpu.render_offscreen(size.0 as u32, size.1 as u32, &frame.list, &mut text).expect("render"));
+                png = Some(gpu.render_offscreen(size.0 as u32, size.1 as u32, &frame.list, &mut text, now - base).expect("render"));
             }
         }
         let px = png.unwrap();

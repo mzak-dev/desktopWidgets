@@ -1,0 +1,20 @@
+wayfinder-dump 1
+scene fixtures/clock   target widget clock   card 220x220   window 260x260   scale 1.25   at 2000ms
+env hermetic pins=fba8f0 now=2026-01-15T10:10:30 zone=UTC locale=en-US anim=theme palette=Midnight fonts=system:*
+note fonts=system: text metrics are this machine's; a dump is exact on the same machine and font set only
+clock-1~ box 0,0 260x260
+  clock-1 box 20,20 220x220 fill=#161c2ce6 grad=#0e1320e6 border=1:#ffffff2e radius=22
+    0 box 31,31 198x198
+      0 box 31,31 198x198 fill=#ffffff12 border=1:#ffffff2e radius=9999
+      1 shape:ticks 31,31 198x198 count=60 major_every=5 len=4.83 major_len=9.9 width=1.21 major_width=2.42 color=#f2f5ff99 major_color=#f2f5ff inset=5.54
+      2 shape:hand 31,31 198x198 angle=305 length=0.56 tail=0.11 width=5.72 color=#f2f5ff
+      3 shape:hand 31,31 198x198 angle=63 length=0.84 tail=0.11 width=3.74 color=#f2f5ff
+      4 shape:hand 31,31 198x198 angle=180 length=0.96 tail=0.18 width=1.76 color=#6ea8ff
+      5 box 31,31 198x198
+        0 box 125,125 10x10 fill=#6ea8ff radius=9999
+--- content
+content 260x260   scrolls: none
+--- hits
+--- draw
+layer0 shapes=66 images=0 texts=0   layer1 shapes=0 images=0 texts=0
+--- flags (0)

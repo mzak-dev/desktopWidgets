@@ -319,7 +319,7 @@ mod tests {
         let src = Agents::at(&h);
         let cfg = InstanceCfg { id: "agent_status-1".into(), ..Default::default() };
         let params = cfg.params_map();
-        let cx = SourceCx { cfg: &cfg, params: &params, tm: crate::data::now_local(), icon_pack: "Default" };
+        let cx = SourceCx::new(cfg.instance(), &params, crate::ambient::Calendar::now(&crate::ambient::FixedCalendar::default()), "Default");
         assert_eq!(src.value(&cx).get("count"), Some(&Value::Num(0.0)));
         assert_eq!(src.cadence("items", &cx), Some(Cadence::TenSecond));
         std::fs::write(dir.join("1.json"), format!(r#"{{"name":"c","status":"busy","updatedAt":{}}}"#, now_ms())).unwrap();

@@ -1,0 +1,27 @@
+format = 1
+name = "system_monitor lays out cleanly at every size it allows"
+
+[widget]
+id = "system_monitor"
+
+# scale 1 and the widest realistic clock text: what the engine's own fit checks used
+[look]
+scale = 1
+
+[env]
+now = 2026-09-23T23:58:58
+
+[expect]
+flags = "error"
+# OVERFLOW is not an error here: some gauge and graph modules reach a pixel past their slot
+# (fractional layout), and no text or shape sticks out
+allow = ["OVERFLOW-X", "OVERFLOW-Y"]
+
+# the default size, then a 4x4 grid from the smallest size to the largest, each with the
+# defaults and with every switch on
+[sweep]
+sizes = "grid:4x4"
+
+[sweep.variants]
+defaults = {}
+all_on = { params = "bools:true" }
