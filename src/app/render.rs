@@ -82,11 +82,14 @@ impl App {
         iw.redraw = false;
         iw.requested = false;
         iw.last_render = now;
+        iw.frame_seq += 1;
         let expand = p.expand;
         if lost.is_some() && self.gpu_lost_reason.is_none() {
             self.gpu_lost_reason = lost;
         }
         self.apply_expand(i, expand);
+        #[cfg(feature = "automation")]
+        self.automation_frame(i);
     }
 
     /// Decision 23; an open expand also sits above sibling widgets.

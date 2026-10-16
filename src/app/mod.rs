@@ -1,6 +1,8 @@
 //! One OS window per Instance, redrawn only on a changed binding, an
 //! animation or input (decision 16). Each concern is an `impl App` in a submodule.
 
+#[cfg(feature = "automation")]
+mod automation;
 mod commands;
 mod desktop;
 mod edit_mode;
@@ -89,6 +91,9 @@ pub enum UserEvent {
     /// An on-demand "Check for Updates" found nothing newer (a success path that restarts
     /// the app never reaches this event at all).
     UpdateChecked(String),
+    /// A request from Raywright, to answer on this thread.
+    #[cfg(feature = "automation")]
+    Automation(raywright_bridge::Request, raywright_bridge::Responder),
 }
 
 /// How to run Wayfinder. `Options::from_args()` reads the command line; an app built on
@@ -104,13 +109,15 @@ pub struct Options {
     pub edit: bool,
     /// Install this `.wfplugin` first (what double-clicking one runs).
     pub install: Option<PathBuf>,
+    /// Answer Raywright: the Automation Bridge (needs a build with the `automation` feature).
+    pub automation: bool,
     /// Data Sources beyond the built-ins, registered at startup.
     pub extra_sources: Vec<Box<dyn data::DataSource>>,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { dir: workspace::data_dir(), selftest: false, gpu_override: None, exit_after_secs: None, register_file_type: true, edit: false, install: None, extra_sources: Vec::new() }
+        Options { dir: workspace::data_dir(), selftest: false, gpu_override: None, exit_after_secs: None, register_file_type: true, edit: false, install: None, automation: false, extra_sources: Vec::new() }
     }
 }
 
@@ -119,7 +126,7 @@ impl Options {
         Options::parse(&std::env::args().skip(1).collect::<Vec<_>>())
     }
 
-    /// `--data <dir> --exit-after <sec> --gpu <mode> --edit --selftest --install <file>`.
+    /// `--data <dir> --exit-after <sec> --gpu <mode> --edit --selftest --install <file> --automation`.
     pub fn parse(args: &[String]) -> Options {
         let value = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned());
         let flag = |name: &str| args.iter().any(|a| a == name);
@@ -132,6 +139,7 @@ impl Options {
             register_file_type: value("--data").is_none() && !selftest,
             edit: flag("--edit"),
             install: value("--install").map(PathBuf::from),
+            automation: flag("--automation"),
             extra_sources: Vec::new(),
         }
     }
@@ -220,7 +228,11 @@ pub fn run(mut opts: Options) {
     let edit = opts.edit;
     let selftest = opts.selftest;
     let exit_after_secs = opts.exit_after_secs;
+    let automation = opts.automation;
     let mut app = App::new(proxy, opts);
+    if automation {
+        app.start_automation();
+    }
     if edit {
         app.request_edit_on_start();
     }
@@ -300,6 +312,9 @@ pub struct App {
     update_note: String,
     /// Mirrors `ws.flag(Flag::Prerelease)` for the update-checker thread, which can't borrow `ws`.
     update_prerelease: Arc<AtomicBool>,
+    /// The Automation Bridge, with `--automation`.
+    #[cfg(feature = "automation")]
+    automation: Option<automation::Automation>,
 }
 
 impl App {
@@ -383,6 +398,8 @@ impl App {
             update_releases: Vec::new(),
             update_note: String::new(),
             update_prerelease,
+            #[cfg(feature = "automation")]
+            automation: None,
         };
         app.load_content();
         app.rebuild_theme();
@@ -394,6 +411,19 @@ impl App {
             app.log(e);
         }
         app
+    }
+
+    #[cfg(feature = "automation")]
+    fn start_automation(&mut self) {
+        match automation::start(self.proxy.clone()) {
+            Ok(a) => self.automation = Some(a),
+            Err(e) => self.log(format!("automation: could not start the bridge: {e}")),
+        }
+    }
+
+    #[cfg(not(feature = "automation"))]
+    fn start_automation(&mut self) {
+        self.log("--automation needs a build with `--features automation`; ignoring it");
     }
 
     fn power(&self) -> Power {
@@ -966,6 +996,8 @@ impl ApplicationHandler<UserEvent> for App {
                     s.invalidate();
                 }
             }
+            #[cfg(feature = "automation")]
+            UserEvent::Automation(req, reply) => self.automation_event(el, req, reply),
         }
     }
 

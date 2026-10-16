@@ -252,6 +252,11 @@ pub struct MenuWin {
 }
 
 impl MenuWin {
+    /// What the last redraw laid out.
+    pub fn frame(&self) -> Option<&Frame> {
+        self.frame.as_ref()
+    }
+
     pub fn new(el: &ActiveEventLoop, gpu: &mut Option<Gpu>, power: Power) -> Result<MenuWin, String> {
         let (w, h) = window_size(&Data::default());
         let attrs = WindowAttributes::default()

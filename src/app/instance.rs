@@ -86,6 +86,8 @@ pub(super) struct Instance {
     pub(super) raised: bool,
     pub(super) error: Option<String>,
     pub(super) widget_error: Option<String>,
+    /// Frames drawn so far; the Automation Bridge numbers its pictures with it.
+    pub(super) frame_seq: u64,
 }
 
 impl Instance {
@@ -115,6 +117,7 @@ impl Instance {
             raised: false,
             error: None,
             widget_error: None,
+            frame_seq: 0,
         }
     }
 
