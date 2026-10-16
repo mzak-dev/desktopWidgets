@@ -26,6 +26,10 @@ pub(super) fn registry() -> CommandRegistry<App> {
         app.then(Then::Cmd(Cmd::Close));
         Ok(Value::Null)
     });
+    r.add("finish_setup", "end the first-run setup, as its Finish button does (Settings then shows its pages)", |app, _| {
+        app.then(Then::Cmd(Cmd::Onboarded));
+        Ok(Value::Null)
+    });
     r.add("set_z", "{ id?: string, mode: string }: where a widget sits (desktop, bottom, normal, topmost); every widget without an id", |app, a| {
         let mode = text(&a, "mode").ok_or("set_z needs a mode")?;
         let ids: Vec<String> = match text(&a, "id") {
