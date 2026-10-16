@@ -39,7 +39,8 @@ pub fn elements(frame: &Frame, scale: f32, text_of: &dyn Fn(&str) -> Option<Stri
     frame
         .rects
         .iter()
-        .filter(|(k, _)| keys.contains(k.as_str()))
+        // JSON has no NaN or infinity: one such rect would spoil the whole answer
+        .filter(|(k, r)| keys.contains(k.as_str()) && r.iter().all(|v| v.is_finite()))
         .map(|(k, [x, y, w, h])| {
             let mut e = ElementDesc::new(k.clone(), PRect::new(*x as f64, *y as f64, *w as f64, *h as f64));
             let hit = hits.get(k.as_str());
@@ -157,6 +158,15 @@ mod tests {
         assert_eq!(get("m/title"), Some(PRect::new(0.0, 0.0, 100.0, 50.0)), "a text's clip is physical: halved at 2x");
         let unclipped = elements(&media_card(), 1.0, &|_| None, &BTreeMap::new());
         assert_eq!(unclipped.iter().find(|e| e.key == "m/play").unwrap().clip, None);
+    }
+
+    #[test]
+    fn a_rect_json_cannot_hold_is_left_out() {
+        let mut f = media_card();
+        f.rects[1].1 = [f32::NAN, 5.0, 100.0, 20.0];
+        let keys: Vec<String> = elements(&f, 1.0, &strings, &BTreeMap::new()).into_iter().map(|e| e.key).collect();
+        assert_eq!(keys, ["m/play", "m/play/t"]);
+        assert!(serde_json::to_string(&elements(&f, 1.0, &strings, &BTreeMap::new())).unwrap().find("null").is_none());
     }
 
     #[test]
