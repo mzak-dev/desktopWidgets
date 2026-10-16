@@ -53,6 +53,33 @@ cargo run --release --example render_widgets  -- docs\img\widgets.png
 cargo run --release --example render_settings -- docs\img
 ```
 
+## End-to-end tests with Raywright
+
+[Raywright](https://github.com/mzak-dev/Raywright) starts a real Wayfinder, finds elements in its windows, clicks and types with real input, takes pictures and records animations. Wayfinder draws its own UI, so it answers Raywright through the **Automation Bridge** (ADR-0013), which exists only in a build with the `automation` feature and only runs with `--automation`.
+
+```powershell
+cargo build --features automation
+cargo test --manifest-path e2e/Cargo.toml -- --test-threads=1   # one desktop, one test at a time
+```
+
+The tests live in `e2e/`, a package of its own like `sdk/` so Raywright stays out of Wayfinder's dependency graph. `e2e/tests/e2e/support` holds the profile (how to start Wayfinder: its own data folder, the software renderer, ready when the starter widgets have windows) and the page objects; the cases are one file per area. `e2e/raywright.toml` sets timeouts, OS input and `trace = "retain-on-failure"`; a failed run leaves its trace, pictures and recordings in `e2e/target/raywright/`, and CI uploads them.
+
+`WAYFINDER_EXE` runs another build. Add a case by finding the element in a window with `raywright inspect` (or `raywright ui`), and writing the selector in a page object.
+
+### Driving Wayfinder from Claude Code
+
+`.mcp.json` registers the Raywright MCP server for this repository. Install it once (`cargo install --git https://github.com/mzak-dev/Raywright raywright-mcp`), build with `--features automation`, and Claude Code can start the `wayfinder` profile of `e2e/raywright.toml`, read a window as text, click, take pictures, record an animation and write the steps as a test.
+
+### What the bridge offers
+
+| | |
+|---|---|
+| windows | each widget, Settings and the tray menu, with kind (`instance`, `settings`, `menu`) |
+| elements | what a window laid out that takes clicks or shows text: key, action, role, text, rect, clip |
+| `capture` | a widget drawn again off screen: nothing in front of it, no desktop behind |
+| `call` | `state`, `set_edit`, `open_settings`, `close_settings`, `menu`, `reload`, `quit`; add one in `src/app/automation/commands.rs` |
+| `clock`, `clock_step` | stop the animation clock and step it, drawing every widget before answering |
+
 ## Extend it
 
 Each kind of extension is one file plus one line of registration:
