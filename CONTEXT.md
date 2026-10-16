@@ -115,6 +115,13 @@ A folder laid out like the data folder that content is read from: each enabled P
 **Catalog**:
 Everything the engine can show once every content root is read, and which root each piece came from.
 
+**Automation Bridge**:
+A small server inside Wayfinder, on only with `--automation` in a build with the `automation` feature, through which Raywright (the end-to-end test tool, or an agent over MCP) reads what each window drew, asks it for its own picture, runs its commands (`set_edit`, `open_settings`, `menu`, `state`...) and stops its animation clock. It describes only what a window already laid out; it changes nothing the user could not.
+_Avoid_: test hook, debug server
+
+**Animation clock**:
+The one time widget animations follow (`anim::clock`). It is the wall clock, except while the Automation Bridge has stopped it: then it moves only when stepped, so a recording of an animation shows the same frames on every machine.
+
 ## Relationships
 
 - A **Widget** is instantiated as zero or more **Instances**; a **Workspace** is the set of all Instances.
@@ -126,6 +133,8 @@ Everything the engine can show once every content root is read, and which root e
 - An **Instance** has exactly one **Z-mode** and is anchored to one monitor; if that monitor is absent it is **Parked**.
 - A **Workspace** holds its own **Instances**, **Theme** and **Style**, and may have a **Workspace rule** naming **Virtual desktops** and a **Monitor setup**; going to such a desktop or connecting such monitors brings it up.
 - A **Plugin** is a **Content root** while it is on, and runs its **Code Source** while it is on. An **Instance** whose Widget only a switched-off Plugin provides is hidden like a Parked one, and shows again when the Plugin is back on.
+
+- The **Automation Bridge** reads **Frames** the windows already drew; stopping the **Animation clock** affects Instances only, not Settings or the tray menu.
 
 ## Commit messages
 
