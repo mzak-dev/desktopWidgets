@@ -20,7 +20,8 @@ use super::*;
 pub(super) enum Then {
     Menu(String),
     Settings(Option<String>),
-    CloseSettings,
+    /// What Settings would do for a click: the same path, so the same effects.
+    Cmd(settings::Cmd),
 }
 
 pub(super) struct Automation {
@@ -172,7 +173,7 @@ impl App {
         for t in thens {
             match t {
                 Then::Menu(id) => self.user_event(el, UserEvent::Menu(id)),
-                Then::CloseSettings => self.apply(el, settings::Cmd::Close),
+                Then::Cmd(c) => self.apply(el, c),
                 Then::Settings(page) => {
                     self.open_settings(el);
                     if let (Some(s), Some(p)) = (&mut self.settings, page) {

@@ -5,6 +5,7 @@ use raywright_bridge::CommandRegistry;
 use serde_json::{Value, json};
 
 use super::{App, Then};
+use crate::settings::Cmd;
 
 fn text(args: &Value, name: &str) -> Option<String> {
     args.get(name).and_then(Value::as_str).map(String::from)
@@ -22,7 +23,18 @@ pub(super) fn registry() -> CommandRegistry<App> {
         Ok(Value::Null)
     });
     r.add("close_settings", "close the Settings window", |app, _| {
-        app.then(Then::CloseSettings);
+        app.then(Then::Cmd(Cmd::Close));
+        Ok(Value::Null)
+    });
+    r.add("set_z", "{ id?: string, mode: string }: where a widget sits (desktop, bottom, normal, topmost); every widget without an id", |app, a| {
+        let mode = text(&a, "mode").ok_or("set_z needs a mode")?;
+        let ids: Vec<String> = match text(&a, "id") {
+            Some(id) => vec![id],
+            None => app.ws.instances.iter().map(|c| c.id.clone()).collect(),
+        };
+        for id in ids {
+            app.then(Then::Cmd(Cmd::Z(id, mode.clone())));
+        }
         Ok(Value::Null)
     });
     r.add("menu", "{ id: string }: pick a tray menu entry (edit, settings, reload, folder, wsmanage, ws:N)", |app, a| {
