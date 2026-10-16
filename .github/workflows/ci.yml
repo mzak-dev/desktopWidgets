@@ -5,6 +5,7 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,9 +14,21 @@ jobs:
   build:
     # Wayfinder is Windows-only (Win32, DirectComposition, tray-icon).
     runs-on: windows-latest
+    env:
+      # Raywright (the Automation Bridge and the e2e tests) is a git dependency
+      RAYWRIGHT_TOKEN: ${{ secrets.RAYWRIGHT_TOKEN }}
+      CARGO_NET_GIT_FETCH_WITH_CLI: "true"
     steps:
       - uses: actions/checkout@v4
+      - name: Let cargo fetch Raywright
+        # only needed while the Raywright repository is private
+        if: env.RAYWRIGHT_TOKEN != ''
+        run: git config --global url."https://x-access-token:${{ secrets.RAYWRIGHT_TOKEN }}@github.com/mzak-dev/Raywright".insteadOf "https://github.com/mzak-dev/Raywright"
       - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            e2e
       - name: Build
         run: cargo build --locked --all-targets
       - name: Plugin SDK tests
@@ -31,3 +44,19 @@ jobs:
         env:
           WF_EXAMPLE_WASM: ${{ github.workspace }}/sdk/examples/weather/target/wasm32-unknown-unknown/release/weather.wasm
         run: cargo test --locked --lib
+      - name: Automation Bridge unit tests
+        run: cargo test --locked --lib --features automation
+      - name: Build with the Automation Bridge
+        run: cargo build --locked --features automation
+      - name: End-to-end tests (Raywright drives Wayfinder)
+        # one desktop, one test at a time
+        env:
+          RAYWRIGHT_TRACE: retain-on-failure
+        run: cargo test --locked --manifest-path e2e/Cargo.toml -- --test-threads=1
+      - name: Keep traces, recordings and diffs of a failed run
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raywright-output
+          path: e2e/target/raywright/**
+          if-no-files-found: ignore

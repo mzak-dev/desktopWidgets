@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "raywright": {
+      "command": "raywright-mcp",
+      "args": [
+        "--allow-exe", "target\\debug\\wayfinder.exe",
+        "--profile-file", "e2e\\raywright.toml",
+        "--output-dir", "target\\raywright-mcp"
+      ]
+    }
+  }
+}
