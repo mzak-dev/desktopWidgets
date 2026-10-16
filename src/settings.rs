@@ -3894,6 +3894,16 @@ impl SettingsWin {
         self.redraw = true;
     }
 
+    /// The id of the page on show.
+    pub fn page(&self) -> &'static str {
+        self.ui.page.id()
+    }
+
+    /// What the last redraw laid out.
+    pub fn frame(&self) -> Option<&Frame> {
+        self.frame.as_ref()
+    }
+
     pub fn open(el: &ActiveEventLoop, gpu: &mut Option<Gpu>, power: Power) -> Result<SettingsWin, String> {
         let mon = el.primary_monitor().or_else(|| el.available_monitors().next());
         // a small or zoomed screen gets a smaller window, never below the minimum

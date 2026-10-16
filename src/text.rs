@@ -238,6 +238,12 @@ impl TextEngine {
         }
     }
 
+    /// What the shaped text under `key` says (its lines joined by newlines).
+    pub fn text_of(&self, key: &str) -> Option<String> {
+        let b = self.buffer(key)?;
+        Some(b.lines.iter().map(|l| l.text()).collect::<Vec<_>>().join("\n"))
+    }
+
     pub fn buffer(&self, key: &str) -> Option<&Buffer> {
         self.slots.get(key).map(|s| &s.buf)
     }
