@@ -1,0 +1,17 @@
+# End-to-end tests: Raywright drives a real Wayfinder (built with `--features automation`).
+# Its own package, like sdk/, so Raywright and tokio stay out of Wayfinder's dependency graph.
+[package]
+name = "wayfinder-e2e"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dev-dependencies]
+raywright = { git = "https://github.com/mzak-dev/Raywright", rev = "cd39ceb58eaae8f202266ee7e1907c542922a164" }
+async-trait = "0.1"
+serde_json = "1"
+tokio = { version = "1", features = ["time"] }
+
+[[test]]
+name = "e2e"
+path = "tests/e2e/main.rs"

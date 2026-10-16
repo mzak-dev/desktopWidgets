@@ -1,0 +1,14 @@
+# Raywright's settings for these tests (see docs/development.md).
+timeout = "10s"
+expect_timeout = "10s"
+# Widgets sit on the desktop and take no focus: OS input reaches them as a real mouse would.
+input_mode = "os"
+trace = "retain-on-failure"
+
+# The same profile the Claude Code MCP server (.mcp.json) uses to start Wayfinder.
+[profiles.wayfinder]
+exe = "../target/debug/wayfinder.exe"
+args = ["--automation", "--gpu", "software"]
+temp_data_dir = "--data"
+bridge = true
+ready = { windows = 4, bridge = true }
