@@ -5,6 +5,10 @@ expect_timeout = "10s"
 input_mode = "os"
 trace = "retain-on-failure"
 
+# Stored pictures: a few pixels of text rendering may differ between runner images.
+[snapshot]
+max_diff_ratio = 0.002
+
 # The same profile the Claude Code MCP server (.mcp.json) uses to start Wayfinder.
 [profiles.wayfinder]
 exe = "../target/debug/wayfinder.exe"
