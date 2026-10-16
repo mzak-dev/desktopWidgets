@@ -5,9 +5,11 @@ async fn every_starter_widget_has_a_window_and_shows_elements_to_the_bridge() ->
     let wf = Wayfinder::launch().await?;
     for id in STARTERS {
         let w = wf.widget(id).await?;
+        // what the bridge itself says, so a failure shows why
+        let asked = wf.app.bridge().await?.elements(w.win.id().0).await.map(|e| e.len());
         let sources = w.win.elements().await?;
         let from_bridge: usize = sources.iter().filter(|(source, _)| source == "bridge").map(|(_, nodes)| nodes.len()).sum();
-        assert!(from_bridge > 0, "{id}: the bridge listed no elements ({:?})", sources.iter().map(|(s, n)| (s.clone(), n.len())).collect::<Vec<_>>());
+        assert!(from_bridge > 0, "{id}: the bridge listed no elements; asked directly: {asked:?}; by source: {:?}", sources.iter().map(|(s, n)| (s.clone(), n.len())).collect::<Vec<_>>());
     }
     let state = wf.state().await?;
     assert_eq!(state["instances"].as_array().map(Vec::len), Some(STARTERS.len()), "{state}");
