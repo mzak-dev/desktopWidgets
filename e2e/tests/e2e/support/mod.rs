@@ -38,9 +38,12 @@ impl AppProfile for WayfinderProfile {
         Ok(LaunchSpec::exe(exe).args(["--automation", "--gpu", "software"]).temp_data_dir("--data").wait_for_bridge().wait_for_windows(STARTERS.len()))
     }
 
-    /// A first run opens Settings for onboarding; the tests start from widgets alone.
+    /// A first run opens Settings for onboarding; the tests start from widgets alone. And
+    /// widgets sit on the desktop, under every window: other programs (a CI runner's agent)
+    /// would cover them, so they go on top for the test.
     async fn ready(&self, app: &App) -> raywright::Result<()> {
         let bridge = app.bridge().await?;
+        bridge.call("set_z", json!({ "mode": "topmost" })).await?;
         if bridge.call("state", json!({})).await?["settings"].is_string() {
             bridge.call("close_settings", json!({})).await?;
             for _ in 0..50 {
