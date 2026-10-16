@@ -72,6 +72,64 @@ impl Tween {
     }
 }
 
+/// The time widget animations follow. It is the wall clock, except while something (the
+/// automation bridge) has stopped it: then it moves only when stepped, so the same steps
+/// draw the same frames on any machine.
+pub mod clock {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    /// Stopped at `at`, then stepped on by `by`.
+    #[derive(Clone, Copy, Debug, Default, PartialEq)]
+    pub struct Clock {
+        stopped: Option<(Instant, Duration)>,
+    }
+
+    impl Clock {
+        pub fn now(&self, real: Instant) -> Instant {
+            self.stopped.map_or(real, |(at, by)| at + by)
+        }
+
+        pub fn is_manual(&self) -> bool {
+            self.stopped.is_some()
+        }
+
+        /// Stops at `real` (staying where it is when already stopped), or runs again.
+        pub fn set_manual(&mut self, on: bool, real: Instant) {
+            self.stopped = if on { Some(self.stopped.unwrap_or((real, Duration::ZERO))) } else { None };
+        }
+
+        /// Moves a stopped clock on; the time stepped since it stopped, or `None` while it runs.
+        pub fn step(&mut self, d: Duration) -> Option<Duration> {
+            let (_, by) = self.stopped.as_mut()?;
+            *by += d;
+            Some(*by)
+        }
+    }
+
+    static CLOCK: Mutex<Clock> = Mutex::new(Clock { stopped: None });
+
+    fn with<R>(f: impl FnOnce(&mut Clock) -> R) -> R {
+        f(&mut CLOCK.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    pub fn now() -> Instant {
+        with(|c| c.now(Instant::now()))
+    }
+
+    pub fn is_manual() -> bool {
+        with(|c| c.is_manual())
+    }
+
+    pub fn set_manual(on: bool) {
+        with(|c| c.set_manual(on, Instant::now()))
+    }
+
+    pub fn step(d: Duration) -> Option<Duration> {
+        with(|c| c.step(d))
+    }
+}
+
 /// The `anim-speed` style token as a multiplier on every duration; 0 means no animation.
 pub fn duration_factor(speed: &str) -> f32 {
     match speed {
@@ -244,6 +302,23 @@ impl Anim {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stopped_clock_moves_only_when_stepped() {
+        use std::time::Duration;
+        let t0 = Instant::now();
+        let mut c = clock::Clock::default();
+        assert_eq!((c.now(t0), c.step(Duration::from_millis(16))), (t0, None), "running: the wall clock, nothing to step");
+        c.set_manual(true, t0);
+        let later = t0 + Duration::from_secs(5);
+        assert_eq!(c.now(later), t0, "stopped where it was");
+        assert_eq!(c.step(Duration::from_millis(16)), Some(Duration::from_millis(16)));
+        c.set_manual(true, later);
+        assert_eq!(c.step(Duration::from_millis(16)), Some(Duration::from_millis(32)), "stopping again keeps the steps");
+        assert_eq!(c.now(later), t0 + Duration::from_millis(32));
+        c.set_manual(false, later);
+        assert_eq!((c.now(later), c.is_manual()), (later, false));
+    }
     use std::time::Duration;
 
     #[test]

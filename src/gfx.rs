@@ -140,7 +140,7 @@ pub struct Gpu {
     images: HashMap<String, GpuImage>,
     lost: Arc<std::sync::atomic::AtomicBool>,
     pub reconfigure_count: std::cell::Cell<u32>,
-    /// Animations play against this clock.
+    /// Animated pictures play from here, on the animation clock.
     epoch: std::time::Instant,
 }
 
@@ -337,7 +337,7 @@ impl Gpu {
             atlas,
             text_r,
             images: HashMap::new(),
-            epoch: std::time::Instant::now(),
+            epoch: crate::anim::clock::now(),
             lost,
             reconfigure_count: std::cell::Cell::new(0),
         })
@@ -543,7 +543,7 @@ impl Gpu {
                 .prepare(&self.device, &self.queue, fs, &mut self.atlas, &t.viewport, areas, swash)
                 .map_err(|e| format!("text prepare: {e}"))?;
             t.shapes[i].write(&self.device, &self.queue, bytemuck::cast_slice(&layer.shapes));
-            let elapsed = self.epoch.elapsed().as_millis() as u64;
+            let elapsed = crate::anim::clock::now().saturating_duration_since(self.epoch).as_millis() as u64;
             let imgs: Vec<ImgInst> = layer
                 .images
                 .iter()
