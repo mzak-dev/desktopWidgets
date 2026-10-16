@@ -1096,16 +1096,19 @@ impl ApplicationHandler<UserEvent> for App {
             .flatten()
             .min();
         let soonest = |t: Instant, wake: &mut Option<Instant>| *wake = Some(wake.map_or(t, |w| w.min(t)));
+        // widgets animate on their own clock; a stopped one moves only when stepped, so
+        // there is nothing to wake for
+        let (frame_now, stopped) = (anim::clock::now(), anim::clock::is_manual());
         for iw in &mut self.wins {
             let Some(w) = &iw.window else { continue };
-            if iw.needs_frame(now) {
+            if iw.needs_frame(frame_now) {
                 if !iw.requested {
                     iw.requested = true;
                     w.request_redraw();
                 }
                 continue;
             }
-            if let Some(t) = iw.next_wake() {
+            if let Some(t) = iw.next_wake().filter(|_| !stopped) {
                 soonest(t, &mut wake);
             }
         }

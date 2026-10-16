@@ -130,7 +130,7 @@ impl App {
     /// (scaled by `anim-speed`; `off` jumps).
     pub(super) fn glide_window(&mut self, i: usize, target: Rect) {
         let secs = GLIDE_SECS * anim::duration_factor(&self.theme_of(i).str("anim-speed"));
-        let now = Instant::now();
+        let now = anim::clock::now();
         let from = self.wins[i].tween.as_ref().map(|t| t.rect_at(now)).or_else(|| self.wins[i].window.as_ref().and_then(|w| Self::outer_rect(w)));
         match from {
             Some(from) if secs > 0.0 && from != target => {

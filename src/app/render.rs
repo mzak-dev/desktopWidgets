@@ -2,7 +2,7 @@ use super::*;
 
 impl App {
     pub(super) fn render(&mut self, i: usize) {
-        let now = Instant::now();
+        let now = anim::clock::now();
         let theme = self.theme_of(i);
         let card = Card::new(&theme);
         let App { gpu, text, icons, theme: chrome, reg, sources, ws, wins, edit, remove_armed, .. } = self;
@@ -111,7 +111,7 @@ impl App {
             return; // first layout: nothing to animate
         }
         let secs = EXPAND_SECS * anim::duration_factor(&self.theme_of(i).str("anim-speed"));
-        self.wins[i].tween = (secs > 0.0).then(|| SizeTween { from: cur, to: target, start: Instant::now(), secs });
+        self.wins[i].tween = (secs > 0.0).then(|| SizeTween { from: cur, to: target, start: anim::clock::now(), secs });
         if secs <= 0.0 {
             self.set_window_rect(i, target);
         }

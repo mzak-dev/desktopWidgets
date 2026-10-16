@@ -103,7 +103,7 @@ impl Instance {
             redraw: true,
             requested: false,
             animating: false,
-            last_render: Instant::now(),
+            last_render: anim::clock::now(),
             drag: None,
             slide: None,
             grab: None,
