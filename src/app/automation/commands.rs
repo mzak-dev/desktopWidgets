@@ -21,6 +21,10 @@ pub(super) fn registry() -> CommandRegistry<App> {
         app.then(Then::Settings(text(&a, "page")));
         Ok(Value::Null)
     });
+    r.add("close_settings", "close the Settings window", |app, _| {
+        app.then(Then::CloseSettings);
+        Ok(Value::Null)
+    });
     r.add("menu", "{ id: string }: pick a tray menu entry (edit, settings, reload, folder, wsmanage, ws:N)", |app, a| {
         let id = text(&a, "id").ok_or("menu needs an id")?;
         app.then(Then::Menu(id));

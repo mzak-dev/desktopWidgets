@@ -20,6 +20,7 @@ use super::*;
 pub(super) enum Then {
     Menu(String),
     Settings(Option<String>),
+    CloseSettings,
 }
 
 pub(super) struct Automation {
@@ -171,6 +172,7 @@ impl App {
         for t in thens {
             match t {
                 Then::Menu(id) => self.user_event(el, UserEvent::Menu(id)),
+                Then::CloseSettings => self.apply(el, settings::Cmd::Close),
                 Then::Settings(page) => {
                     self.open_settings(el);
                     if let (Some(s), Some(p)) = (&mut self.settings, page) {
