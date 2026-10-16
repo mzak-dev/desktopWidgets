@@ -28,6 +28,8 @@ async fn opening_the_folder_settles_and_the_recording_is_the_same_each_time() ->
     // EXPAND_SECS is 0.2 s; some slack for the frame that lands it
     expect(&rec).to_settle_within(ms(400))?;
     expect(&rec).to_have_frame_count(5..=60)?;
+    // the same six frames as the stored ones: the clock was stopped, so nothing depends on the machine
+    expect(&rec).to_match_keyframes("folder-expand", 6, wf.rw.config())?;
     rec.save_dir(wf.rw.config().output_dir().join("folder-expand"))?;
     wf.close().await
 }

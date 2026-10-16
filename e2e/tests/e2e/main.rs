@@ -6,6 +6,7 @@
 
 mod animations;
 mod edit_mode;
+mod looks;
 mod settings;
 mod support;
 mod widgets;
